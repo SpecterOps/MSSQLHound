@@ -2,12 +2,11 @@
 PowerShell collector for adding MSSQL attack paths to BloodHound with OpenGraph, by Chris Thompson (@_Mayyhem) at SpecterOps
 
 # Overview
-Collects BloodHound OpenGraph compatible data from one or more MSSQL servers into individual files, then zips them
+Collects BloodHound OpenGraph compatible data from one or more MSSQL servers into individual temporary files, then zips them in the current directory
   - Example: mssql-bloodhound-20250724-115610.zip
       
 ## System Requirements:
   - PowerShell 4.0 or higher
-  - Active Directory module (or connectivity to download/import/install it)
   - Target is running SQL Server 2005 or higher
 
 ## Minimum Permissions:
