@@ -1,9 +1,9 @@
 # MSSQLHound
-PowerShell collector for adding MSSQL attack paths to BloodHound with OpenGraph, by Chris Thompson (@_Mayyhem) at SpecterOps
+PowerShell collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with OpenGraph, by Chris Thompson ([@_Mayyhem](https://x.com/_Mayyhem)) at [SpecterOps](https://x.com/SpecterOps)
 
 # Overview
 Collects BloodHound OpenGraph compatible data from one or more MSSQL servers into individual temporary files, then zips them in the current directory
-  - Example: mssql-bloodhound-20250724-115610.zip
+  - Example: `mssql-bloodhound-20250724-115610.zip`
       
 ## System Requirements:
   - PowerShell 4.0 or higher
@@ -13,25 +13,25 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 ### Windows Level:
   - Active Directory domain context with line of sight to a domain controller
 ### MSSQL Server Level:
-  - **CONNECT SQL** (default for new logins)
-  - **VIEW ANY DATABASE** (default for new logins)
+  - **`CONNECT SQL`** (default for new logins)
+  - **`VIEW ANY DATABASE`** (default for new logins)
 
 ## Recommended Permissions:
 ### MSSQL Server Level:
-  - **VIEW ANY DEFINITION** permission or ##MS_DefinitionReader role membership (available in versions 2022+)
+  - **`VIEW ANY DEFINITION`** permission or `##MS_DefinitionReader##` role membership (available in versions 2022+)
       - Needed to read server principals and their permissions
       - Without one of these permissions, there will be false negatives (invisible server principals)
-  - **VIEW SERVER PERFORMANCE STATE** permission or ##MSS_ServerPerformanceStateReader## role membership (available in versions 2022+) or local Administrators group privileges on the target (fallback for WMI collection)
+  - **`VIEW SERVER PERFORMANCE STATE`** permission or `##MSS_ServerPerformanceStateReader##` role membership (available in versions 2022+) or local `Administrators` group privileges on the target (fallback for WMI collection)
       - Only used for service account collection
 
 ### MSSQL Database Level:
-  - **CONNECT ANY DATABASE** server permission (available in versions 2014+) or ##MS_DatabaseConnector## role membership (available in versions 2022+) or login maps to a database user with CONNECT on individual databases
+  - **`CONNECT ANY DATABASE`** server permission (available in versions 2014+) or `##MS_DatabaseConnector##` role membership (available in versions 2022+) or login maps to a database user with `CONNECT` on individual databases
       - Needed to read database principals and their permissions
-  - Login maps to **msdb database user with db_datareader** role or with SELECT permission on:
-       - msdb.dbo.sysproxies
-       - msdb.dbo.sysproxylogin
-       - msdb.dbo.sysproxysubsystem
-       - msdb.dbo.syssubsystems
+  - Login maps to **`msdb`** database user with **`db_datareader`** role or with `SELECT` permission on:
+       - `msdb.dbo.sysproxies`
+       - `msdb.dbo.sysproxylogin`
+       - `msdb.dbo.sysproxysubsystem`
+       - `msdb.dbo.syssubsystems`
        - Only used for proxy account collection
 
 # Command Line Options
@@ -77,11 +77,11 @@ For the latest and most reliable information, please execute MSSQLHound with the
 - EXECUTE permission on xp_cmdshell
 - UNSAFE/EXTERNAL_ACCESS permission on assembly (impacted by TRUSTWORTHY)
 - Add this to CoerceAndRelayToMSSQL:
-  - Domain principal has CONNECT SQL (and EXECUTE on xp_dirtree or other stored procedures that will authenticate to a remote host)
-  - Service account/Computer has a server login that is enabled on another SQL instance
-  - EPA is not required on remote SQL instance
+    - Domain principal has CONNECT SQL (and EXECUTE on xp_dirtree or other stored procedures that will authenticate to a remote host)
+    - Service account/Computer has a server login that is enabled on another SQL instance
+    - EPA is not required on remote SQL instance
 
-# New Nodes
+# MSSQL Nodes Reference
 ## Server Level
 ### Server Instance (`MSSQL_Server` node)
 The entire installation of the MSSQL Server database management system (DBMS) that contains multiple databases and server-level objects
@@ -204,3 +204,133 @@ A type of database principal that is not associated with a user but instead is a
 | **Modify Date**: datetime | • When the principal was last modified |
 | **Principal Id**: uint | • The identifier the SQL Server instance uses to associate permissions and other objects with this principal |
 | **SQL Server**: string | • Name of the SQL Server where this object is a principal |
+
+
+# MSSQL Edges Reference
+This section includes explanations for edges that have their own unique properties. Please refer to the `$script:EdgePropertyGenerators` variable in `MSSQLHound.ps1` for the following details:
+- Source and target node classes (all combinations)
+- Requirements
+- Default fixed roles with the permission
+- Traversability
+- Entity panel details (dynamically-generated)
+    - General
+    - Windows Abuse
+    - Linux Abuse
+    - OPSEC
+    - References
+    - Composition Cypher (where applicable)
+
+## Edge Classes and Properties
+
+### `MSSQL_ExecuteAsOwner`
+| Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **Database**: string                          | • Name of the target database where the source can execute SQL statements as the server-level owning principal |
+| **Database Is Trustworthy**: bool            | • **True**: Database principals that can execute `EXECUTE AS OWNER` statements can execute actions in the context of the server principal that owns the database<br>• **False**: The database isn't allowed to access resources beyond the scope of the database |
+| **Owner Has Control Server**: bool           | • **True**: The server principal that owns the database has the `CONTROL SERVER` permission, allowing complete control of the MSSQL server instance. |
+| **Owner Has Impersonate Any Login**: bool    | • **True**: The server principal that owns the database has the `IMPERSONATE ANY LOGIN` permission, allowing complete control of the MSSQL server instance. |
+| **Owner Has Securityadmin**: bool            | • **True**: The server principal that owns the database is a member of the `securityadmin` server role, allowing complete control of the MSSQL server instance. |
+| **Owner Has Sysadmin**: bool                 | • **True**: The server principal that owns the database is a member of the `sysadmin` server role, allowing complete control of the MSSQL server instance. |
+| **Owner Login Name**: string                 | • The name of the server login that owns the database<br>• Example: `MAYYHEM\cthompson` |
+| **Owner Object Identifier**: string          | • The object identifier of the server login that owns the database |
+| **Owner Principal ID**: uint                 | • The identifier the SQL Server instance uses to associate permissions and other objects with this principal |
+| **SQL Server**: string                       | • Name of the SQL Server where this object is a principal |
+
+### `MSSQL_GetAdminTGS`
+| Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **Domain Principals with ControlServer**: List<string> | • Domain principals with logins that have the `CONTROL SERVER` effective permission, allowing complete control of the MSSQL server instance. |
+| **Domain Principals with ImpersonateAnyLogin**: List<string> | • Domain principals with logins that have the `IMPERSONATE ANY LOGIN` effective permission, allowing complete control of the MSSQL server instance. |
+| **Domain Principals with Securityadmin**: List<string> | • Domain principals with membership in the `securityadmin` server role, allowing complete control of the MSSQL server instance. |
+| **Domain Principals with Sysadmin**: List<string> | • Domain principals with membership in the `sysadmin` server role, allowing complete control of the MSSQL server instance. |
+
+### `MSSQL_HasDBScopedCred`
+| Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **Credential ID**: string                     | • The identifier the SQL Server instance uses to associate other objects with this principal |
+| **Credential Identity**: string               | • The domain principal this credential uses to authenticate to resources |
+| **Credential Name**: string                   | • The name used to identify this credential in the SQL Server instance |
+| **Create Date**: datetime                     | • When the credential was created |
+| **Database**: string                          | • Name of the database where this object is a credential |
+| **Modify Date**: datetime                     | • When the credential was last modified |
+| **Resolved SID**: string                      | • The domain SID for the credential identity |
+
+### `MSSQL_HasMappedCred`
+| Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **Credential ID**: uint                       | • The identifier the SQL Server instance uses to associate other objects with this principal |
+| **Credential Identity**: string               | • The domain principal this credential uses to authenticate to resources |
+| **Credential Name**: string                   | • The name used to identify this credential in the SQL Server instance |
+| **Create Date**: datetime                     | • When the credential was created |
+| **Modify Date**: datetime                     | • When the credential was last modified |
+| **Resolved SID**: string                      | • The domain SID for the credential identity |
+
+### `MSSQL_HasProxyCred`
+| Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **Authorized Principals**: List<string>       | • Principals that are authorized to use this proxy credential |
+| **Credential ID**: string                     | • The identifier the SQL Server instance uses to associate other objects with this principal |
+| **Credential Identity**: string               | • The domain principal this credential uses to authenticate to resources |
+| **Credential Name**: string                   | • The name used to identify this credential in the SQL Server instance |
+| **Description**: string                       | • User-provided description of the proxy that uses this credential |
+| **Is Enabled**: bool                          | • Is the proxy that uses this credential enabled? |
+| **Proxy ID**: uint                            | • The identifier the SQL Server instance uses to associate other objects with this proxy |
+| **Proxy Name**: string                        | • The name used to identify this proxy in the SQL Server instance |
+| **Resolved SID**: string                      | • The domain SID for the credential identity |
+| **Resolved Type**: string                     | • The class of domain principal for the credential identity |
+| **Subsystems**: List<string>                  | • Subsystems this proxy is configured with (e.g., `CmdExec`, `PowerShell`) |
+
+### `MSSQL_LinkedAsAdmin`
+| Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **Data Access**: bool                         | • **True (enabled)**:<br>&nbsp;&nbsp;&nbsp;&nbsp;• The linked server can be used in distributed queries<br>&nbsp;&nbsp;&nbsp;&nbsp;• You can `SELECT`, `INSERT`, `UPDATE`, `DELETE` data through the linked server<br>&nbsp;&nbsp;&nbsp;&nbsp;• Four-part naming queries work: `[LinkedServer].[Database].[Schema].[Table]`<br>&nbsp;&nbsp;&nbsp;&nbsp;• `OPENQUERY()` statements work against this linked server<br>• **False (disabled)**:<br>&nbsp;&nbsp;&nbsp;&nbsp;• The linked server connection still exists but cannot be used for data queries<br>&nbsp;&nbsp;&nbsp;&nbsp;• Attempts to query through it will fail with an error<br>&nbsp;&nbsp;• The linked server can still be used for other purposes like RPC calls (if RPC is enabled) |
+| **Data Source**: string                       | • Format: `<linked_server_hostname>[\instancename]`<br>• Examples: `SITE-DB` or `CAS-PSS\CAS` |
+| **Local Login**: List<string>                 | • The login(s) on the source that can use the link and connect to the linked server using the Remote Login |
+| **Path**: string                              | • The link used to collect the information needed to create this edge |
+| **Product**: string                           | • A user-defined name of the product used by the remote server<br>• Examples: `SQL Server`, `Oracle`, `Access` |
+| **Provider**: string                          | • The driver or interface that SQL Server uses to communicate with the remote data source |
+| **Remote Current Login**: string              | • Displays the login context that is actually used on the remote linked server based on the results of the `SELECT SYSTEM_USER` SQL statement on the remote linked server<br>• If impersonation is used, it is likely that this value will be the login used for collection<br>• If not, this should match Remote Login |
+| **Remote Has Control Server**: bool           | • Does the login context on the remote server have the `CONTROL SERVER` permission? |
+| **Remote Has Impersonate Any Login**: bool    | • Does the login context on the remote server have the `IMPERSONATE ANY LOGIN` permission? |
+| **Remote Is Mixed Mode**: bool                | • Is mixed mode authentication (for both Windows and SQL logins) enabled on the remote server? |
+| **Remote Is Securityadmin**: bool             | • Is the login context on the remote server a member of the `securityadmin` server role? |
+| **Remote Is Sysadmin**: bool                  | • Is the login context on the remote server a member of the `sysadmin` server role? |
+| **Remote Login**: string                      | • The SQL Server authentication login that exists on the remote server that connections over this link are mapped to<br>• The password for this login must be saved on the source server<br>• Will be null if impersonation is used, in which case the login context being used on the source server is used to connect to the remote linked server |
+| **Remote Server Roles**: List<string>         | • Server roles the remote login context is a member of |
+| **RPC Out**: bool                             | • Can the source server call stored procedures on remote server? |
+| **Uses Impersonation**: bool                  | • Does the linked server attempt to use the current user's Windows credentials to authenticate to the remote server?<br>• For SQL Server authentication, a login with the exact same name and password must exist on the remote server.<br>• For Windows logins, the login must be a valid login on the linked server.<br>• This requires Kerberos delegation to be properly configured<br>• The user's actual Windows identity is passed through to the remote server |
+
+### Remaining Edges
+| Edge Class<br>______________________________________________ | Properties<br>_______________________________________________________________________________________________ |
+|-----------------------------------------------|------------|
+| **`CoerceAndRelayToMSSQL`**                     | • No unique edge properties |
+| **`MSSQL_AddMember`**                           | • No unique edge properties |
+| **`MSSQL_Alter`**                               | • No unique edge properties |
+| **`MSSQL_AlterAnyAppRole`**                     | • No unique edge properties |
+| **`MSSQL_AlterAnyDBRole`**                      | • No unique edge properties |
+| **`MSSQL_AlterAnyLogin`**                       | • No unique edge properties |
+| **`MSSQL_AlterAnyServerRole`**                  | • No unique edge properties |
+| **`MSSQL_ChangeOwner`**                         | • No unique edge properties |
+| **`MSSQL_ChangePassword`**                      | • No unique edge properties |
+| **`MSSQL_Connect`**                             | • No unique edge properties |
+| **`MSSQL_ConnectAnyDatabase`**                  | • No unique edge properties |
+| **`MSSQL_Contains`**                            | • No unique edge properties |
+| **`MSSQL_Control`**                             | • No unique edge properties |
+| **`MSSQL_ControlDB`**                           | • No unique edge properties |
+| **`MSSQL_ControlServer`**                       | • No unique edge properties |
+| **`MSSQL_ExecuteAs`**                           | • No unique edge properties |
+| **`MSSQL_ExecuteOnHost`**                       | • No unique edge properties |
+| **`MSSQL_GetTGS`**                              | • No unique edge properties |
+| **`MSSQL_GrantAnyDBPermission`**                | • No unique edge properties |
+| **`MSSQL_GrantAnyPermission`**                  | • No unique edge properties |
+| **`MSSQL_HasLogin`**                            | • No unique edge properties |
+| **`MSSQL_HostFor`**                             | • No unique edge properties |
+| **`MSSQL_Impersonate`**                         | • No unique edge properties |
+| **`MSSQL_ImpersonateAnyLogin`**                 | • No unique edge properties |
+| **`MSSQL_IsMappedTo`**                          | • No unique edge properties |
+| **`MSSQL_IsTrustedBy`**                         | • No unique edge properties |
+| **`MSSQL_LinkedTo`**                            | • Edge properties are the same as `MSSQL_LinkedAsAdmin` |
+| **`MSSQL_MemberOf`**                            | • No unique edge properties |
+| **`MSSQL_Owns`**                                | • No unique edge properties |
+| **`MSSQL_ServiceAccountFor`**                   | • No unique edge properties |
+| **`MSSQL_TakeOwnership`**                       | • No unique edge properties |
