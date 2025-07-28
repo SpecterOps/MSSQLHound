@@ -10,7 +10,7 @@ PowerShell collector for adding MSSQL attack paths to [BloodHound](https://githu
 - [Command Line Options](#command-line-options)
 - [Limitations](#limitations)
 - [Future Development](#future-development)
-- [Graph Model](#graph-model)
+- [MSSQL Graph Model](#mssql-graph-model)
 - [MSSQL Nodes Reference](#mssql-nodes-reference)
    - [Server Level](#server-level)
      - [`MSSQL_Server`](#server-instance-mssql_server-node)
@@ -143,7 +143,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
     - Service account/Computer has a server login that is enabled on another SQL instance
     - EPA is not required on remote SQL instance
  
-# Graph Model
+# MSSQL Graph Model
 <img width="4572" height="2356" alt="MSSQL Red Green" src="https://github.com/user-attachments/assets/32c8ee8b-fdaf-4b1e-bb65-9356732c26bd" />
 
 # MSSQL Nodes Reference
