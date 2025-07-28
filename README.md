@@ -385,6 +385,8 @@ Please refer to the `$script:EdgePropertyGenerators` variable in `MSSQLHound.ps1
     - OPSEC
     - References
     - Composition Cypher (where applicable)
+ 
+All edges based on permissions may contain the `With Grant` property, which means the source not only has the permission but can grant it to other principals.
 
 | Edge Class<br>______________________________________________ | Properties<br>_______________________________________________________________________________________________ |
 |-----------------------------------------------|------------|
