@@ -58,3 +58,28 @@ For the latest and most reliable information, please execute MSSQLHound with the
 | **-LinkedServerTimeout** `<uint>` | • Give up enumerating linked servers after `X` seconds<br>• Default: `300` seconds (5 minutes) |
 | **-FileSizeLimit** `<string>` | • Stop enumeration after all collected files exceed this size on disk<br> • Supports MB, GB<br> • Default: `1GB` |
 | **-FileSizeUpdateInterval** `<uint>` | • Receive periodic size updates as files are being written for each server<br>• Default: `5` seconds |
+
+# Limitations
+- MSSQLHound can’t currently collect nodes and edges from linked servers over the link, although I’d like to add more linked server collection functionality in the future.
+- MSSQLHound doesn’t check DENY permissions. Because permissions are denied by default unless explicitly granted, it is assumed that use of DENY permissions is rare. One exception is the CONNECT SQL permission, for which the DENY permission is checked to see if the principal can remotely log in to the MSSQL instance at all. 
+- MSSQLHound stops enumerating at the database level. It could be modified to go deeper (to the table/stored procedure or even column level), but that would degrade performance, especially when merging with the AD graph.
+- EPA enumeration without a login or Remote Registry access is not yet supported (but will be soon)
+- Separate collections in domains that can’t reach each other for principal SID resolution may not merge correctly when they are ingested (i.e., more than one MSSQL_Server node may represent the same server, one labelled with the SID, one with the name).
+
+# Features I want to add:
+- Unprivileged EPA collection (in the works)
+- Collection from linked servers
+- Collect across domains and trusts
+- Azure extension for SQL Server
+- AZUser/Groups for server logins / database users
+- Cross database ownership chaining
+- DENY permissions
+- EXECUTE permission on xp_cmdshell
+- UNSAFE/EXTERNAL_ACCESS permission on assembly (impacted by TRUSTWORTHY)
+- Add this to CoerceAndRelayToMSSQL:
+  - Domain principal has CONNECT SQL (and EXECUTE on xp_dirtree or other stored procedures that will authenticate to a remote host)
+  - Service account/Computer has a server login that is enabled on another SQL instance
+  - EPA is not required on remote SQL instance
+
+# New Nodes
+
