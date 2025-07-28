@@ -360,36 +360,80 @@ This section includes explanations for edges that have their own unique properti
 | **Uses Impersonation**: bool                  | • Does the linked server attempt to use the current user's Windows credentials to authenticate to the remote server?<br>• For SQL Server authentication, a login with the exact same name and password must exist on the remote server.<br>• For Windows logins, the login must be a valid login on the linked server.<br>• This requires Kerberos delegation to be properly configured<br>• The user's actual Windows identity is passed through to the remote server |
 
 ### Remaining Edges
+Please refer to the `$script:EdgePropertyGenerators` variable in `MSSQLHound.ps1` for the following details:
+- Source and target node classes (all combinations)
+- Requirements
+- Default fixed roles with the permission
+- Traversability
+- Entity panel details (dynamically-generated)
+    - General
+    - Windows Abuse
+    - Linux Abuse
+    - OPSEC
+    - References
+    - Composition Cypher (where applicable)
+
 | Edge Class<br>______________________________________________ | Properties<br>_______________________________________________________________________________________________ |
 |-----------------------------------------------|------------|
+<a id="coerceandrelaytomssql"></a>
 | **`CoerceAndRelayToMSSQL`**                     | • No unique edge properties |
+<a id="mssql_addmember"></a>
 | **`MSSQL_AddMember`**                           | • No unique edge properties |
+<a id="mssql_alter"></a>
 | **`MSSQL_Alter`**                               | • No unique edge properties |
+<a id="mssql_alteranyapprole"></a>
 | **`MSSQL_AlterAnyAppRole`**                     | • No unique edge properties |
+<a id="mssql_alteranydbrole"></a>
 | **`MSSQL_AlterAnyDBRole`**                      | • No unique edge properties |
+<a id="mssql_alteranylogin"></a>
 | **`MSSQL_AlterAnyLogin`**                       | • No unique edge properties |
+<a id="mssql_alteranyserverrole"></a>
 | **`MSSQL_AlterAnyServerRole`**                  | • No unique edge properties |
+<a id="mssql_changeowner"></a>
 | **`MSSQL_ChangeOwner`**                         | • No unique edge properties |
+<a id="mssql_changepassword"></a>
 | **`MSSQL_ChangePassword`**                      | • No unique edge properties |
+<a id="mssql_connect"></a>
 | **`MSSQL_Connect`**                             | • No unique edge properties |
+<a id="mssql_connectanydatabase"></a>
 | **`MSSQL_ConnectAnyDatabase`**                  | • No unique edge properties |
+<a id="mssql_contains"></a>
 | **`MSSQL_Contains`**                            | • No unique edge properties |
+<a id="mssql_control"></a>
 | **`MSSQL_Control`**                             | • No unique edge properties |
+<a id="mssql_controldb"></a>
 | **`MSSQL_ControlDB`**                           | • No unique edge properties |
+<a id="mssql_controlserver"></a>
 | **`MSSQL_ControlServer`**                       | • No unique edge properties |
+<a id="mssql_executeas"></a>
 | **`MSSQL_ExecuteAs`**                           | • No unique edge properties |
+<a id="mssql_executeonhost"></a>
 | **`MSSQL_ExecuteOnHost`**                       | • No unique edge properties |
+<a id="mssql_gettgs"></a>
 | **`MSSQL_GetTGS`**                              | • No unique edge properties |
+<a id="mssql_grantanydbpermission"></a>
 | **`MSSQL_GrantAnyDBPermission`**                | • No unique edge properties |
+<a id="mssql_grantanypermission"></a>
 | **`MSSQL_GrantAnyPermission`**                  | • No unique edge properties |
+<a id="mssql_haslogin"></a>
 | **`MSSQL_HasLogin`**                            | • No unique edge properties |
+<a id="mssql_hostfor"></a>
 | **`MSSQL_HostFor`**                             | • No unique edge properties |
+<a id="mssql_impersonate"></a>
 | **`MSSQL_Impersonate`**                         | • No unique edge properties |
+<a id="mssql_impersonateanylogin"></a>
 | **`MSSQL_ImpersonateAnyLogin`**                 | • No unique edge properties |
+<a id="mssql_ismappedto"></a>
 | **`MSSQL_IsMappedTo`**                          | • No unique edge properties |
+<a id="mssql_istrustedby"></a>
 | **`MSSQL_IsTrustedBy`**                         | • No unique edge properties |
+<a id="mssql_linkedto"></a>
 | **`MSSQL_LinkedTo`**                            | • Edge properties are the same as `MSSQL_LinkedAsAdmin` |
+<a id="mssql_memberof"></a>
 | **`MSSQL_MemberOf`**                            | • No unique edge properties |
+<a id="mssql_owns"></a>
 | **`MSSQL_Owns`**                                | • No unique edge properties |
+<a id="mssql_serviceaccountfor"></a>
 | **`MSSQL_ServiceAccountFor`**                   | • No unique edge properties |
+<a id="mssql_takeownership"></a>
 | **`MSSQL_TakeOwnership`**                       | • No unique edge properties |
