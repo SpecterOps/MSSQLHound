@@ -187,6 +187,7 @@ A type of server principal that can be assigned permissions to access server-lev
 | **Type**: string | • **ASYMMETRIC_KEY_MAPPED_LOGIN**: Used to sign modules within the database, such as stored procedures, functions, triggers, or assemblies and can't be used to connect to the server remotely. I haven't messed with these much but they can be assigned permissions and impersonated.<br>• **CERTIFICATE_MAPPED_LOGIN**: Used to sign modules within the database, such as stored procedures, functions, triggers, or assemblies and can't be used to connect to the server remotely. I haven't messed with these much but they can be assigned permissions and impersonated.<br>• **SQL_LOGIN**: This login is local to the SQL Server instance and mixed-mode authentication must be enabled to connect with it<br>• **WINDOWS_LOGIN**: A Windows account is mapped to this login<br>• **WINDOWS_GROUP**: A Windows group is mapped to this login |
 
 ### Server Role (`MSSQL_ServerRole` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/b55705e5-9886-4eee-b986-b14950a5f63a" /><br>
 A type of server principal that can be assigned permissions to access server-level objects, such as the ability to connect to the instance or modify server role membership. Server logins and user-defined server roles can be added as members of server roles, inheriting the role's permissions.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
