@@ -34,8 +34,6 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
        - msdb.dbo.syssubsystems
        - Only used for proxy account collection
 
-Please refer to the wiki for detailed information on new nodes, edges, and their properties.
-
 # Command Line Options
 For the latest and most reliable information, please execute MSSQLHound with the `-Help` flag.
 
