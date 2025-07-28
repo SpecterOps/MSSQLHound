@@ -1,6 +1,18 @@
 # MSSQLHound
 PowerShell collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with OpenGraph, by Chris Thompson ([@_Mayyhem](https://x.com/_Mayyhem)) at [SpecterOps](https://x.com/SpecterOps)
 
+# Table of Contents
+
+- [Overview](#overview)
+  - [System Requirements](#system-requirements)
+  - [Minimum Permissions](#minimum-permissions)
+  - [Recommended Permissions](#recommended-permissions)
+- [Command Line Options](#command-line-options)
+- [Limitations](#limitations)
+- [Future Development](#future-development)
+- [MSSQL Nodes Reference](#mssql-nodes-reference)
+- [MSSQL Edges Reference](#mssql-edges-reference)
+
 # Overview
 Collects BloodHound OpenGraph compatible data from one or more MSSQL servers into individual temporary files, then zips them in the current directory
   - Example: `mssql-bloodhound-20250724-115610.zip`
@@ -66,7 +78,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
 - EPA enumeration without a login or Remote Registry access is not yet supported (but will be soon)
 - Separate collections in domains that can’t reach each other for principal SID resolution may not merge correctly when they are ingested (i.e., more than one MSSQL_Server node may represent the same server, one labelled with the SID, one with the name).
 
-# Features I want to add:
+# Future Development:
 - Unprivileged EPA collection (in the works)
 - Collection from linked servers
 - Collect across domains and trusts
