@@ -145,6 +145,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
 # MSSQL Nodes Reference
 ## Server Level
 ### Server Instance (`MSSQL_Server` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/0dc2dc7a-9ae3-4c90-b44d-b3c5142a68e1" /><br>
 The entire installation of the MSSQL Server database management system (DBMS) that contains multiple databases and server-level objects
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
@@ -166,6 +167,7 @@ The entire installation of the MSSQL Server database management system (DBMS) th
 | **Version**: string | • Result of `SELECT @@VERSION`
 
 ### Server Login (`MSSQL_Login` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/6e98a0ed-e2d0-4da6-bcf6-fc4f4843b6c5" /><br>
 A type of server principal that can be assigned permissions to access server-level objects, such as the ability to connect to the instance or modify server role membership. These principals can be local to the instance (SQL logins) or mapped to a domain user, computer, or group (Windows logins). Server logins can be added as members of server roles to inherit the permissions assigned to the role.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
@@ -187,7 +189,7 @@ A type of server principal that can be assigned permissions to access server-lev
 | **Type**: string | • **ASYMMETRIC_KEY_MAPPED_LOGIN**: Used to sign modules within the database, such as stored procedures, functions, triggers, or assemblies and can't be used to connect to the server remotely. I haven't messed with these much but they can be assigned permissions and impersonated.<br>• **CERTIFICATE_MAPPED_LOGIN**: Used to sign modules within the database, such as stored procedures, functions, triggers, or assemblies and can't be used to connect to the server remotely. I haven't messed with these much but they can be assigned permissions and impersonated.<br>• **SQL_LOGIN**: This login is local to the SQL Server instance and mixed-mode authentication must be enabled to connect with it<br>• **WINDOWS_LOGIN**: A Windows account is mapped to this login<br>• **WINDOWS_GROUP**: A Windows group is mapped to this login |
 
 ### Server Role (`MSSQL_ServerRole` node)
-<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/b55705e5-9886-4eee-b986-b14950a5f63a" /><br>
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/3ddfe30c-32d4-485c-9f9c-e424bdc323a5" /><br>
 A type of server principal that can be assigned permissions to access server-level objects, such as the ability to connect to the instance or modify server role membership. Server logins and user-defined server roles can be added as members of server roles, inheriting the role's permissions.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
@@ -206,6 +208,7 @@ A type of server principal that can be assigned permissions to access server-lev
 ## Database Level
 
 ### Database (`MSSQL_Database` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/2a1b0dfe-33ff-42e5-a70a-77f9d59a8a3a" /><br>
 A collection of database principals (e.g., users and roles) as well as object groups called schemas, each of which contains securable database objects such as tables, views, and stored procedures.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
@@ -218,6 +221,7 @@ A collection of database principals (e.g., users and roles) as well as object gr
 | **SQL Server**: string | • Name of the SQL Server where this object is a principal |
 
 ### Database User (`MSSQL_DatabaseUser` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/ce11f264-d19f-43a2-80ae-9d81e2a4a8bd" /><br>
 A user that has access to the specific database it is contained in. Users may be mapped to a login or may be created without a login. Users can be assigned permissions to access database-level objects, such as the ability to connect to the database, access tables, modify database role membership, or execute stored procedures. Users and user-defined database roles can be added as members of database roles, inheriting the role's permissions.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
@@ -236,6 +240,7 @@ A user that has access to the specific database it is contained in. Users may be
 | **Type**: string | • **ASYMMETRIC_KEY_MAPPED_USER**: Used to sign modules within the database, such as stored procedures, functions, triggers, or assemblies and can't be used to connect to the server remotely. I haven't messed with these much but they can be assigned permissions and impersonated.<br>• **CERTIFICATE_MAPPED_USER**: Used to sign modules within the database, such as stored procedures, functions, triggers, or assemblies and can't be used to connect to the server remotely. I haven't messed with these much but they can be assigned permissions and impersonated.<br>• **SQL_USER**: This user is local to the SQL Server instance and mixed-mode authentication must be enabled to connect with it<br>• **WINDOWS_USER**: A Windows account is mapped to this user<br>• **WINDOWS_GROUP**: A Windows group is mapped to this user |
 
 ### Database Role (`MSSQL_DatabaseRole` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/620a59ee-85c1-4183-a1e5-37d3f8016e15" /><br>
 A type of database principal that can be assigned permissions to access database-level objects, such as the ability to connect to the database, access tables, modify database role membership, or execute stored procedures. Database users, user-defined database roles, and application roles can be added as members of database roles, inheriting the role's permissions.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
@@ -252,6 +257,7 @@ A type of database principal that can be assigned permissions to access database
 | **SQL Server**: string | • Name of the SQL Server where this object is a principal |
 
 ### Application Role (`MSSQL_ApplicationRole` node)
+<img width="220" height="220" alt="image" src="https://github.com/user-attachments/assets/61a5db37-dbeb-49f8-834e-ba7100c4ca0f" /><br>
 A type of database principal that is not associated with a user but instead is activated by an application using a password so it can interact with the database using the role's permissions.
 
 | Property<br>______________________________________________ | Definition<br>_______________________________________________________________________________________________ |
