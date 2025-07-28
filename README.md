@@ -10,6 +10,7 @@ PowerShell collector for adding MSSQL attack paths to [BloodHound](https://githu
 - [Command Line Options](#command-line-options)
 - [Limitations](#limitations)
 - [Future Development](#future-development)
+- [Graph Model](#graph-model)
 - [MSSQL Nodes Reference](#mssql-nodes-reference)
    - [Server Level](#server-level)
      - [`MSSQL_Server`](#server-instance-mssql_server-node)
@@ -21,8 +22,6 @@ PowerShell collector for adding MSSQL attack paths to [BloodHound](https://githu
      - [`MSSQL_DatabaseRole`](#database-role-mssql_databaserole-node)
      - [`MSSQL_ApplicationRole`](#application-role-mssql_applicationrole-node)
 - [MSSQL Edges Reference](#mssql-edges-reference)
-   - [Non-traversable Edges Model](#nontraversable-edges-model)
-   - [Traversable Edges Model](#traversable-edges-model)
    - [Edge Classes and Properties](#edge-classes-and-properties)
      - [`CoerceAndRelayToMSSQL`](#coerceandrelaytomssql)
      - [`MSSQL_AddMember`](#mssql_addmember)
@@ -143,6 +142,9 @@ For the latest and most reliable information, please execute MSSQLHound with the
     - Domain principal has CONNECT SQL (and EXECUTE on xp_dirtree or other stored procedures that will authenticate to a remote host)
     - Service account/Computer has a server login that is enabled on another SQL instance
     - EPA is not required on remote SQL instance
+ 
+# Graph Model
+<img width="4572" height="2356" alt="MSSQL Red Green" src="https://github.com/user-attachments/assets/32c8ee8b-fdaf-4b1e-bb65-9356732c26bd" />
 
 # MSSQL Nodes Reference
 ## Server Level
@@ -289,12 +291,6 @@ This section includes explanations for edges that have their own unique properti
     - OPSEC
     - References
     - Composition Cypher (where applicable)
-
-## Non-traversable Edges Model
-<img width="1504" height="1413" alt="image" src="https://github.com/user-attachments/assets/3caa0f23-0cac-4129-b607-5200a9414693" />
-
-## Traversable Edges Model
-<img width="1574" height="1504" alt="image" src="https://github.com/user-attachments/assets/ca4b43f7-96b4-4bd7-9bea-f250437d33e3" />
 
 ## Edge Classes and Properties
 
