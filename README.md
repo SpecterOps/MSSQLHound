@@ -106,8 +106,10 @@ For the latest and most reliable information, please execute MSSQLHound with the
 | **-TempDir** `<string>` | • Specify the path to a temporary directory where .json files will be stored before being zipped<br>Default: new directory created with `[System.IO.Path]::GetTempPath()` |
 | **-ZipDir** `<string>` | • Specify the path to a directory where the final .zip file will be stored<br>• Default: current directory |
 | **-MemoryThresholdPercent** `<uint>` | • Maximum memory allocation limit, after which the script will exit to prevent availability issues<br>• Default: `90` |
+| **-Credential** `<PSCredential>` | • Specify a PSCredential object to connect to the remote server(s) |
 | **-UserID** `<string>` | • Specify a **login** to connect to the remote server(s) |
-| **-Password** `<string>` | • Specify a **password** to connect to the remote server(s) |
+| **-SecureString** `<SecureString>` | • Specify a SecureString object for the login used to connect to the remote server(s) |
+| **-Password** `<string>` | • Specify a **password** for the login used to connect to the remote server(s) |
 | **-Domain** `<string>` | • Specify a **domain** to use for name and SID resolution |
 | **-IncludeNontraversableEdges** (switch) | • **On**: • Collect both **traversable and non-traversable edges**<br>• **Off (default)**: Collect **only traversable edges** (good for offensive engagements until Pathfinding supports OpenGraph edges) |
 | **-MakeInterestingEdgesTraversable** (switch) | • **On**: Make the following edges traversable (useful for offensive engagements but prone to false positive edges that may not be abusable):<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasDBScopedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasMappedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasProxyCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_IsTrustedBy**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_LinkedTo**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_ServiceAccountFor**<br>• **Off (default)**: The edges above are non-traversable |
