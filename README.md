@@ -21,6 +21,8 @@ PowerShell collector for adding MSSQL attack paths to [BloodHound](https://githu
      - [`MSSQL_DatabaseRole`](#database-role-mssql_databaserole-node)
      - [`MSSQL_ApplicationRole`](#application-role-mssql_applicationrole-node)
 - [MSSQL Edges Reference](#mssql-edges-reference)
+   - [Non-traversable Edges Model](#nontraversable-edges-model)
+   - [Traversable Edges Model](#traversable-edges-model)
    - [Edge Classes and Properties](#edge-classes-and-properties)
      - [`CoerceAndRelayToMSSQL`](#coerceandrelaytomssql)
      - [`MSSQL_AddMember`](#mssql_addmember)
@@ -287,6 +289,12 @@ This section includes explanations for edges that have their own unique properti
     - OPSEC
     - References
     - Composition Cypher (where applicable)
+
+## Non-traversable Edges Model
+<img width="1504" height="1413" alt="image" src="https://github.com/user-attachments/assets/3caa0f23-0cac-4129-b607-5200a9414693" />
+
+## Traversable Edges Model
+<img width="1574" height="1504" alt="image" src="https://github.com/user-attachments/assets/ca4b43f7-96b4-4bd7-9bea-f250437d33e3" />
 
 ## Edge Classes and Properties
 
