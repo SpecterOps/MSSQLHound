@@ -159,6 +159,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
 
 # Future Development:
 - Unprivileged EPA collection (in the works)
+- Option to zip after every server (to save disk space)
 - Collection from linked servers
 - Collect across domains and trusts
 - Azure extension for SQL Server
