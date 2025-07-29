@@ -106,6 +106,8 @@ If you don't already have a specific target or targets in mind, start by running
 
 If you don't do a dry run first and collect from all SQL servers with SPNs in the domain (the default action), expect the script to take a very long time to finish and eat up a ton of disk space if there ar a lot of servers in the environment. Based on limited testing in client environments, the file size for each server before they are all zipped ranges significantly from 2MB to 50MB+, depending on how many objects are on the server.
 
+To populate the MSSQL node glyphs in BloodHound, execute `MSSQLHound.ps1 -OutputFormat BloodHound-customnodes` and use the API Explorer page to submit the JSON to the `custom-nodes` endpoint.
+
 There are several new edges that have to be non-traversable because they are not abusable 100% of the time, including when:
 - the stored AD credentials might be stale/invalid, but maybe they are!
     - MSSQL_HasMappedCred
