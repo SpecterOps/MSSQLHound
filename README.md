@@ -7,6 +7,7 @@ PowerShell collector for adding MSSQL attack paths to [BloodHound](https://githu
   - [System Requirements](#system-requirements)
   - [Minimum Permissions](#minimum-permissions)
   - [Recommended Permissions](#recommended-permissions)
+  - [Usage Info](#usage-info)
 - [Command Line Options](#command-line-options)
 - [Limitations](#limitations)
 - [Future Development](#future-development)
@@ -93,6 +94,30 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
        - `msdb.dbo.sysproxysubsystem`
        - `msdb.dbo.syssubsystems`
        - Only used for proxy account collection
+   
+# Usage Info
+Run MSSQLHound from a box where you aren’t highly concerned about resource consumption. While there are guardrails in place to stop the script if resource consumption is too high, it’s probably a good idea to be careful and run it on a workstation instead of directly on a critical database server, just in case.
+
+If you don't already have a specific target or targets in mind, start by running the script with the `-DomainEnumOnly` flag set to see just how many servers you’re dealing with in Active Directory. Then, use the `-ServerInstance` option to run it again for a single server or add all of the servers that look interesting to a file and run it again with the `-ServerListFile` option. 
+
+If you don't do a dry run first and collect from all SQL servers with SPNs in the domain (the default action), expect the script to take a very long time to finish and eat up a ton of disk space if there ar a lot of servers in the environment. Based on limited testing in client environments, the file size for each server before they are all zipped ranges significantly from 2MB to 50MB+, depending on how many objects are on the server.
+
+There are several new edges that have to be non-traversable because they are not abusable 100% of the time, including when:
+- the stored AD credentials might be stale/invalid, but maybe they are!
+    - MSSQL_HasMappedCred
+    - MSSQL_HasDBScopedCred
+    - MSSQL_HasProxyCred
+- the server principal that owns the database does not have complete control of the server, but maybe it has other interesting permissions
+    - MSSQL_IsTrustedBy
+- the server is linked to another server using a principal that does not have complete control of the remote server, but maybe it has other interesting permissions
+    - MSSQL_LinkedTo
+- the service account can be used to impersonate domain users that have a login to the server, but we don’t have the necessary permissions to check that any domain users have logins
+    - MSSQL_ServiceAccountFor
+    - It would be unusual, but not impossible, for the MSSQL Server instance to run in the context of a domain service account and have no logins for domain users. If you can infer that certain domain users have access to a particular MSSQL Server instance or discover that information through other means (e.g., naming conventions, OSINT, organizational documentation, internal communications, etc.), you can request service tickets for those users to the MSSQL Server if you have control of the service account (e.g., by cracking weak passwords for Kerberoastable service principals).
+      
+Want to be a bit more aggressive with your pathfinding queries? You can make these edges traversable using the `-MakeInterestingEdgesTraversable` flag.
+
+I also recommend conducting a collection with the `-IncludeNontraversableEdges` flag enabled at some point if you need to understand what permissions on which objects allow the traversable edges to be created. By default, non-traversable edges are skipped to make querying the data for valid attack paths easier. This is still a work in progress, but look out for the “Composition” item in the edge entity panel for each traversable edges to grab a pastable cypher query to identify the offending permissions.
 
 # Command Line Options
 For the latest and most reliable information, please execute MSSQLHound with the `-Help` flag.
