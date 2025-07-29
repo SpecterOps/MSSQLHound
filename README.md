@@ -73,6 +73,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 ## System Requirements:
   - PowerShell 4.0 or higher
   - Target is running SQL Server 2005 or higher
+  - BloodHound v8.0.0+
 
 ## Minimum Permissions:
 ### Windows Level:
