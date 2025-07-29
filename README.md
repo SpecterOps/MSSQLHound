@@ -1,7 +1,7 @@
 # MSSQLHound
 <img width="3147" height="711" alt="image" src="https://github.com/user-attachments/assets/476babac-c265-4d2b-bc03-f893fdb7bc1f" />
 
-PowerShell collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with OpenGraph, by Chris Thompson at [SpecterOps](https://x.com/SpecterOps)
+A PowerShell collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with OpenGraph by Chris Thompson at [SpecterOps](https://x.com/SpecterOps)
 
 Blog post coming soon! In the meantime, please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), Twitter ([@_Mayyhem](https://x.com/_Mayyhem)), or open an issue if you have any questions I can help with!
 
