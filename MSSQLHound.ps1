@@ -226,8 +226,8 @@ param(
     [SecureString]$SecureString,
     [string]$Password,#="password",
 
-    # Specify domain in DOMAIN.COM format - useful when using RunAs and $env:USERDNSDOMAIN is incorrect
-    [string]$script:Domain = $env:USERDNSDOMAIN,
+    # Specify domain in DOMAIN.COM format
+    [string]$Domain = $env:USERDNSDOMAIN,
     
     [switch]$IncludeNontraversableEdges,
 
@@ -266,6 +266,7 @@ if ($Help) {
 # Script version information
 $script:ScriptVersion = "1.0"
 $script:ScriptName = "MSSQLHound"
+$script:Domain = $Domain
 
 # Handle version request
 if ($Version) {
@@ -4314,6 +4315,8 @@ function Resolve-PrincipalInDomain {
     
     Write-Verbose "Attempting to resolve '$Name' in domain '$Domain'"
     
+    $adPowershellSucceeded = $false
+    
     # Try Active Directory PowerShell module first
     if (Get-Command -Name Get-ADComputer -ErrorAction SilentlyContinue) {
         Write-Verbose "Trying AD PowerShell module in domain: $Domain"
@@ -4384,6 +4387,7 @@ function Resolve-PrincipalInDomain {
                     $adObject.ObjectClass 
                 }
                 
+                $adPowershellSucceeded = $true
                 return [PSCustomObject]@{
                     ObjectIdentifier = $adObjectSid
                     Name = $adObjectName
@@ -4405,7 +4409,7 @@ function Resolve-PrincipalInDomain {
     }
     
     # Try .NET DirectoryServices AccountManagement
-    if ($script:UseNetFallback -or -not (Get-Command -Name Get-ADComputer -ErrorAction SilentlyContinue)) {
+    if ($script:UseNetFallback -or -not (Get-Command -Name Get-ADComputer -ErrorAction SilentlyContinue) -or -not $adPowershellSucceeded) {
         Write-Verbose "Attempting .NET DirectoryServices AccountManagement for '$Name' in domain '$Domain'"
         
         try {
