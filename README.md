@@ -178,7 +178,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
     - EPA is not required on remote SQL instance
  
 # MSSQL Graph Model
-<img width="4572" height="2356" alt="MSSQL Red Green" src="https://github.com/user-attachments/assets/32c8ee8b-fdaf-4b1e-bb65-9356732c26bd" />
+<img width="4562" height="2356" alt="MSSQL Red Green (1)" src="https://github.com/user-attachments/assets/ddf897ef-6531-44e0-8911-73f5adc3dcdd" />
 
 # MSSQL Nodes Reference
 ## Server Level
