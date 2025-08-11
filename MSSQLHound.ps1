@@ -1964,7 +1964,7 @@ $script:EdgePropertyGenerators = @{
                     MATCH p0 = (source)-[:MSSQL_ChangeOwner]->(role) 
                     MATCH p1 = (server)-[:MSSQL_Contains]->(source)
                     MATCH p2 = (server)-[:MSSQL_Contains]->(role)
-                    OPTIONAL MATCH p3 = (source)-[:MSSQL_TakeOwnership|MSSQL_Control]->(role) 
+                    MATCH p3 = (source)-[:MSSQL_TakeOwnership|MSSQL_Control]->(role) 
                     RETURN p0, p1, p2, p3"
                 } elseif ($context.targetPrincipal.TypeDescription -eq 'DATABASE_ROLE') {
                     "MATCH 
@@ -2041,7 +2041,31 @@ $script:EdgePropertyGenerators = @{
                 "- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-login-transact-sql?view=sql-server-ver17 `n
                  - https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/default-trace-enabled-server-configuration-option?view=sql-server-ver17` "
             })
-            composition = "TODO"
+            composition = 
+                $(if ($context.targetPrincipal.TypeDescription -eq 'APPLICATION_ROLE') {
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.principal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (database:MSSQL_Database {objectid: '$($context.targetPrincipal.ObjectIdentifier.Split('@')[1].Replace('\','\\').ToUpper())'}),
+                    (role:MSSQL_ApplicationRole {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+                    MATCH p0 = (source)-[:MSSQL_ChangePassword]->(role)
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(database)
+                    MATCH p2 = (database)-[:MSSQL_Contains]->(source) 
+                    MATCH p3 = (database)-[:MSSQL_Contains]->(role) 
+                    MATCH p4 = (source)-[:MSSQL_AlterAnyAppRole]->(database) 
+                    RETURN p0, p1, p2, p3, p4"
+                } else { 
+                    # Logins
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.principal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (login:MSSQL_Login {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+                    MATCH p0 = (source)-[:MSSQL_ChangePassword]->(login)
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(source) 
+                    MATCH p2 = (server)-[:MSSQL_Contains]->(login) 
+                    MATCH p3 = (source)-[:MSSQL_AlterAnyLogin]->(server) 
+                    RETURN p0, p1, p2, p3"
+                })
         }
     }
 
