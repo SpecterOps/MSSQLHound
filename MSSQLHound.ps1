@@ -891,7 +891,7 @@ function Test-MemoryUsage {
         [int]$Threshold = 80
     )
     
-    $os = Get-WmiObject Win32_OperatingSystem
+    $os = Get-CimInstance Win32_OperatingSystem
     $memoryUsedGB = ($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB
     $totalMemoryGB = $os.TotalVisibleMemorySize / 1MB
     $percentUsed = ($memoryUsedGB / $totalMemoryGB) * 100
@@ -4175,7 +4175,7 @@ function Get-DomainsToTry {
     # Get current domain from computer if domain-joined (cache this too)
     if (-not $script:ComputerDomainCache) {
         try {
-            $computerSystem = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
+            $computerSystem = Get-CimInstance -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
             if ($computerSystem -and $computerSystem.Domain -and $computerSystem.Domain -ne "WORKGROUP") {
                 $script:ComputerDomainCache = $computerSystem.Domain
             } else {
@@ -4784,7 +4784,7 @@ function Get-LocalGroupMembers {
         
         # Use WMI to get group members (works remotely)
         $query = "SELECT * FROM Win32_GroupUser WHERE GroupComponent=`"Win32_Group.Domain='$ComputerName',Name='$GroupName'`""
-        $groupMembers = Get-WmiObject -Query $query -ComputerName $ComputerName -ErrorAction Stop
+        $groupMembers = Get-CimInstance -Query $query -ComputerName $ComputerName -ErrorAction Stop
         
         Write-Verbose "Found $($groupMembers.Count) members in $GroupName"
         
@@ -6079,7 +6079,7 @@ SELECT @ServiceAccount AS ServiceAccount
     
             try {
                 # Get service information from WMI
-                $sqlServiceInfo = Get-WmiObject -Class Win32_Service -ComputerName $serverHostname | 
+                $sqlServiceInfo = Get-CimInstance -Class Win32_Service -ComputerName $serverHostname | 
                 Where-Object { $_.DisplayName -like 'SQL Server (*)' } |
                 Select-Object Name, DisplayName, StartName, State
                 
