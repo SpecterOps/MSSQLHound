@@ -1955,8 +1955,31 @@ $script:EdgePropertyGenerators = @{
             references = "- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-server-role-transact-sql?view=sql-server-ver17#permissions `n
                             - https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/default-trace-enabled-server-configuration-option?view=sql-server-ver17 `n
                             - https://learn.microsoft.com/en-us/sql/relational-databases/security/auditing/sql-server-audit-database-engine?view=sql-server-ver16"
-            composition = "
-                TODO"
+            composition = 
+                $(if ($context.targetPrincipal.TypeDescription -eq 'SERVER_ROLE') {
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.principal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (role:MSSQL_ServerRole {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+                    MATCH p0 = (source)-[:MSSQL_ChangeOwner]->(role) 
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(source)
+                    MATCH p2 = (server)-[:MSSQL_Contains]->(role)
+                    OPTIONAL MATCH p3 = (source)-[:MSSQL_TakeOwnership|MSSQL_Control]->(role) 
+                    RETURN p0, p1, p2, p3"
+                } elseif ($context.targetPrincipal.TypeDescription -eq 'DATABASE_ROLE') {
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.principal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (database:MSSQL_Database {objectid: '$($context.targetPrincipal.ObjectIdentifier.Split('@')[1].Replace('\','\\').ToUpper())'}),
+                    (role:MSSQL_DatabaseRole {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+                    MATCH p0 = (source)-[:MSSQL_ChangeOwner]->(role)
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(database)
+                    MATCH p2 = (database)-[:MSSQL_Contains]->(source) 
+                    MATCH p3 = (database)-[:MSSQL_Contains]->(role) 
+                    OPTIONAL MATCH p4 = (source)-[:MSSQL_TakeOwnership|MSSQL_Control]->(database) 
+                    OPTIONAL MATCH p5 = (source)-[:MSSQL_TakeOwnership|MSSQL_Control]->(role) 
+                    RETURN p0, p1, p2, p3, p4, p5"
+                })
         }
     }    
 
