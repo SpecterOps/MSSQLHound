@@ -2653,7 +2653,8 @@ $script:EdgePropertyGenerators = @{
                     MATCH p0 = (source)-[:CoerceAndRelayToMSSQL]->(target)
                     MATCH p1 = (server)-[:MSSQL_Contains]->(target)
                     MATCH p2 = (coercionvictim)-[:MSSQL_HasLogin]->(target)
-                    RETURN p0, p1, p2"
+                    MATCH p3 = (target)-[:MSSQL_Connect]->(server)
+                    RETURN p0, p1, p2, p3"
         }
     }
 
@@ -2978,6 +2979,19 @@ $script:EdgePropertyGenerators = @{
             references = "- https://learn.microsoft.com/en-us/sql/relational-databases/security/trustworthy-database-property?view=sql-server-ver17 `n
                         - https://learn.microsoft.com/en-us/sql/t-sql/statements/execute-as-clause-transact-sql?view=sql-server-ver17 `n
                         - https://pentestmonkey.net/cheat-sheet/sql-injection/mssql-sql-injection-cheat-sheet"
+            composition = 
+                "MATCH 
+                (database {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                (server:MSSQL_Server {objectid: database.SQLServerID}), 
+                (owner:MSSQL_Login {objectid: toUpper(database.OwnerObjectIdentifier)})
+                MATCH p0 = (database)-[:MSSQL_ExecuteAsOwner]->(server)
+                MATCH p1 = (owner)-[:MSSQL_Owns]->(database)
+                OPTIONAL MATCH p2 = (owner)-[:MSSQL_ControlServer]->(server)
+                OPTIONAL MATCH p3 = (owner)-[:MSSQL_ImpersonateAnyLogin]->(server)
+                OPTIONAL MATCH p4 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_ControlServer]->(server)
+                OPTIONAL MATCH p5 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_ImpersonateAnyLogin]->(server)
+                OPTIONAL MATCH p6 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_GrantAnyPermission]->(server)
+                RETURN p0, p1, p2, p3, p4, p5, p6"
         }
     }    
 
@@ -7498,6 +7512,7 @@ ORDER BY p.proxy_id
             $dbProps = @{
                 name = $db.Name
                 SQLServer = $serverInfo.Name
+                SQLServerID = $serverInfo.ObjectIdentifier
                 isTrustworthy = if ($null -ne $db.TRUSTWORTHY) { [bool]$db.TRUSTWORTHY } else { $false }
             }
             
@@ -7507,6 +7522,9 @@ ORDER BY p.proxy_id
             }
             if ($db.OwnerPrincipalID) {
                 $dbProps.ownerPrincipalID = $db.OwnerPrincipalID
+            }
+            if ($db.OwnerObjectIdentifier) {
+                $dbProps.OwnerObjectIdentifier = $db.OwnerObjectIdentifier
             }
             
             Add-Node -Id $db.ObjectIdentifier `
