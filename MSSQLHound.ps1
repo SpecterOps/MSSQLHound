@@ -2130,7 +2130,32 @@ $script:EdgePropertyGenerators = @{
                     Log events are not generated for $(if ($context.databaseName) { 'user' } else { 'login' }) impersonation by default."
             references = "- https://learn.microsoft.com/en-us/sql/t-sql/statements/execute-as-transact-sql?view=sql-server-ver17 `n
                           - https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/default-trace-enabled-server-configuration-option?view=sql-server-ver17` "
-            composition = "TODO"
+            composition = 
+                $(if ($context.databaseName) {
+                    # Database users
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.principal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (database:MSSQL_Database {objectid: '$($context.targetPrincipal.ObjectIdentifier.Split('@')[1].Replace('\','\\').ToUpper())'}),
+                    (target:MSSQL_DatabaseUser {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+                    MATCH p0 = (source)-[:MSSQL_ExecuteAs]->(target)
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(database)
+                    MATCH p2 = (database)-[:MSSQL_Contains]->(source) 
+                    MATCH p3 = (database)-[:MSSQL_Contains]->(target) 
+                    MATCH p4 = (source)-[:MSSQL_Impersonate|MSSQL_Control]->(target) 
+                    RETURN p0, p1, p2, p3, p4"
+                } else { 
+                    # Logins
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.principal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (target:MSSQL_Login {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+                    MATCH p0 = (source)-[:MSSQL_ExecuteAs]->(target)
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(source) 
+                    MATCH p2 = (server)-[:MSSQL_Contains]->(target) 
+                    MATCH p3 = (source)-[:MSSQL_Impersonate|MSSQL_Control]->(target) 
+                    RETURN p0, p1, p2, p3"
+                })        
         }
     }        
 
@@ -2619,6 +2644,16 @@ $script:EdgePropertyGenerators = @{
                         - https://github.com/topotam/PetitPotam `n
                         - https://github.com/p0dalirius/Coercer `n
                         - https://github.com/SecureAuthCorp/impacket/blob/master/examples/ntlmrelayx.py"
+            composition = 
+                    "MATCH 
+                    (source {objectid: '$($context.principal.ObjectIdentifier.ToUpper())'}), 
+                    (server:MSSQL_Server {objectid: '$($context.targetPrincipal.SQLServerID.Replace('\','\\').ToUpper())'}), 
+                    (target:MSSQL_Login {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'}),
+                    (coercionvictim:Computer {objectid: '$($context.targetPrincipal.SecurityIdentifier.ToUpper())'})
+                    MATCH p0 = (source)-[:CoerceAndRelayToMSSQL]->(target)
+                    MATCH p1 = (server)-[:MSSQL_Contains]->(target)
+                    MATCH p2 = (coercionvictim)-[:MSSQL_HasLogin]->(target)
+                    RETURN p0, p1, p2"
         }
     }
 
