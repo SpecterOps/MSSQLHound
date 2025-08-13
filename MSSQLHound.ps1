@@ -602,6 +602,7 @@ $script:serversToProcess = @{}
 $script:linkedServersToProcess = @()
 
 # Name and SID resolution
+$script:DomainTestCache = @{}
 $script:DomainValidationCache = @{}
 $script:DomainResolutionCache = @{}
 $script:ValidatedDomainsCache = @{}
