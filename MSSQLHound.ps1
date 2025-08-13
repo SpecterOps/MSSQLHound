@@ -2981,7 +2981,7 @@ $script:EdgePropertyGenerators = @{
                         - https://pentestmonkey.net/cheat-sheet/sql-injection/mssql-sql-injection-cheat-sheet"
             composition = 
                 "MATCH 
-                (database {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
+                (database:MSSQL_Database {objectid: '$($context.principal.ObjectIdentifier.Replace('\','\\').ToUpper())'}), 
                 (server:MSSQL_Server {objectid: database.SQLServerID}), 
                 (owner:MSSQL_Login {objectid: toUpper(database.OwnerObjectIdentifier)})
                 MATCH p0 = (database)-[:MSSQL_ExecuteAsOwner]->(server)
@@ -3009,6 +3009,13 @@ $script:EdgePropertyGenerators = @{
             linuxAbuse = "Enable and use xp_cmdshell: `EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE; EXEC xp_cmdshell 'whoami';` "
             opsec = "xp_cmdshell configuration option changes are logged in SQL Server error logs. View the log by executing: `EXEC sp_readerrorlog 0, 1, 'xp_cmdshell';` "
             references = "- https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/xp-cmdshell-transact-sql?view=sql-server-ver17"
+            composition = 
+            "MATCH 
+            (server:MSSQL_Server {objectid: '$($context.principal.ObjectIdentifier.ToUpper())'}), 
+            (computer:Computer {objectid: '$($context.principal.ObjectIdentifier.Split(':')[0].ToUpper())'})
+            MATCH p0 = (server)-[:MSSQL_ExecuteOnHost]->(computer)
+            OPTIONAL MATCH p1 = (serviceAccount)-[:MSSQL_ServiceAccountFor]->(server)
+            RETURN p0, p1"
         }
     }
 
