@@ -2987,12 +2987,9 @@ $script:EdgePropertyGenerators = @{
                 (owner:MSSQL_Login {objectid: toUpper(database.OwnerObjectIdentifier)})
                 MATCH p0 = (database)-[:MSSQL_ExecuteAsOwner]->(server)
                 MATCH p1 = (owner)-[:MSSQL_Owns]->(database)
-                OPTIONAL MATCH p2 = (owner)-[:MSSQL_ControlServer]->(server)
-                OPTIONAL MATCH p3 = (owner)-[:MSSQL_ImpersonateAnyLogin]->(server)
-                OPTIONAL MATCH p4 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_ControlServer]->(server)
-                OPTIONAL MATCH p5 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_ImpersonateAnyLogin]->(server)
-                OPTIONAL MATCH p6 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_GrantAnyPermission]->(server)
-                RETURN p0, p1, p2, p3, p4, p5, p6"
+                OPTIONAL MATCH p2 = (owner)-[:MSSQL_ControlServer|:MSSQL_ImpersonateAnyLogin]->(server)
+                OPTIONAL MATCH p3 = (owner)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_ControlServer|:MSSQL_ImpersonateAnyLogin|:MSSQL_GrantAnyPermission]->(server)
+                RETURN p0, p1, p2, p3"
         }
     }    
 
@@ -3052,6 +3049,17 @@ $script:EdgePropertyGenerators = @{
                                 `KRB5CCNAME=sccm_s4u.ccache mssqlclient.py internal.lab/sccm\$@sql.internal.lab  -k -no-pass -windows-auth` "
             opsec = "Kerberos ticket requests are normal behavior and rarely logged. High volume of TGS requests might be detected by advanced threat hunting. Event ID 4769 (Kerberos Service Ticket Request) is logged on domain controllers but typically not monitored for SQL service accounts."
             references = "- https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/register-a-service-principal-name-for-kerberos-connections?view=sql-server-ver17 "
+            composition = 
+            "MATCH 
+            (serviceAccount {objectid: '$($context.principal.ObjectIdentifier.ToUpper())'})
+            MATCH p0 = (serviceAccount)-[:MSSQL_GetAdminTGS]->(server:MSSQL_Server {objectid: '$($context.targetPrincipal.ObjectIdentifier.ToUpper())'})
+            MATCH p1 = (server)-[:MSSQL_Contains]->(login:MSSQL_Login {isActiveDirectoryPrincipal: true})
+            OPTIONAL MATCH p2 = (login)-[:MSSQL_ControlServer|:MSSQL_GrantAnyPermission|:MSSQL_ImpersonateAnyLogin]->(server)
+            OPTIONAL MATCH p3 = (login)-[:MSSQL_MemberOf*]->(:MSSQL_ServerRole)-[:MSSQL_ControlServer|:MSSQL_GrantAnyPermission|:MSSQL_ImpersonateAnyLogin]->(server)
+            WITH serviceAccount, server, login, p0, p2, p3
+            WHERE p2 IS NOT NULL OR p3 IS NOT NULL
+            OPTIONAL MATCH p4 = ()-[:MSSQL_HasLogin]->(login)
+            RETURN p0, p2, p3, p4"
         }
     }
 
