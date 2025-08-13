@@ -340,11 +340,11 @@ END
 GO
 
 -- Drop linked servers
-IF EXISTS (SELECT * FROM sys.servers WHERE is_linked = 1 AND name LIKE '%Test%')
+IF EXISTS (SELECT * FROM sys.servers WHERE is_linked = 1 AND name LIKE '%TESTLINKEDTO%')
 BEGIN
     DECLARE @linkedName NVARCHAR(128);
     DECLARE linked_cursor CURSOR FOR
-        SELECT name FROM sys.servers WHERE is_linked = 1 AND name LIKE '%Test%';
+        SELECT name FROM sys.servers WHERE is_linked = 1 AND name LIKE '%TESTLINKEDTO%';
     
     OPEN linked_cursor;
     FETCH NEXT FROM linked_cursor INTO @linkedName;
@@ -2851,7 +2851,7 @@ SELECT @dropCmd = @dropCmd +
     'IF EXISTS (SELECT * FROM sys.servers WHERE name = ''' + name + ''')
         EXEC sp_dropserver ''' + name + ''', ''droplogins'';'
 FROM sys.servers 
-WHERE name LIKE 'LINKEDTO_LOOPBACK_%';
+WHERE name LIKE 'TESTLINKEDTO_LOOPBACK_%';
 EXEC(@dropCmd);
 
 -- Create loopback linked servers with different authentication methods
@@ -2859,130 +2859,130 @@ DECLARE @ServerName NVARCHAR(128) = @@SERVERNAME;
 
 -- 1. Regular SQL login (no admin)
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_REGULAR',
+    @server = 'TESTLINKEDTO_LOOPBACK_REGULAR',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_REGULAR',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_REGULAR',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_Regular',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 2. Direct sysadmin
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_SYSADMIN',
+    @server = 'TESTLINKEDTO_LOOPBACK_SYSADMIN',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_SYSADMIN',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_SYSADMIN',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_Sysadmin',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 3. Direct securityadmin
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_SECURITYADMIN',
+    @server = 'TESTLINKEDTO_LOOPBACK_SECURITYADMIN',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_SECURITYADMIN',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_SECURITYADMIN',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_SecurityAdmin',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 4. Direct CONTROL SERVER
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_CONTROLSERVER',
+    @server = 'TESTLINKEDTO_LOOPBACK_CONTROLSERVER',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_CONTROLSERVER',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_CONTROLSERVER',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_ControlServer',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 5. Direct IMPERSONATE ANY LOGIN
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_IMPERSONATE',
+    @server = 'TESTLINKEDTO_LOOPBACK_IMPERSONATE',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_IMPERSONATE',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_IMPERSONATE',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_ImpersonateAnyLogin',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 6. 1-level nested admin role
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_ADMINROLE',
+    @server = 'TESTLINKEDTO_LOOPBACK_ADMINROLE',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_ADMINROLE',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_ADMINROLE',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_WithAdminRole',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 7. 3-level nested securityadmin
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_NESTED_SECADMIN',
+    @server = 'TESTLINKEDTO_LOOPBACK_NESTED_SECADMIN',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_NESTED_SECADMIN',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_NESTED_SECADMIN',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_NestedSecurityAdmin',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 8. 3-level nested CONTROL SERVER
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_NESTED_CONTROL',
+    @server = 'TESTLINKEDTO_LOOPBACK_NESTED_CONTROL',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_NESTED_CONTROL',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_NESTED_CONTROL',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_NestedControlServer',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 9. 3-level nested IMPERSONATE ANY LOGIN
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_NESTED_IMPERSONATE',
+    @server = 'TESTLINKEDTO_LOOPBACK_NESTED_IMPERSONATE',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_NESTED_IMPERSONATE',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_NESTED_IMPERSONATE',
     @useself = 'FALSE',
     @rmtuser = 'LinkedToTest_SQLLogin_NestedImpersonate',
     @rmtpassword = 'EdgeTestP@ss123!';
 
 -- 10. Windows authentication
 EXEC sp_addlinkedserver 
-    @server = 'LINKEDTO_LOOPBACK_WINDOWS',
+    @server = 'TESTLINKEDTO_LOOPBACK_WINDOWS',
     @srvproduct = '',
     @provider = 'SQLNCLI',
     @datasrc = @ServerName;
 
 EXEC sp_addlinkedsrvlogin 
-    @rmtsrvname = 'LINKEDTO_LOOPBACK_WINDOWS',
+    @rmtsrvname = 'TESTLINKEDTO_LOOPBACK_WINDOWS',
     @useself = 'TRUE';  -- Use Windows authentication
 
 -- =====================================================
@@ -2997,7 +2997,7 @@ SELECT
     ll.uses_self_credential AS UsesWindowsAuth
 FROM sys.servers s
 INNER JOIN sys.linked_logins ll ON s.server_id = ll.server_id
-WHERE s.is_linked = 1 AND s.name LIKE 'LINKEDTO_LOOPBACK_%'
+WHERE s.is_linked = 1 AND s.name LIKE 'TESTLINKEDTO_LOOPBACK_%'
 ORDER BY s.name;
 
 PRINT '';
