@@ -90,6 +90,9 @@ Specify a password for the login used to connect to the remote server(s)
 .PARAMETER Domain
 Specify a domain to use for name and SID resolution
 
+.PARAMETER DomainController
+Specify a domain controller to use for name and SID resolution
+
 .PARAMETER DomainEnumOnly
 Switch/Flag:
     - On: If SPNs are found, don’t try and perform a full MSSQL collection against each server
@@ -233,6 +236,9 @@ param(
 
     # Specify domain in DOMAIN.COM format
     [string]$Domain = $env:USERDNSDOMAIN,
+
+    # Specify a domain controller to use for DNS and AD object resolution
+    [string]$DomainController,
     
     [switch]$IncludeNontraversableEdges,
 
@@ -274,6 +280,7 @@ if ($Help) {
 $script:ScriptVersion = "1.0"
 $script:ScriptName = "MSSQLHound"
 $script:Domain = $Domain
+$script:DomainController = $DomainController
 
 # Handle version request
 if ($Version) {
@@ -3827,7 +3834,7 @@ function Add-Edge {
             $edge.properties = $finalProperties
         }
         $script:bloodhoundOutput.graph.edges += $edge
-        Write-Verbose "Server edge count: $(@($script:bloodhoundOutput.graph.edges).Count)"
+        Write-Debug "Server edge count: $(@($script:bloodhoundOutput.graph.edges).Count)"
     }
 
     elseif ($script:OutputFormat -eq "BHGeneric") {
@@ -3876,7 +3883,7 @@ function Add-Node {
                 properties = $cleanProperties
             }
             $script:bloodhoundOutput.graph.nodes += $node
-            Write-Verbose "Server node count: $(@($script:bloodhoundOutput.graph.nodes).Count)"
+            Write-Debug "Server node count: $(@($script:bloodhoundOutput.graph.nodes).Count)"
 
         } elseif ($script:OutputFormat -eq "BHGeneric") {           
             $node = [PSCustomObject]@{
@@ -4056,7 +4063,21 @@ function Test-DomainResolution {
     
     try {
         # Try to resolve the domain
-        $dnsResult = [System.Net.Dns]::GetHostAddresses($Domain)
+        if ($script:DomainController) {
+            Write-Verbose "Using specified domain controller $script:DomainController for DNS resolution"
+            try {
+                if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
+                    $dnsResult = (Resolve-DnsName -Name $Domain -Server $script:DomainController -ErrorAction Stop).IPAddress
+                }                
+            } catch {
+                Write-Verbose "Failed to resolve $Domain using DC $script:DomainController: $_"
+            }
+        }
+
+        # Fallback to standard resolution
+        if (-not $dnsResult) {
+            $dnsResult = [System.Net.Dns]::GetHostAddresses($Domain)
+        }
         
         if ($dnsResult -and $dnsResult.Count -gt 0) {
             $privateIPs = @()
@@ -4118,7 +4139,7 @@ function Test-DomainResolution {
 function Test-DomainAccessibility {
     param(
         [string]$Domain,
-        [int]$TimeoutSeconds = 5
+        [int]$TimeoutSeconds = 10
     )
     
     if (-not $Domain) {
@@ -4153,13 +4174,23 @@ function Test-DomainAccessibility {
                 # Try a simple AD operation that should work if the domain is accessible
                 if (Get-Command -Name Get-ADDomain -ErrorAction SilentlyContinue) {
                     # Test by trying to get basic domain info
-                    $null = Get-ADDomain -Identity $Domain -ErrorAction Stop
-                    return $true
-                } else {
-                    # Fallback: try DNS resolution
-                    $null = [System.Net.Dns]::GetHostAddresses($Domain)
+                    $adDomainParams = @{ Identity = $Domain }
+                    if ($script:DomainController) {
+                        $adDomainParams.Server = $script:DomainController
+                    }
+                    $domain = Get-ADDomain @adDomainParams -ErrorAction Stop
+                    if ($domain) {
+                        return $true
+                    }
+                }
+                 
+                # Fallback: try DNS resolution
+                $domain = [System.Net.Dns]::GetHostAddresses($Domain)
+                if ($domain) {
                     return $true
                 }
+                
+                return $false
             } catch {
                 return $false
             }
@@ -4218,6 +4249,35 @@ function Get-DomainsToTry {
     # Add script domain if available
     if ($script:Domain) {
         $domainsToTry += $script:Domain
+    }
+
+    # Add domain controller domain if specified
+    if ($script:DomainController) {
+        if ($script:DomainController -match "\.") {
+            # computer.domain.com format - extract hostname and domain
+            $parts = $script:DomainController.Split('.')
+            
+            if ($parts.Length -gt 1) {
+                $extractedDomain = $parts[1..($parts.Length - 1)] -join '.'
+                # Only add if it's a proper domain (has at least one dot)
+                if ($extractedDomain -match "\." -and $extractedDomain.Split('.').Length -ge 2) {
+                    $domainsToTry += $extractedDomain
+                }
+                
+                # Add subdomains and root domain
+                $domainParts = $extractedDomain.Split('.')
+                # Stop before single TLD parts
+                for ($i = 1; $i -lt $domainParts.Length - 1; $i++) {
+                    $parentDomain = $domainParts[$i..($domainParts.Length - 1)] -join '.'
+                    # Only add if it contains at least one dot
+                    if ($parentDomain -match "\." -and $parentDomain.Split('.').Length -ge 2) {
+                        $domainsToTry += $parentDomain
+                    }
+                }
+            }
+        } else {
+            Write-Verbose "Could not get domain from specified domain controller"
+        }
     }
     
     # Add alternative domains from parameter
@@ -4453,7 +4513,9 @@ function Resolve-PrincipalInDomain {
             
             # Set server parameter if domain is specified and different from current
             $adParams = @{ Identity = $Name }
-            if ($Domain -and $Domain -ne $env:USERDOMAIN -and $Domain -ne $env:USERDNSDOMAIN) {
+            if ($script:DomainController) {
+                $adParams.Server = $script.DomainController
+            } elseif ($Domain -and $Domain -ne $env:USERDOMAIN -and $Domain -ne $env:USERDNSDOMAIN) {
                 $adParams.Server = $Domain
             }
             
@@ -4545,7 +4607,19 @@ function Resolve-PrincipalInDomain {
             Add-Type -AssemblyName System.DirectoryServices -ErrorAction Stop
             
             # Try AccountManagement approach
-            $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Domain, $Domain)
+             # Use Domain Controller if specified
+             if ($script:DomainController) {
+                Write-Verbose "Creating PrincipalContext with domain controller $script:DomainController"
+                $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(
+                    [System.DirectoryServices.AccountManagement.ContextType]::Domain, 
+                    $script:DomainController
+                )
+            } else {
+                $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(
+                    [System.DirectoryServices.AccountManagement.ContextType]::Domain, 
+                    $Domain
+                )
+            }
             $principal = $null
             
             # Try as Computer
@@ -4620,12 +4694,20 @@ function Resolve-PrincipalInDomain {
             } else {
                 $null
             }
-            
-            # Create ADSISearcher
-            $adsiSearcher = if ($domainDN) {
-                [ADSISearcher]"LDAP://$domainDN"
+
+            # Use Domain Controller in LDAP path if specified
+            $ldapPath = if ($script:DomainController -and $domainDN) {
+                "LDAP://$($script:DomainController)/$domainDN"
+            } elseif ($domainDN) {
+                "LDAP://$domainDN"
             } else {
-                [ADSISearcher]""
+                "LDAP://"
+            }
+            
+            $adsiSearcher = if ($ldapPath -ne "LDAP://") {
+                New-Object System.DirectoryServices.DirectorySearcher([ADSI]$ldapPath)
+            } else {
+                New-Object System.DirectoryServices.DirectorySearcher
             }
             
             # Try different search filters
@@ -5197,7 +5279,12 @@ function Get-EffectivePermissions {
     # This is the simplest case - no role membership needed
     foreach ($perm in $Principal.Permissions) {
         if ($perm.Permission -eq $TargetPermission) {
-            return $true
+            # Only return true if it's NOT a deny permission
+            if ($perm.State -ne "DENY") {
+                return $true
+            } else {
+                Write-Verbose "Found deny permission $TargetPermission for $($Principal.Name)"
+            }
         }
     }
     
@@ -8644,22 +8731,34 @@ ORDER BY p.proxy_id
                 $filteredDomainPrincipalsWithControlServer = @($serverInfo.DomainPrincipalsWithControlServer | Where-Object { 
                     $principalObjectIdentifier = $_
                     $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
-                }) ?? @()
+                })
+                if ($null -eq $filteredDomainPrincipalsWithControlServer) {
+                    $filteredDomainPrincipalsWithControlServer = @()
+                }
 
                 $filteredDomainPrincipalsWithImpersonateAnyLogin = @($serverInfo.DomainPrincipalsWithImpersonateAnyLogin | Where-Object { 
                     $principalObjectIdentifier = $_
                     $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
-                }) ?? @()
+                })
+                if ($null -eq $filteredDomainPrincipalsWithImpersonateAnyLogin) {
+                    $filteredDomainPrincipalsWithImpersonateAnyLogin = @()
+                }
 
                 $filteredDomainPrincipalsWithSecurityadmin = @($serverInfo.DomainPrincipalsWithSecurityadmin | Where-Object { 
                     $principalObjectIdentifier = $_
                     $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
-                }) ?? @()
+                })
+                if ($null -eq $filteredDomainPrincipalsWithSecurityadmin) {
+                    $filteredDomainPrincipalsWithSecurityadmin = @()
+                }
 
                 $filteredDomainPrincipalsWithSysadmin = @($serverInfo.DomainPrincipalsWithSysadmin | Where-Object { 
                     $principalObjectIdentifier = $_
                     $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
-                }) ?? @()
+                })
+                if ($null -eq $filteredDomainPrincipalsWithSysadmin) {
+                    $filteredDomainPrincipalsWithSysadmin = @()
+                }
 
                 # MSSQL_GetAdminTGS edge
                 if ($serverInfo.IsAnyDomainPrincipalSysadmin) {
