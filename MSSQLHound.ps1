@@ -111,6 +111,11 @@ Switch/Flag:
         - MSSQL_ServiceAccountFor
     - Off (default): The edges above are non-traversable
 
+.PARAMETER SkipLinkedServerEnum
+Switch/Flag:
+    - On: Don't enumerate linked servers
+    - Off (default): Enumerate linked servers
+
 .PARAMETER CollectFromLinkedServers
 Switch/Flag:
     - On: If linked servers are found, don’t try and perform a full MSSQL collection against each server
@@ -239,6 +244,8 @@ param(
     #   - MSSQL_LinkedTo
     #   - MSSQL_ServiceAccountFor
     [switch]$MakeInterestingEdgesTraversable=$true,
+
+    [switch]$SkipLinkedServerEnum,#=$true,
 
     [switch]$CollectFromLinkedServers,#=$true,
 
@@ -3023,6 +3030,7 @@ $script:EdgePropertyGenerators = @{
     #   Requirements
     #       Source is the SQL Server service account
     #       At least one domain account with SQL login has sysadmin or equivalent privileges
+    #       Login is enabled and has CONNECT
 
         param($context)
         return @{
@@ -3069,6 +3077,7 @@ $script:EdgePropertyGenerators = @{
     #   Requirements
     #       Source is the SQL Server service account
     #       Target is a domain account with SQL login
+    #       Login is enabled and has CONNECT
 
         param($context)
         return @{
@@ -3095,6 +3104,12 @@ $script:EdgePropertyGenerators = @{
                                 `KRB5CCNAME=sccm_s4u.ccache mssqlclient.py internal.lab/sccm\$@sql.internal.lab  -k -no-pass -windows-auth` "
             opsec = "Kerberos ticket requests are normal behavior and rarely logged. High volume of TGS requests might be detected by advanced threat hunting. Event ID 4769 (Kerberos Service Ticket Request) is logged on domain controllers but typically not monitored for SQL service accounts."
             references = "- https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/register-a-service-principal-name-for-kerberos-connections?view=sql-server-ver17 "
+            composition = 
+            "MATCH (serviceAccount {objectid: '$($context.principal.ObjectIdentifier.ToUpper())'}) 
+            MATCH p0 = (serviceAccount)-[:MSSQL_GetTGS]->(login:MSSQL_Login {objectid: '$($context.targetPrincipal.ObjectIdentifier.Replace('\','\\').ToUpper())'})
+            MATCH p1 = (server:MSSQL_Server)-[:MSSQL_Contains]->(login) 
+            MATCH p2 = ()-[:MSSQL_HasLogin]->(login) 
+            RETURN p0, p1, p2"
         }
     }    
 
@@ -5488,30 +5503,20 @@ function Process-SQLPrincipals {
             if ($principal.PSObject.Properties.Name -contains "IsActiveDirectoryPrincipal") {
                 $isAdPrincipal = $principal.IsActiveDirectoryPrincipal -eq "1"
             }
-            
+        
             if ($isAdPrincipal) {
-                foreach ($role in $memberOf) {
-                    # Check for sysadmin or securityadmin roles which can grant themselves high privileges
-                    $roleName = $null
-                    if ($role.PSObject.Properties.Name -contains "Name") { 
-                        $roleName = $role.Name 
-                    } else { 
-                        # Extract name from ObjectIdentifier
-                        $objIdParts = $role.ObjectIdentifier -split '@'
-                        if ($objIdParts.Count -gt 0) {
-                            $roleName = $objIdParts[0]
-                        }
-                    }
-                    
-                    if ($roleName -eq "securityadmin") {
-                        $domainPrincipalHasSysadmin = $true
-                        $domainPrincipalsWithSecurityAdmin += $principal.ObjectIdentifier
-                        break
-                    } elseif ($roleName -eq "sysadmin") {
-                        $domainPrincipalHasSysadmin = $true
-                        $domainPrincipalsWithSysadmin += $principal.ObjectIdentifier
-                        break
-                    }
+                # Check both direct memberships and nested role memberships
+                $hasSecurityAdmin = Get-NestedRoleMembership -Principal $principal -TargetRoleName "securityadmin" -ServerInfo $serverInfo
+                $hasSysadmin = Get-NestedRoleMembership -Principal $principal -TargetRoleName "sysadmin" -ServerInfo $serverInfo
+                
+                if ($hasSecurityAdmin) {
+                    $domainPrincipalHasSysadmin = $true
+                    $domainPrincipalsWithSecurityAdmin += $principal.ObjectIdentifier
+                }
+                
+                if ($hasSysadmin) {
+                    $domainPrincipalHasSysadmin = $true
+                    $domainPrincipalsWithSysadmin += $principal.ObjectIdentifier
                 }
             }
         }
@@ -5572,16 +5577,20 @@ function Process-SQLPrincipals {
                     if ($principal.PSObject.Properties.Name -contains "IsActiveDirectoryPrincipal") {
                         $isAdPrincipal = $principal.IsActiveDirectoryPrincipal -eq "1"
                     }
-                    
+                
                     if ($isAdPrincipal) {
+                        # Check for CONTROL SERVER permission (direct)
                         if ($permission -eq "CONTROL SERVER") {
                             $domainPrincipalHasSysadmin = $true
                             $domainPrincipalsWithControlServer += $principal.ObjectIdentifier
-                        } elseif ($permission -eq "IMPERSONATE ANY LOGIN") {
-                            $domainPrincipalHasSysadmin = $true
-                            $domainPrincipalsWithImpersonateAnyLogin += $principal.ObjectIdentifier
                         }
-                    } 
+                        
+                        # Check for IMPERSONATE ANY LOGIN permission (direct)
+                        if ($permission -eq "IMPERSONATE ANY LOGIN") {
+                                $domainPrincipalHasSysadmin = $true
+                                $domainPrincipalsWithImpersonateAnyLogin += $principal.ObjectIdentifier
+                        }
+                    }
                 }
             }
         }
@@ -6477,6 +6486,46 @@ ORDER BY sp.name, p.permission_name
         $serverInfo.DomainPrincipalsWithSecurityadmin = $serverPrincipalsResult.DomainPrincipalsWithSecurityadmin
         $serverInfo.DomainPrincipalsWithSysadmin = $serverPrincipalsResult.DomainPrincipalsWithSysadmin
         $serverInfo.IsAnyDomainPrincipalSysadmin = $serverPrincipalsResult.DomainPrincipalHasSysadmin
+
+        # Second pass: Check for inherited permissions through role memberships
+        Write-Host "Checking for inherited high-privilege permissions through role memberships"
+        foreach ($principal in $serverInfo.ServerPrincipals) {
+            if (($principal.TypeDescription -eq "WINDOWS_LOGIN" -or $principal.TypeDescription -eq "WINDOWS_GROUP") -and
+                $principal.IsActiveDirectoryPrincipal -eq "1") {
+                
+                # Check for inherited CONTROL SERVER permission
+                if (Get-EffectivePermissions -Principal $principal -TargetPermission "CONTROL SERVER" -ServerInfo $serverInfo) {
+                    if ($principal.ObjectIdentifier -notin $serverInfo.DomainPrincipalsWithControlServer) {
+                        $serverInfo.DomainPrincipalsWithControlServer += $principal.ObjectIdentifier
+                        $serverInfo.IsAnyDomainPrincipalSysadmin = $true
+                    }
+                }
+                
+                # Check for inherited IMPERSONATE ANY LOGIN permission
+                if (Get-EffectivePermissions -Principal $principal -TargetPermission "IMPERSONATE ANY LOGIN" -ServerInfo $serverInfo) {
+                    if ($principal.ObjectIdentifier -notin $serverInfo.DomainPrincipalsWithImpersonateAnyLogin) {
+                        $serverInfo.DomainPrincipalsWithImpersonateAnyLogin += $principal.ObjectIdentifier
+                        $serverInfo.IsAnyDomainPrincipalSysadmin = $true
+                    }
+                }
+                
+                # Check for inherited sysadmin role membership
+                if (Get-NestedRoleMembership -Principal $principal -TargetRoleName "sysadmin" -ServerInfo $serverInfo) {
+                    if ($principal.ObjectIdentifier -notin $serverInfo.DomainPrincipalsWithSysadmin) {
+                        $serverInfo.DomainPrincipalsWithSysadmin += $principal.ObjectIdentifier
+                        $serverInfo.IsAnyDomainPrincipalSysadmin = $true
+                    }
+                }
+                
+                # Check for inherited securityadmin role membership
+                if (Get-NestedRoleMembership -Principal $principal -TargetRoleName "securityadmin" -ServerInfo $serverInfo) {
+                    if ($principal.ObjectIdentifier -notin $serverInfo.DomainPrincipalsWithSecurityadmin) {
+                        $serverInfo.DomainPrincipalsWithSecurityadmin += $principal.ObjectIdentifier
+                        $serverInfo.IsAnyDomainPrincipalSysadmin = $true
+                    }
+                }
+            }
+        }
     
         # Track local groups with SQL logins and their domain members
         $localGroupsWithLogins = @{}
@@ -6822,14 +6871,15 @@ ORDER BY credential_id
             }
         }
     
-        # Get linked servers information
-        Write-Host "Enumerating linked servers..."
-    
-        # Generate a unique suffix for the temp table to avoid conflicts
-        $tempTableSuffix = (Get-Date).Ticks.ToString().Substring(10)
-        $tempTableName = "##LinkedServerMap_$tempTableSuffix"
-    
-        $linkedServersQuery = @"
+        if (-not $SkipLinkedServerEnum) {
+            # Get linked servers information
+            Write-Host "Enumerating linked servers..."
+        
+            # Generate a unique suffix for the temp table to avoid conflicts
+            $tempTableSuffix = (Get-Date).Ticks.ToString().Substring(10)
+            $tempTableName = "##LinkedServerMap_$tempTableSuffix"
+        
+            $linkedServersQuery = @"
 -- Create temp table for linked server discovery
 CREATE TABLE $tempTableName (
 ID INT IDENTITY(1,1),
@@ -7173,121 +7223,122 @@ END
 SELECT * FROM $tempTableName
 ORDER BY Level, Path;
 "@
-        try {
-            $linkedServersCommand = New-Object System.Data.SqlClient.SqlCommand($linkedServersQuery, $connection)
-            $linkedServersCommand.CommandTimeout = $LinkedServerTimeout
-            $linkedServersAdapter = New-Object System.Data.SqlClient.SqlDataAdapter($linkedServersCommand)
-            $linkedServersTable = New-Object System.Data.DataSet
-            $linkedServersAdapter.Fill($linkedServersTable) | Out-Null
-    
-            # Process linked servers
-            $linkedServers = @()
-            $linkedServerObjectIdMap = @{}  # Map DataSource to resolved ObjectIdentifier
-    
-            foreach ($row in $linkedServersTable.Tables[0].Rows) {
-                $dataSource = $row["DataSource"].ToString()
-                
-                # Resolve DataSource to ObjectIdentifier
-                $resolvedObjectId = Resolve-DataSourceToSid -DataSource $dataSource
-                if (-not $resolvedObjectId) {
-                    # Fallback to simple format if resolution fails
-                    $resolvedObjectId = "LinkedServer:$dataSource"
+            try {
+                $linkedServersCommand = New-Object System.Data.SqlClient.SqlCommand($linkedServersQuery, $connection)
+                $linkedServersCommand.CommandTimeout = $LinkedServerTimeout
+                $linkedServersAdapter = New-Object System.Data.SqlClient.SqlDataAdapter($linkedServersCommand)
+                $linkedServersTable = New-Object System.Data.DataSet
+                $linkedServersAdapter.Fill($linkedServersTable) | Out-Null
+        
+                # Process linked servers
+                $linkedServers = @()
+                $linkedServerObjectIdMap = @{}  # Map DataSource to resolved ObjectIdentifier
+        
+                foreach ($row in $linkedServersTable.Tables[0].Rows) {
+                    $dataSource = $row["DataSource"].ToString()
+                    
+                    # Resolve DataSource to ObjectIdentifier
+                    $resolvedObjectId = Resolve-DataSourceToSid -DataSource $dataSource
+                    if (-not $resolvedObjectId) {
+                        # Fallback to simple format if resolution fails
+                        $resolvedObjectId = "LinkedServer:$dataSource"
+                    }
+
+                    # Resolve SourceServer to ObjectIdentifier
+                    $sourceServerEntry = $row["SourceServer"].ToString()
+                    $sourceServerOutput = $sourceServerEntry
+
+                    # Check if server is in SERVERNAME\INSTANCENAME format
+                    if ($sourceServerEntry -match '\\') {
+                        $sourceServerName = $sourceServerEntry.Split('\')[0]
+
+                        $resolvedSourceServer = Resolve-DomainPrincipal $sourceServerName
+                        if ($resolvedSourceServer) {
+                            $sourceServerOutput = $resolvedSourceServer.Name
+                        }
+                    }
+                    
+                    # Store mapping for reuse
+                    $linkedServerObjectIdMap[$dataSource] = $resolvedObjectId
+                    
+                    $linkedServer = [PSCustomObject]@{
+                        Level = [int]$row["Level"]
+                        Path = $row["Path"].ToString()
+                        SourceServer = $sourceServerOutput
+                        LinkedServer = $row["LinkedServer"].ToString()
+                        DataSource = $dataSource
+                        ResolvedObjectIdentifier = $resolvedObjectId
+                        Product = if (-not [System.DBNull]::Value.Equals($row["Product"])) { $row["Product"].ToString() } else { "" }
+                        Provider = if (-not [System.DBNull]::Value.Equals($row["Provider"])) { $row["Provider"].ToString() } else { "" }
+                        DataAccess = $row["DataAccess"] -eq $true
+                        RPCOut = $row["RPCOut"] -eq $true
+                        LocalLogin = $row["LocalLogin"].ToString()
+                        UsesImpersonation = $row["UsesImpersonation"] -eq $true
+                        RemoteLogin = if (-not [System.DBNull]::Value.Equals($row["RemoteLogin"])) { $row["RemoteLogin"].ToString() } else { "" }
+                        RemoteIsSysadmin = if (-not [System.DBNull]::Value.Equals($row["RemoteIsSysadmin"])) { $row["RemoteIsSysadmin"] -eq 1 } else { $false }
+                        RemoteIsSecurityAdmin = if (-not [System.DBNull]::Value.Equals($row["RemoteIsSecurityAdmin"])) { $row["RemoteIsSecurityAdmin"] -eq 1 } else { $false }
+                        RemoteHasControlServer = if (-not [System.DBNull]::Value.Equals($row["RemoteHasControlServer"])) { $row["RemoteHasControlServer"] -eq 1 } else { $false }
+                        RemoteHasImpersonateAnyLogin = if (-not [System.DBNull]::Value.Equals($row["RemoteHasImpersonateAnyLogin"])) { $row["RemoteHasImpersonateAnyLogin"] -eq 1 } else { $false }
+                        RemoteCurrentLogin = if (-not [System.DBNull]::Value.Equals($row["RemoteCurrentLogin"])) { $row["RemoteCurrentLogin"].ToString() } else { "" }
+                        RemoteServerRoles = if (-not [System.DBNull]::Value.Equals($row["RemoteServerRoles"])) { $row["RemoteServerRoles"].ToString() } else { "" }
+                        RemoteIsMixedMode = if (-not [System.DBNull]::Value.Equals($row["RemoteIsMixedMode"])) { $row["RemoteIsMixedMode"] -eq 1 } else { $false }
+                    }
+                    $linkedServers += $linkedServer
                 }
-
-                # Resolve SourceServer to ObjectIdentifier
-                $sourceServerEntry = $row["SourceServer"].ToString()
-                $sourceServerOutput = $sourceServerEntry
-
-                # Check if server is in SERVERNAME\INSTANCENAME format
-                if ($sourceServerEntry -match '\\') {
-                    $sourceServerName = $sourceServerEntry.Split('\')[0]
-
-                    $resolvedSourceServer = Resolve-DomainPrincipal $sourceServerName
-                    if ($resolvedSourceServer) {
-                        $sourceServerOutput = $resolvedSourceServer.Name
+        
+                # Add to server info
+                $serverInfo.LinkedServers = $linkedServers
+        
+            } catch {
+                Write-Host "Error during linked server enumeration: $_"
+            } finally {
+                # Always clean up the temp table
+                try {
+                    # Ensure connection is open for cleanup
+                    if ($connection.State -ne 'Open') {
+                        $connection.Open()
+                    }
+                    $cleanupCommand = New-Object System.Data.SqlClient.SqlCommand("IF OBJECT_ID('tempdb..$tempTableName') IS NOT NULL DROP TABLE $tempTableName;", $connection)
+                    $cleanupCommand.ExecuteNonQuery() | Out-Null
+                } catch {
+                    # Ignore cleanup errors
+                    Write-Verbose "Could not clean up temp table: $_"
+                }
+            }
+        
+            # Add MSSQL instances discovered via links to the queue for processing
+            if ($linkedServers.Count -gt 0) {
+                Write-Host "Discovered $($linkedServers.Count) linked server(s):"
+                foreach ($linked in $linkedServers) {
+                    Write-Host "    $($linked.Path)"
+                    
+                    # Get FQDN for the linked server
+                    $serverName = if ($linked.DataSource) { $linked.DataSource.Split('\')[0] } else { $linked.LinkedServer }
+                    if (-not $serverName) { continue }
+        
+                    try {
+                        $serverName = [System.Net.Dns]::GetHostEntry($serverName).HostName.ToLower()
+                    } catch {
+                        $serverName = $serverName.ToLower()
+                    }
+        
+                    # Check if already processing
+                    $alreadyProcessing = ($serverName -in $script:linkedServersToProcess) -or 
+                                        ($script:serversToProcess.Values.ServerName.ToLower() -contains $serverName)
+        
+                    if (-not $CollectFromLinkedServers) {
+                        Write-Host "        Skipping linked server enumeration (use -CollectFromLinkedServers to enable collection)" -ForegroundColor Yellow
+                    } elseif (-not $alreadyProcessing) {
+                        Write-Host "        Adding $serverName to processing queue" -ForegroundColor Cyan
+                        $script:linkedServersToProcess += $serverName
+                    } else {
+                        Write-Host "        Server already in queue for processing" -ForegroundColor Cyan
                     }
                 }
-                
-                # Store mapping for reuse
-                $linkedServerObjectIdMap[$dataSource] = $resolvedObjectId
-                
-                $linkedServer = [PSCustomObject]@{
-                    Level = [int]$row["Level"]
-                    Path = $row["Path"].ToString()
-                    SourceServer = $sourceServerOutput
-                    LinkedServer = $row["LinkedServer"].ToString()
-                    DataSource = $dataSource
-                    ResolvedObjectIdentifier = $resolvedObjectId
-                    Product = if (-not [System.DBNull]::Value.Equals($row["Product"])) { $row["Product"].ToString() } else { "" }
-                    Provider = if (-not [System.DBNull]::Value.Equals($row["Provider"])) { $row["Provider"].ToString() } else { "" }
-                    DataAccess = $row["DataAccess"] -eq $true
-                    RPCOut = $row["RPCOut"] -eq $true
-                    LocalLogin = $row["LocalLogin"].ToString()
-                    UsesImpersonation = $row["UsesImpersonation"] -eq $true
-                    RemoteLogin = if (-not [System.DBNull]::Value.Equals($row["RemoteLogin"])) { $row["RemoteLogin"].ToString() } else { "" }
-                    RemoteIsSysadmin = if (-not [System.DBNull]::Value.Equals($row["RemoteIsSysadmin"])) { $row["RemoteIsSysadmin"] -eq 1 } else { $false }
-                    RemoteIsSecurityAdmin = if (-not [System.DBNull]::Value.Equals($row["RemoteIsSecurityAdmin"])) { $row["RemoteIsSecurityAdmin"] -eq 1 } else { $false }
-                    RemoteHasControlServer = if (-not [System.DBNull]::Value.Equals($row["RemoteHasControlServer"])) { $row["RemoteHasControlServer"] -eq 1 } else { $false }
-                    RemoteHasImpersonateAnyLogin = if (-not [System.DBNull]::Value.Equals($row["RemoteHasImpersonateAnyLogin"])) { $row["RemoteHasImpersonateAnyLogin"] -eq 1 } else { $false }
-                    RemoteCurrentLogin = if (-not [System.DBNull]::Value.Equals($row["RemoteCurrentLogin"])) { $row["RemoteCurrentLogin"].ToString() } else { "" }
-                    RemoteServerRoles = if (-not [System.DBNull]::Value.Equals($row["RemoteServerRoles"])) { $row["RemoteServerRoles"].ToString() } else { "" }
-                    RemoteIsMixedMode = if (-not [System.DBNull]::Value.Equals($row["RemoteIsMixedMode"])) { $row["RemoteIsMixedMode"] -eq 1 } else { $false }
+                # If new linked servers were discovered during processing, the while loop will continue
+                if ($script:linkedServersToProcess.Count -gt 0) {
+                    Write-Host "Discovered $($script:linkedServersToProcess.Count) additional linked servers to process" -ForegroundColor Cyan
                 }
-                $linkedServers += $linkedServer
-            }
-    
-            # Add to server info
-            $serverInfo.LinkedServers = $linkedServers
-    
-        } catch {
-            Write-Host "Error during linked server enumeration: $_"
-        } finally {
-            # Always clean up the temp table
-            try {
-                # Ensure connection is open for cleanup
-                if ($connection.State -ne 'Open') {
-                    $connection.Open()
-                }
-                $cleanupCommand = New-Object System.Data.SqlClient.SqlCommand("IF OBJECT_ID('tempdb..$tempTableName') IS NOT NULL DROP TABLE $tempTableName;", $connection)
-                $cleanupCommand.ExecuteNonQuery() | Out-Null
-            } catch {
-                # Ignore cleanup errors
-                Write-Verbose "Could not clean up temp table: $_"
-            }
-        }
-    
-        # Add MSSQL instances discovered via links to the queue for processing
-        if ($linkedServers.Count -gt 0) {
-            Write-Host "Discovered $($linkedServers.Count) linked server(s):"
-            foreach ($linked in $linkedServers) {
-                Write-Host "    $($linked.Path)"
-                
-                # Get FQDN for the linked server
-                $serverName = if ($linked.DataSource) { $linked.DataSource.Split('\')[0] } else { $linked.LinkedServer }
-                if (-not $serverName) { continue }
-    
-                try {
-                    $serverName = [System.Net.Dns]::GetHostEntry($serverName).HostName.ToLower()
-                } catch {
-                    $serverName = $serverName.ToLower()
-                }
-    
-                # Check if already processing
-                $alreadyProcessing = ($serverName -in $script:linkedServersToProcess) -or 
-                                    ($script:serversToProcess.Values.ServerName.ToLower() -contains $serverName)
-    
-                if (-not $CollectFromLinkedServers) {
-                    Write-Host "        Skipping linked server enumeration (use -CollectFromLinkedServers to enable collection)" -ForegroundColor Yellow
-                } elseif (-not $alreadyProcessing) {
-                    Write-Host "        Adding $serverName to processing queue" -ForegroundColor Cyan
-                    $script:linkedServersToProcess += $serverName
-                } else {
-                    Write-Host "        Server already in queue for processing" -ForegroundColor Cyan
-                }
-            }
-            # If new linked servers were discovered during processing, the while loop will continue
-            if ($script:linkedServersToProcess.Count -gt 0) {
-                Write-Host "Discovered $($script:linkedServersToProcess.Count) additional linked servers to process" -ForegroundColor Cyan
             }
         }
     
@@ -7403,6 +7454,25 @@ ORDER BY p.proxy_id
     
         # Add to server info
         $serverInfo.ProxyAccounts = $proxyAccounts
+
+        # Process enabled domain principals with direct CONNECT SQL permission once for reuse
+        Write-Host "Processing enabled domain principals with CONNECT SQL permission"
+        $enabledDomainPrincipalsWithConnectSQL = @()
+
+        foreach ($principal in $serverInfo.ServerPrincipals) {
+            if (($principal.TypeDescription -eq "WINDOWS_LOGIN" -or $principal.TypeDescription -eq "WINDOWS_GROUP") -and
+                $principal.IsActiveDirectoryPrincipal -eq "1") {
+                
+                # Check if login is enabled and has CONNECT SQL permission (including through nested roles)
+                $loginEnabled = $principal.IsDisabled -ne "1"
+                $permissionToConnect = Get-EffectivePermissions -Principal $principal -TargetPermission "CONNECT SQL" -ServerInfo $serverInfo
+                
+                # Store if login is enabled and has CONNECT SQL permission
+                if ($permissionToConnect -and $loginEnabled) {
+                    $enabledDomainPrincipalsWithConnectSQL += $principal
+                }
+            }
+        }
     
         # Close the connection
         $connection.Close()
@@ -7448,7 +7518,7 @@ ORDER BY p.proxy_id
                     type = "font-awesome"
                     name = "server"
                     color = "#42b9f5"
-                }
+                }        
                 
         # Create Server Principal nodes
         Write-Host "Creating server principal nodes"
@@ -8570,31 +8640,46 @@ ORDER BY p.proxy_id
                             -Kind "HasSession"
                 }
 
+                # Filter the domainPrincipalsWith* arrays for enabled logins with CONNECT SQL permission
+                $filteredDomainPrincipalsWithControlServer = @($serverInfo.DomainPrincipalsWithControlServer | Where-Object { 
+                    $principalObjectIdentifier = $_
+                    $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
+                }) ?? @()
+
+                $filteredDomainPrincipalsWithImpersonateAnyLogin = @($serverInfo.DomainPrincipalsWithImpersonateAnyLogin | Where-Object { 
+                    $principalObjectIdentifier = $_
+                    $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
+                }) ?? @()
+
+                $filteredDomainPrincipalsWithSecurityadmin = @($serverInfo.DomainPrincipalsWithSecurityadmin | Where-Object { 
+                    $principalObjectIdentifier = $_
+                    $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
+                }) ?? @()
+
+                $filteredDomainPrincipalsWithSysadmin = @($serverInfo.DomainPrincipalsWithSysadmin | Where-Object { 
+                    $principalObjectIdentifier = $_
+                    $enabledDomainPrincipalsWithConnectSQL | Where-Object { $_.ObjectIdentifier -eq $principalObjectIdentifier } 
+                }) ?? @()
+
                 # MSSQL_GetAdminTGS edge
                 if ($serverInfo.IsAnyDomainPrincipalSysadmin) {
-
-                    Set-EdgeContext -SourcePrincipal $serviceAccount -TargetPrincipal $serverInfo -SourceType "User" -TargetType "MSSQL_Server"
+                    Set-EdgeContext -SourcePrincipal $serviceAccount -TargetPrincipal $serverInfo -SourceType "Base" -TargetType "MSSQL_Server"
                     Add-Edge -Source $serviceAccount.ObjectIdentifier `
                             -Target $serverInfo.ObjectIdentifier `
                             -Kind "MSSQL_GetAdminTGS" `
                             -Properties @{
-                                domainPrincipalsWithControlServer = $serverInfo.DomainPrincipalsWithControlServer
-                                domainPrincipalsWithImpersonateAnyLogin = $serverInfo.DomainPrincipalsWithImpersonateAnyLogin
-                                domainPrincipalsWithSecurityadmin = $serverInfo.DomainPrincipalsWithSecurityadmin
-                                domainPrincipalsWithSysadmin = $serverInfo.DomainPrincipalsWithSysadmin
+                                domainPrincipalsWithControlServer = $filteredDomainPrincipalsWithControlServer
+                                domainPrincipalsWithImpersonateAnyLogin = $filteredDomainPrincipalsWithImpersonateAnyLogin
+                                domainPrincipalsWithSecurityadmin = $filteredDomainPrincipalsWithSecurityadmin
+                                domainPrincipalsWithSysadmin = $filteredDomainPrincipalsWithSysadmin
                             }
                 }
 
-                # MSSQL_GetTGS edges to domain logins
-                foreach ($principal in $serverInfo.ServerPrincipals) {
-                    if (($principal.TypeDescription -eq "WINDOWS_LOGIN" -or $principal.TypeDescription -eq "WINDOWS_GROUP") -and
-                        $principal.IsActiveDirectoryPrincipal -eq "1") {
-
-                        Set-EdgeContext -SourcePrincipal $serviceAccount -TargetPrincipal $principal -SourceType "User" -TargetType "MSSQL_Login"
-                        Add-Edge -Source $serviceAccount.ObjectIdentifier `
-                                -Target $principal.ObjectIdentifier `
-                                -Kind "MSSQL_GetTGS"
-                    }
+                # MSSQL_GetTGS edges to enabled domain logins with CONNECT SQL
+                foreach ($principal in $enabledDomainPrincipalsWithConnectSQL) {
+                    Add-Edge -Source $serviceAccount.ObjectIdentifier `
+                            -Target $principal.ObjectIdentifier `
+                            -Kind "MSSQL_GetTGS"
                 }
             }
         }
@@ -8802,130 +8887,96 @@ ORDER BY p.proxy_id
         }        
 
         # Base to Login edges for domain accounts
-        foreach ($principal in $serverInfo.ServerPrincipals) {
-            if (($principal.TypeDescription -eq "WINDOWS_LOGIN" -or $principal.TypeDescription -eq "WINDOWS_GROUP") -and $principal.SecurityIdentifier) {
+        foreach ($principal in $enabledDomainPrincipalsWithConnectSQL) {
+            if ($principal.SecurityIdentifier) {
                 
-                $loginEnabled = $principal.IsDisabled -ne "1"
-                $permissionToConnect = $false
-                
-                foreach ($perm in $principal.Permissions) {
-                    if ($perm.Permission -eq "CONNECT SQL" -and $perm.State -eq "GRANT") {
-                        $permissionToConnect = $true
-                        break
-                    }
-                }
-                
-                if (-not $permissionToConnect -and $principal.MemberOf.Count -gt 0) {
-                    foreach ($role in $principal.MemberOf) {
-                        $roleName = $null
-                        if ($role.PSObject.Properties.Name -contains "Name" -and $role.Name) {
-                            $roleName = $role.Name
-                        } elseif ($role.PSObject.Properties.Name -contains "ObjectIdentifier" -and $role.ObjectIdentifier) {
-                            $objIdParts = $role.ObjectIdentifier -split '@'
-                            if ($objIdParts.Count -gt 0 -and $objIdParts[0]) {
-                                $roleName = $objIdParts[0]
+                # CoerceAndRelayToMSSQL edge if EPA is Off and login is for a computer object
+                if ($serverInfo.ExtendedProtection -eq "Off" -and $principal.Name -match '\$$') {
+
+                    $authedUsersObjectId = "$script:Domain`-S-1-5-11"
+
+                    # Add node for Authenticated Users so we don't get Unknown kind
+                    Add-Node -Id $authedUsersObjectId `
+                            -Kinds $("Group", "Base") `
+                            -Properties @{
+                                name = "AUTHENTICATED USERS@$($script:Domain)"
                             }
+                    
+                    Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $authedUsersObjectId } -TargetPrincipal $principal -SourceType "Group" -TargetType "MSSQL_Login"
+                    Add-Edge -Source $authedUsersObjectId `
+                            -Target $principal.ObjectIdentifier `
+                            -Kind "CoerceAndRelayToMSSQL"
+                }
+
+                # Filter duplicate source nodes
+                if (-not $principalsWithLogin.Contains($principal.SecurityIdentifier)) {
+                    
+                    # Filter out domain SIDs for NT AUTHORITY\SYSTEM and NT SERVICE*
+                    if ($principal.SecurityIdentifier -like "S-1-5-21-*") {
+
+                        $domainPrincipal = Resolve-DomainPrincipal $principal.Name.Split('\')[1]
+                        if (-not $domainPrincipal.SID) {
+                            $domainPrincipal = Resolve-DomainPrincipal $principal.SecurityIdentifier
                         }
                         
-                        if ($roleName -and $fixedServerRolePermissions.ContainsKey($roleName)) {
-                            if ($fixedServerRolePermissions[$roleName] -contains "CONNECT SQL") {
-                                $permissionToConnect = $true
-                                break
-                            }
-                        }
-                    }
-                }
-                
-                if ($permissionToConnect -and $loginEnabled) {
-
-                    # CoerceAndRelayToMSSQL edge if EPA is Off and login is for a computer object
-                    if ($serverInfo.ExtendedProtection -eq "Off" -and $principal.Name -match '\$$') {
-
-                        $authedUsersObjectId = "$script:Domain`-S-1-5-11"
-
-                        # Add node for Authenticated Users so we don't get Unknown kind
-                        Add-Node -Id $authedUsersObjectId `
-                                -Kinds $("Group", "Base") `
-                                -Properties @{
-                                    name = "AUTHENTICATED USERS@$($script:Domain)"
-                                }
-                        
-                        Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $authedUsersObjectId } -TargetPrincipal $principal -SourceType "Group" -TargetType "MSSQL_Login"
-                        Add-Edge -Source $authedUsersObjectId `
-                                -Target $principal.ObjectIdentifier `
-                                -Kind "CoerceAndRelayToMSSQL"
-                    }
-
-                    # Filter duplicate source nodes
-                    if (-not $principalsWithLogin.Contains($principal.SecurityIdentifier)) {
-                        
-                        # Filter out domain SIDs for NT AUTHORITY\SYSTEM and NT SERVICE*
-                        if ($principal.SecurityIdentifier -like "S-1-5-21-*") {
-
-                            $domainPrincipal = Resolve-DomainPrincipal $principal.Name.Split('\')[1]
-                            if (-not $domainPrincipal.SID) {
-                                $domainPrincipal = Resolve-DomainPrincipal $principal.SecurityIdentifier
-                            }
-                            
-                            # Don't create edges from non-domain objects like user-defined local groups and users
-                            if ($domainPrincipal.SID) {
-
-                                # Add node so we don't get Unknown kind
-                                Add-Node -Id $domainPrincipal.SID `
-                                        -Kinds $($domainPrincipal.Type, "Base") `
-                                        -Properties @{
-                                            name = $domainPrincipal.Name
-                                            distinguishedName = $domainPrincipal.DistinguishedName
-                                            DNSHostName = $domainPrincipal.DNSHostName
-                                            domain = $domainPrincipal.Domain
-                                            isDomainPrincipal = $domainPrincipal.IsDomainPrincipal
-                                            isEnabled = $domainPrincipal.Enabled
-                                            SAMAccountName = $domainPrincipal.SamAccountName
-                                            SID = $domainPrincipal.SID
-                                            userPrincipalName = $domainPrincipal.UserPrincipalName
-                                        }
-
-                                # Track this principal as having a login
-                                [void]$principalsWithLogin.Add($principal.SecurityIdentifier)
-
-                                # MSSQL_HasLogin edge
-                                Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $principal.SecurityIdentifier } -TargetPrincipal $principal -SourceType "User" -TargetType "MSSQL_Login"
-                                Add-Edge -Source $principal.SecurityIdentifier `
-                                -Target $principal.ObjectIdentifier `
-                                -Kind "MSSQL_HasLogin"
-                            } else {
-                                Write-Verbose "No domain SID found for $($domainPrincipal.SID)"
-                            }
-
-                        # Well-known local group SIDs
-                        } elseif ($principal.SecurityIdentifier -like "S-1-5-32-*") {
-
-                            $groupObjectId = "$serverFQDN`-$($principal.SecurityIdentifier)"
-
-                            # Track this principal as having a login
-                            [void]$principalsWithLogin.Add($groupObjectId)
+                        # Don't create edges from non-domain objects like user-defined local groups and users
+                        if ($domainPrincipal.SID) {
 
                             # Add node so we don't get Unknown kind
-                            Add-Node -Id $groupObjectId `
-                                    -Kinds $("Group", "Base") `
+                            Add-Node -Id $domainPrincipal.SID `
+                                    -Kinds $($domainPrincipal.Type, "Base") `
                                     -Properties @{
-                                        name = $principal.Name
-                                        isActiveDirectoryPrincipal = $principal.IsActiveDirectoryPrincipal
+                                        name = $domainPrincipal.Name
+                                        distinguishedName = $domainPrincipal.DistinguishedName
+                                        DNSHostName = $domainPrincipal.DNSHostName
+                                        domain = $domainPrincipal.Domain
+                                        isDomainPrincipal = $domainPrincipal.IsDomainPrincipal
+                                        isEnabled = $domainPrincipal.Enabled
+                                        SAMAccountName = $domainPrincipal.SamAccountName
+                                        SID = $domainPrincipal.SID
+                                        userPrincipalName = $domainPrincipal.UserPrincipalName
                                     }
 
+                            # Track this principal as having a login
+                            [void]$principalsWithLogin.Add($principal.SecurityIdentifier)
+
                             # MSSQL_HasLogin edge
-                            Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $groupObjectId } -TargetPrincipal $principal -SourceType "Group" -TargetType "MSSQL_Login"
-                            Add-Edge -Source $groupObjectId `
+                            Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $principal.SecurityIdentifier } -TargetPrincipal $principal -SourceType "User" -TargetType "MSSQL_Login"
+                            Add-Edge -Source $principal.SecurityIdentifier `
                             -Target $principal.ObjectIdentifier `
                             -Kind "MSSQL_HasLogin"
-
                         } else {
-                            Write-Verbose "Skipping local principal $($principal.SecurityIdentifier)"
+                            Write-Verbose "No domain SID found for $($domainPrincipal.SID)"
                         }
+
+                    # Well-known local group SIDs
+                    } elseif ($principal.SecurityIdentifier -like "S-1-5-32-*") {
+
+                        $groupObjectId = "$serverFQDN`-$($principal.SecurityIdentifier)"
+
+                        # Track this principal as having a login
+                        [void]$principalsWithLogin.Add($groupObjectId)
+
+                        # Add node so we don't get Unknown kind
+                        Add-Node -Id $groupObjectId `
+                                -Kinds $("Group", "Base") `
+                                -Properties @{
+                                    name = $principal.Name
+                                    isActiveDirectoryPrincipal = $principal.IsActiveDirectoryPrincipal
+                                }
+
+                        # MSSQL_HasLogin edge
+                        Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $groupObjectId } -TargetPrincipal $principal -SourceType "Group" -TargetType "MSSQL_Login"
+                        Add-Edge -Source $groupObjectId `
+                        -Target $principal.ObjectIdentifier `
+                        -Kind "MSSQL_HasLogin"
+
                     } else {
-                        Write-Verbose "Skipping duplicate login $($principal.SecurityIdentifier)"
+                        Write-Verbose "Skipping local principal $($principal.SecurityIdentifier)"
                     }
-                }
+                } else {
+                    Write-Verbose "Skipping duplicate login $($principal.SecurityIdentifier)"
+                } 
             }
         }
     }
