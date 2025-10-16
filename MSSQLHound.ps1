@@ -6140,7 +6140,7 @@ SELECT
                 catch {
                     Write-Host "SQL-based EPA collection failed: $_"
         
-                    # Try Remote Registy
+                    # Try Remote Registry
                     try {
                         Write-Host "Collecting EPA settings from $regPath via Remote Registry"
                         $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $serverHostname)
