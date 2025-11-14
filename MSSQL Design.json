@@ -1,0 +1,1586 @@
+{
+  "nodes": [
+    {
+      "id": "n0",
+      "position": {
+        "x": 891.1208876786817,
+        "y": 300.050583643652
+      },
+      "caption": "Base",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#a4dd00"
+      }
+    },
+    {
+      "id": "n1",
+      "position": {
+        "x": 1707.2417753573634,
+        "y": 888.7869915688094
+      },
+      "caption": "MSSQL Server",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n2",
+      "position": {
+        "x": 891.1208876786817,
+        "y": 888.7869915688094
+      },
+      "caption": "MSSQL Server Role",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n3",
+      "position": {
+        "x": 75,
+        "y": 888.7869915688094
+      },
+      "caption": "MSSQL Login",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n4",
+      "position": {
+        "x": 75,
+        "y": 1547.073038614066
+      },
+      "caption": "MSSQL Database User",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n5",
+      "position": {
+        "x": 891.1208876786817,
+        "y": 1547.073038614066
+      },
+      "caption": "MSSQL Database Role",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n6",
+      "position": {
+        "x": 1707.2417753573636,
+        "y": 1547.073038614066
+      },
+      "caption": "MSSQL Database",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n7",
+      "position": {
+        "x": 891.1208876786812,
+        "y": 2112.4886939267676
+      },
+      "caption": "MSSQL Application Role",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n8",
+      "position": {
+        "x": 4043.3791025825835,
+        "y": 300.05058364365203
+      },
+      "caption": "Computer",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#fda1ff"
+      }
+    },
+    {
+      "id": "n9",
+      "position": {
+        "x": 3227.2582149039035,
+        "y": 300.05058364365203
+      },
+      "caption": "Base",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#a4dd00"
+      }
+    },
+    {
+      "id": "n10",
+      "position": {
+        "x": 4043.3791025825835,
+        "y": 888.7869915688094
+      },
+      "caption": "MSSQL Server",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n11",
+      "position": {
+        "x": 3227.2582149039035,
+        "y": 888.7869915688095
+      },
+      "caption": "MSSQL Server Role",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n12",
+      "position": {
+        "x": 2411.137327225222,
+        "y": 888.7869915688094
+      },
+      "caption": "MSSQL Login",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n13",
+      "position": {
+        "x": 2411.137327225222,
+        "y": 1547.0730386140665
+      },
+      "caption": "MSSQL Database User",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n14",
+      "position": {
+        "x": 3227.2582149039035,
+        "y": 1547.0730386140665
+      },
+      "caption": "MSSQL Database Role",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n15",
+      "position": {
+        "x": 4043.3791025825853,
+        "y": 1547.0730386140665
+      },
+      "caption": "MSSQL Database",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n16",
+      "position": {
+        "x": 3227.258214903903,
+        "y": 2112.488693926768
+      },
+      "caption": "MSSQL Application Role",
+      "labels": [],
+      "properties": {},
+      "style": {
+        "node-color": "#73d8ff"
+      }
+    },
+    {
+      "id": "n17",
+      "position": {
+        "x": 891.1208876786817,
+        "y": 50
+      },
+      "caption": "Ntrvrsbl",
+      "labels": [],
+      "properties": {},
+      "style": {}
+    },
+    {
+      "id": "n18",
+      "position": {
+        "x": 3227.258214903903,
+        "y": 50
+      },
+      "caption": "Trvrsbl",
+      "labels": [],
+      "properties": {},
+      "style": {}
+    },
+    {
+      "id": "n23",
+      "position": {
+        "x": 2411.137327225222,
+        "y": 306.54637452657016
+      },
+      "caption": "Authd Users",
+      "labels": [
+        "Group"
+      ],
+      "properties": {},
+      "style": {
+        "node-color": "#a4dd00"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "id": "n0",
+      "fromId": "n0",
+      "toId": "n1",
+      "type": "MSSQL_ServiceAccountFor",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n1",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_ConnectSQL",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n2",
+      "fromId": "n3",
+      "toId": "n0",
+      "type": "MSSQL_HasMappedCred",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n3",
+      "fromId": "n3",
+      "toId": "n0",
+      "type": "MSSQL_HasProxyCred",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n4",
+      "fromId": "n2",
+      "toId": "n0",
+      "type": "MSSQL_HasProxyCred",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n5",
+      "fromId": "n6",
+      "toId": "n0",
+      "type": "MSSQL_HasDBScopedCred",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "attachment-end": "top",
+        "attachment-start": "right",
+        "margin-end": 26
+      }
+    },
+    {
+      "id": "n6",
+      "fromId": "n4",
+      "toId": "n6",
+      "type": "MSSQL_Connect",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "margin-start": 50,
+        "margin-end": 0
+      }
+    },
+    {
+      "id": "n7",
+      "fromId": "n6",
+      "toId": "n1",
+      "type": "MSSQL_IsTrustedBy",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n8",
+      "fromId": "n1",
+      "toId": "n1",
+      "type": "MSSQL_LinkedTo",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "margin-peer": 30,
+        "detail-orientation": "perpendicular"
+      }
+    },
+    {
+      "id": "n9",
+      "fromId": "n5",
+      "toId": "n6",
+      "type": "MSSQL_Connect",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n10",
+      "fromId": "n3",
+      "toId": "n3",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n11",
+      "fromId": "n3",
+      "toId": "n3",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n12",
+      "fromId": "n4",
+      "toId": "n4",
+      "type": "MSSQL_Impersonate",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n13",
+      "fromId": "n4",
+      "toId": "n4",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n14",
+      "fromId": "n4",
+      "toId": "n6",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "margin-end": 13,
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n15",
+      "fromId": "n2",
+      "toId": "n3",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n16",
+      "fromId": "n2",
+      "toId": "n3",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n17",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_ImpersonateAnyLogin",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n18",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_AlterAnyLogin",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "attachment-start": "normal"
+      }
+    },
+    {
+      "id": "n19",
+      "fromId": "n3",
+      "toId": "n2",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n20",
+      "fromId": "n3",
+      "toId": "n2",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n21",
+      "fromId": "n3",
+      "toId": "n1",
+      "type": "MSSQL_ConnectSQL",
+      "properties": {},
+      "style": {
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "margin-start": 38,
+        "margin-end": 27,
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n22",
+      "fromId": "n3",
+      "toId": "n1",
+      "type": "MSSQL_ImpersonateAnyLogin",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "margin-start": 0,
+        "margin-end": 0
+      }
+    },
+    {
+      "id": "n23",
+      "fromId": "n3",
+      "toId": "n1",
+      "type": "MSSQL_AlterAnyLogin",
+      "properties": {},
+      "style": {
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "arrow-color": "#f44e3b",
+        "margin-start": 44,
+        "margin-end": 1
+      }
+    },
+    {
+      "id": "n24",
+      "fromId": "n5",
+      "toId": "n6",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n25",
+      "fromId": "n2",
+      "toId": "n2",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "detail-orientation": "parallel"
+      }
+    },
+    {
+      "id": "n26",
+      "fromId": "n2",
+      "toId": "n2",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b",
+        "detail-orientation": "parallel"
+      }
+    },
+    {
+      "id": "n27",
+      "fromId": "n7",
+      "toId": "n4",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n28",
+      "fromId": "n7",
+      "toId": "n4",
+      "type": "MSSQL_Impersonate",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n29",
+      "fromId": "n4",
+      "toId": "n5",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n30",
+      "fromId": "n7",
+      "toId": "n5",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n31",
+      "fromId": "n5",
+      "toId": "n5",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "detail-orientation": "parallel",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n32",
+      "fromId": "n5",
+      "toId": "n5",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "detail-orientation": "parallel",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n33",
+      "fromId": "n4",
+      "toId": "n5",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n34",
+      "fromId": "n7",
+      "toId": "n5",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n35",
+      "fromId": "n15",
+      "toId": "n10",
+      "type": "MSSQL_ExecuteAsOwner",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n36",
+      "fromId": "n10",
+      "toId": "n10",
+      "type": "MSSQL_LinkedAsAdmin",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00",
+        "margin-peer": 30,
+        "detail-orientation": "perpendicular"
+      }
+    },
+    {
+      "id": "n37",
+      "fromId": "n12",
+      "toId": "n12",
+      "type": "MSSQL_ChangePassword",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n38",
+      "fromId": "n12",
+      "toId": "n12",
+      "type": "MSSQL_ExecuteAs",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n39",
+      "fromId": "n13",
+      "toId": "n13",
+      "type": "MSSQL_ExecuteAs",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n40",
+      "fromId": "n13",
+      "toId": "n15",
+      "type": "MSSQL_ControlDB",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "margin-start": 8,
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n41",
+      "fromId": "n12",
+      "toId": "n10",
+      "type": "MSSQL_ControlServer",
+      "properties": {},
+      "style": {
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "arrow-color": "#68bc00",
+        "margin-start": 38,
+        "margin-end": 1
+      }
+    },
+    {
+      "id": "n42",
+      "fromId": "n10",
+      "toId": "n11",
+      "type": "MSSQL_Contains",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n43",
+      "fromId": "n10",
+      "toId": "n12",
+      "type": "MSSQL_Contains",
+      "properties": {},
+      "style": {
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "margin-end": 24,
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n44",
+      "fromId": "n12",
+      "toId": "n13",
+      "type": "MSSQL_IsMappedTo",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n45",
+      "fromId": "n15",
+      "toId": "n14",
+      "type": "MSSQL_Contains",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n46",
+      "fromId": "n10",
+      "toId": "n15",
+      "type": "MSSQL_Contains",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n47",
+      "fromId": "n16",
+      "toId": "n15",
+      "type": "MSSQL_ControlDB",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n48",
+      "fromId": "n13",
+      "toId": "n14",
+      "type": "MSSQL_AddMember",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n49",
+      "fromId": "n15",
+      "toId": "n16",
+      "type": "MSSQL_Contains",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n50",
+      "fromId": "n12",
+      "toId": "n11",
+      "type": "MSSQL_AddMember",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n51",
+      "fromId": "n15",
+      "toId": "n13",
+      "type": "MSSQL_Contains",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "margin-end": 15,
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n52",
+      "fromId": "n16",
+      "toId": "n13",
+      "type": "MSSQL_ExecuteAs",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n53",
+      "fromId": "n13",
+      "toId": "n16",
+      "type": "MSSQL_ChangePassword",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n54",
+      "fromId": "n9",
+      "toId": "n8",
+      "type": "HasSession",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n55",
+      "fromId": "n8",
+      "toId": "n10",
+      "type": "MSSQL_HostFor",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n56",
+      "fromId": "n10",
+      "toId": "n8",
+      "type": "MSSQL_ExecuteOnHost",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n57",
+      "fromId": "n9",
+      "toId": "n10",
+      "type": "MSSQL_GetAdminTGS",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n58",
+      "fromId": "n9",
+      "toId": "n12",
+      "type": "MSSQL_GetTGS",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n59",
+      "fromId": "n9",
+      "toId": "n12",
+      "type": "MSSQL_HasLogin",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n60",
+      "fromId": "n5",
+      "toId": "n6",
+      "type": "MSSQL_AlterAnyAppRole",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n61",
+      "fromId": "n4",
+      "toId": "n6",
+      "type": "MSSQL_AlterAnyAppRole",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "arrow-color": "#f44e3b",
+        "margin-end": 0,
+        "margin-start": 43
+      }
+    },
+    {
+      "id": "n62",
+      "fromId": "n7",
+      "toId": "n6",
+      "type": "MSSQL_Connect",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n63",
+      "fromId": "n7",
+      "toId": "n6",
+      "type": "MSSQL_AlterAnyAppRole",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n64",
+      "fromId": "n16",
+      "toId": "n14",
+      "type": "MSSQL_AddMember",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n65",
+      "fromId": "n16",
+      "toId": "n14",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n66",
+      "fromId": "n14",
+      "toId": "n14",
+      "type": "MSSQL_AddMember",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n67",
+      "fromId": "n11",
+      "toId": "n11",
+      "type": "MSSQL_AddMember",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n68",
+      "fromId": "n16",
+      "toId": "n16",
+      "type": "MSSQL_ChangePassword",
+      "properties": {},
+      "style": {
+        "detail-orientation": "parallel",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n69",
+      "fromId": "n11",
+      "toId": "n12",
+      "type": "MSSQL_ChangePassword",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n70",
+      "fromId": "n11",
+      "toId": "n12",
+      "type": "MSSQL_ExecuteAs",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n71",
+      "fromId": "n14",
+      "toId": "n13",
+      "type": "MSSQL_ExecuteAs",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n72",
+      "fromId": "n14",
+      "toId": "n15",
+      "type": "MSSQL_ControlDB",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n73",
+      "fromId": "n11",
+      "toId": "n10",
+      "type": "MSSQL_ControlServer",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n74",
+      "fromId": "n12",
+      "toId": "n11",
+      "type": "MSSQL_MemberOf",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n75",
+      "fromId": "n11",
+      "toId": "n11",
+      "type": "MSSQL_MemberOf",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n76",
+      "fromId": "n14",
+      "toId": "n14",
+      "type": "MSSQL_MemberOf",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n77",
+      "fromId": "n13",
+      "toId": "n14",
+      "type": "MSSQL_MemberOf",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n78",
+      "fromId": "n5",
+      "toId": "n6",
+      "type": "MSSQL_AlterAnyRole",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n79",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_AlterAnyServerRole",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n80",
+      "fromId": "n3",
+      "toId": "n3",
+      "type": "MSSQL_Impersonate",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n81",
+      "fromId": "n14",
+      "toId": "n16",
+      "type": "MSSQL_ChangePassword",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n82",
+      "fromId": "n5",
+      "toId": "n4",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n83",
+      "fromId": "n7",
+      "toId": "n6",
+      "type": "MSSQL_Alter",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n84",
+      "fromId": "n5",
+      "toId": "n4",
+      "type": "MSSQL_Impersonate",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n85",
+      "fromId": "n16",
+      "toId": "n14",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n86",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_GrantAnyPermission",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n87",
+      "fromId": "n5",
+      "toId": "n6",
+      "type": "MSSQL_GrantAnyPermission",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n88",
+      "fromId": "n3",
+      "toId": "n1",
+      "type": "MSSQL_AlterAnyServerRole",
+      "properties": {},
+      "style": {
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "margin-start": 50,
+        "margin-end": 50,
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n89",
+      "fromId": "n4",
+      "toId": "n6",
+      "type": "MSSQL_AlterAnyRole",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n90",
+      "fromId": "n7",
+      "toId": "n6",
+      "type": "MSSQL_AlterAnyRole",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n91",
+      "fromId": "n3",
+      "toId": "n2",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n92",
+      "fromId": "n3",
+      "toId": "n2",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n93",
+      "fromId": "n2",
+      "toId": "n2",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n94",
+      "fromId": "n2",
+      "toId": "n2",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n95",
+      "fromId": "n5",
+      "toId": "n5",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n96",
+      "fromId": "n5",
+      "toId": "n5",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n98",
+      "fromId": "n4",
+      "toId": "n5",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n99",
+      "fromId": "n4",
+      "toId": "n5",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n100",
+      "fromId": "n7",
+      "toId": "n5",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n101",
+      "fromId": "n7",
+      "toId": "n5",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n102",
+      "fromId": "n13",
+      "toId": "n14",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n103",
+      "fromId": "n13",
+      "toId": "n14",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n104",
+      "fromId": "n12",
+      "toId": "n15",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n105",
+      "fromId": "n14",
+      "toId": "n14",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n106",
+      "fromId": "n14",
+      "toId": "n14",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n107",
+      "fromId": "n11",
+      "toId": "n11",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n108",
+      "fromId": "n11",
+      "toId": "n11",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "detail-orientation": "perpendicular",
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n109",
+      "fromId": "n12",
+      "toId": "n11",
+      "type": "MSSQL_TakeOwnership",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n110",
+      "fromId": "n12",
+      "toId": "n11",
+      "type": "MSSQL_Owns",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n111",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_ControlServer",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n112",
+      "fromId": "n3",
+      "toId": "n1",
+      "type": "MSSQL_ControlServer",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "arrow-color": "#f44e3b",
+        "margin-end": 11
+      }
+    },
+    {
+      "id": "n113",
+      "fromId": "n4",
+      "toId": "n6",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "attachment-start": "top",
+        "attachment-end": "top",
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n114",
+      "fromId": "n5",
+      "toId": "n6",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n115",
+      "fromId": "n7",
+      "toId": "n6",
+      "type": "MSSQL_Control",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n116",
+      "fromId": "n16",
+      "toId": "n14",
+      "type": "MSSQL_MemberOf",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n117",
+      "fromId": "n23",
+      "toId": "n12",
+      "type": "CoerceAndRelayToMSSQL",
+      "properties": {},
+      "style": {
+        "arrow-color": "#68bc00"
+      }
+    },
+    {
+      "id": "n118",
+      "fromId": "n2",
+      "toId": "n1",
+      "type": "MSSQL_ConnectAnyDatabase",
+      "properties": {},
+      "style": {
+        "arrow-color": "#f44e3b"
+      }
+    },
+    {
+      "id": "n119",
+      "fromId": "n3",
+      "toId": "n1",
+      "type": "MSSQL_ConnectAnyDatabase",
+      "properties": {},
+      "style": {
+        "attachment-start": "bottom",
+        "attachment-end": "bottom",
+        "margin-end": 0,
+        "arrow-color": "#f44e3b"
+      }
+    }
+  ],
+  "style": {
+    "font-family": "sans-serif",
+    "background-color": "#ffffff",
+    "background-image": "",
+    "background-size": "100%",
+    "node-color": "#ffffff",
+    "border-width": 4,
+    "border-color": "#000000",
+    "radius": 50,
+    "node-padding": 5,
+    "node-margin": 2,
+    "outside-position": "auto",
+    "node-icon-image": "",
+    "node-background-image": "",
+    "icon-position": "inside",
+    "icon-size": 64,
+    "caption-position": "inside",
+    "caption-max-width": 200,
+    "caption-color": "#000000",
+    "caption-font-size": 50,
+    "caption-font-weight": "normal",
+    "label-position": "inside",
+    "label-display": "pill",
+    "label-color": "#000000",
+    "label-background-color": "#ffffff",
+    "label-border-color": "#000000",
+    "label-border-width": 4,
+    "label-font-size": 40,
+    "label-padding": 5,
+    "label-margin": 4,
+    "directionality": "directed",
+    "detail-position": "inline",
+    "detail-orientation": "parallel",
+    "arrow-width": 5,
+    "arrow-color": "#000000",
+    "margin-start": 5,
+    "margin-end": 5,
+    "margin-peer": 20,
+    "attachment-start": "normal",
+    "attachment-end": "normal",
+    "relationship-icon-image": "",
+    "type-color": "#000000",
+    "type-background-color": "#ffffff",
+    "type-border-color": "#000000",
+    "type-border-width": 0,
+    "type-font-size": 16,
+    "type-padding": 5,
+    "property-position": "outside",
+    "property-alignment": "colon",
+    "property-color": "#000000",
+    "property-font-size": 16,
+    "property-font-weight": "normal"
+  }
+}
