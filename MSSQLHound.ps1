@@ -469,7 +469,6 @@ if (-not $script:Domain) {
 Add-Type -AssemblyName System.Web.Extensions
 Add-Type -AssemblyName System.Data
 
-
 # Add Active Directory module if needed
 if (-not (Get-Module -Name ActiveDirectory)) {
     if (Get-Module -ListAvailable -Name ActiveDirectory) {
@@ -1095,6 +1094,9 @@ function New-StreamingBloodHoundWriter {
     # Start JSON structure
     $writerObj.Writer.WriteLine('{')
     $writerObj.Writer.WriteLine('  "graph": {')
+    $writerObj.Writer.WriteLine('    "metadata": {')
+    $writerObj.Writer.WriteLine('      "source_kind": "MSSQL_Base"')
+    $writerObj.Writer.WriteLine('    },')    
     $writerObj.Writer.WriteLine('    "nodes": [')
     $writerObj.Writer.Flush()
     
@@ -2008,6 +2010,8 @@ $script:EdgePropertyGenerators = @{
     #       Can't change another login's password without ALTER ANY LOGIN, even with ALTER or CONTROL explicitly assigned
     #       End node must be a SQL Login (not a Windows one) and cannot be the sa login
     #       If the login that is being changed is a member of the sysadmin fixed server role or a grantee of CONTROL SERVER permission, also requires CONTROL SERVER permission to reset the password without supplying the current password
+    #       UPDATE for https://msrc.microsoft.com/update-guide/en-US/vulnerability/CVE-2025-49758
+    #           If patched, also require CONTROL SERVER permission to change password of any SQL login is a member of the securityadmin fixed server role or is explicitly assigned IMPERSONATE ANY LOGIN permission
     #   Default fixed roles with permission
     #       securityadmin (via ALTER ANY LOGIN)
     #       sysadmin (not drawing edge, included under ControlServer -> Contains[Login])
@@ -5377,6 +5381,948 @@ function Get-EffectivePermissions {
     return $false
 }
 
+function Get-MssqlEpaSettingsViaTDS {
+    # MSSQL Server Extended Protection for Authentication (EPA) Configuration Checker (Unprivileged)
+    # Requires valid domain context only
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ServerNameOrIP,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Port,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ServerString
+    )
+
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $tcpClient.Connect($ServerNameOrIP, $Port)
+        
+        Write-Host "Connected via TCP"
+        $portIsOpen = $true
+        
+        $stream = $tcpClient.GetStream()
+        
+        # Build PRELOGIN packet
+        $packet = New-Object System.Collections.ArrayList
+        
+        # TDS header (8 bytes)
+        [void]$packet.Add(0x12)  # PRELOGIN packet type
+        [void]$packet.Add(0x01)  # Status (EOM)
+        [void]$packet.Add(0x00)  # Length high byte (will update)
+        [void]$packet.Add(0x00)  # Length low byte (will update)
+        [void]$packet.Add(0x00)  # SPID high
+        [void]$packet.Add(0x00)  # SPID low
+        [void]$packet.Add(0x01)  # Packet ID
+        [void]$packet.Add(0x00)  # Window
+        
+        # PRELOGIN payload
+        $payload = New-Object System.Collections.ArrayList
+        
+        # Version token
+        [void]$payload.Add(0x00)  # VERSION token
+        [void]$payload.Add(0x00)  # Offset high
+        [void]$payload.Add(0x15)  # Offset low (21 = after 5*4 + 1 terminator)
+        [void]$payload.Add(0x00)  # Length high
+        [void]$payload.Add(0x06)  # Length low
+        
+        # Encryption token
+        [void]$payload.Add(0x01)  # ENCRYPTION token
+        [void]$payload.Add(0x00)  # Offset high
+        [void]$payload.Add(0x1B)  # Offset low (27)
+        [void]$payload.Add(0x00)  # Length high
+        [void]$payload.Add(0x01)  # Length low
+        
+        # Instance token
+        [void]$payload.Add(0x02)  # INSTOPT token
+        [void]$payload.Add(0x00)  # Offset high
+        [void]$payload.Add(0x1C)  # Offset low (28)
+        [void]$payload.Add(0x00)  # Length high
+        [void]$payload.Add(0x01)  # Length low
+        
+        # Thread ID token
+        [void]$payload.Add(0x03)  # THREADID token
+        [void]$payload.Add(0x00)  # Offset high
+        [void]$payload.Add(0x1D)  # Offset low (29)
+        [void]$payload.Add(0x00)  # Length high
+        [void]$payload.Add(0x04)  # Length low
+        
+        # Terminator
+        [void]$payload.Add(0xFF)
+        
+        # Version data (6 bytes)
+        [void]$payload.Add(0x09)  # Major version
+        [void]$payload.Add(0x00)  # Minor version
+        [void]$payload.Add(0x00)  # Build number high
+        [void]$payload.Add(0x00)  # Build number low
+        [void]$payload.Add(0x00)  # Sub build high
+        [void]$payload.Add(0x00)  # Sub build low
+        
+        # Encryption flag (1 byte)
+        [void]$payload.Add(0x00)  # ENCRYPT_OFF
+        
+        # Instance (1 byte)
+        [void]$payload.Add(0x00)
+        
+        # Thread ID (4 bytes)
+        [void]$payload.Add(0x00)
+        [void]$payload.Add(0x00)
+        [void]$payload.Add(0x00)
+        [void]$payload.Add(0x00)
+        
+        # Add payload to packet
+        $payload | ForEach-Object { [void]$packet.Add($_) }
+        
+        # Update length in header
+        $totalLen = $packet.Count
+        $packet[2] = [byte](($totalLen -shr 8) -band 0xFF)
+        $packet[3] = [byte]($totalLen -band 0xFF)
+        
+        # Convert to byte array and send
+        $byteArray = [byte[]]$packet.ToArray()
+        $stream.Write($byteArray, 0, $byteArray.Length)
+        
+        Write-Host "Sent PRELOGIN packet"
+        
+        # Set timeout for read
+        $stream.ReadTimeout = 5000  # 5 seconds
+        
+        # Read TDS header first
+        $header = New-Object byte[] 8
+        $bytesRead = $stream.Read($header, 0, 8)
+        
+        if ($bytesRead -ne 8) {
+            Write-Warning "Failed to receive TDS header"
+            $tcpClient.Close()
+            return
+        }
+        
+        # Get payload length
+        $payloadLen = (([int]$header[2] -shl 8) -bor [int]$header[3]) - 8
+        
+        # Read payload
+        $response = New-Object byte[] $payloadLen
+        $bytesRead = $stream.Read($response, 0, $payloadLen)
+        
+        if ($bytesRead -ne $payloadLen) {
+            Write-Warning "Failed to receive complete response"
+            $tcpClient.Close()
+            return
+        }
+        
+        Write-Host "Received PRELOGIN response"
+        
+        # Parse response
+        $pos = 0
+        while ($pos -lt $response.Length -and $response[$pos] -ne 0xFF) {
+            if ($pos + 4 -ge $response.Length) { break }
+            
+            $token = $response[$pos]
+            $offset = ([int]$response[$pos + 1] -shl 8) -bor [int]$response[$pos + 2]
+            
+            if ($token -eq 0x01 -and $offset -lt $response.Length) {  # Encryption token
+                $encFlag = $response[$offset]
+                # 0x00 = ENCRYPT_OFF
+                # 0x01 = ENCRYPT_ON
+                # 0x02 = ENCRYPT_NOT_SUP
+                # 0x03 = ENCRYPT_REQ (Force Encryption)
+                
+                $encFlagName = switch ($encFlag) {
+                    0x00 { "ENCRYPT_OFF" }
+                    0x01 { "ENCRYPT_ON" }
+                    0x02 { "ENCRYPT_NOT_SUP" }
+                    0x03 { "ENCRYPT_REQ" }
+                    default { "UNKNOWN" }
+                }
+                
+                Write-Host "Encryption flag in response: 0x$($encFlag.ToString('X2')) ($encFlagName)"
+                break
+            }
+            $pos += 5
+        }
+        
+        $tcpClient.Close()
+        $preloginSuccess = $true
+    }
+    catch {
+        Write-Error "Error in TDS check: $_"
+        $preloginSuccess = $false
+    }
+
+    if ($preloginSuccess) {
+
+        $forceEncryption = 
+            if ($encFlagName -eq "ENCRYPT_REQ") { "Yes" } 
+            else { "No" }
+            Write-Host "Force Encryption: $forceEncryption"
+
+    } else {
+        Write-Warning "PRELOGIN was not successful"
+    }
+
+    if ($portIsOpen) {
+        try {  
+            if ($PSVersionTable.PSVersion.Major -ge 7) {
+                Write-Warning "Running in PowerShell 7+, so System.Data.SqlClient is unavailable, trying Microsoft.Data.SqlClient, may require installation"
+                $sqlClientAsm = "Microsoft.Data.SqlClient"
+            } else {
+                $sqlClientAsm = "System.Data.SqlClient"
+            }
+
+            # This must be run remotely and will not display the correct settings if run locally on the SQL server
+            Add-Type @"
+using System;
+using $sqlClientAsm;
+using System.Runtime.InteropServices;
+
+public class EPATester
+{
+    #region SSPI structs
+
+    public struct SecBuffer
+    {
+        public int cbBuffer;
+        public int BufferType;
+        public IntPtr pvBuffer;
+    }
+
+    public struct SecBufferDesc
+    {
+        public uint ulVersion;
+        public uint cBuffers;
+        public IntPtr pBuffers;
+    }
+
+    #endregion
+
+    #region P/Invoke for InitializeSecurityContextW
+
+    [DllImport("secur32.dll", CharSet = CharSet.Unicode, SetLastError = true, CallingConvention = CallingConvention.Winapi)]
+    public static extern int InitializeSecurityContextW(
+        IntPtr phCredential,
+        IntPtr phContext,
+        IntPtr pszTargetName,
+        uint fContextReq,
+        uint Reserved1,
+        uint TargetDataRep,
+        IntPtr pInput,
+        uint Reserved2,
+        IntPtr phNewContext,
+        IntPtr pOutput,
+        IntPtr pfContextAttr,
+        IntPtr ptsExpiry);
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi, CharSet = CharSet.Unicode, SetLastError = true)]
+    public delegate int InitializeSecurityContextW_Delegate(
+        IntPtr phCredential,
+        IntPtr phContext,
+        IntPtr pszTargetName,
+        uint fContextReq,
+        uint Reserved1,
+        uint TargetDataRep,
+        IntPtr pInput,
+        uint Reserved2,
+        IntPtr phNewContext,
+        IntPtr pOutput,
+        IntPtr pfContextAttr,
+        IntPtr ptsExpiry);
+
+    #endregion
+
+    #region Native hook infrastructure (kernel32)
+
+    private const uint PAGE_EXECUTE_READWRITE = 0x40;
+    private const uint MEM_COMMIT = 0x1000;
+    private const uint MEM_RESERVE = 0x2000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibrary(string lpFileName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool VirtualProtect(
+        IntPtr lpAddress,
+        UIntPtr dwSize,
+        uint flNewProtect,
+        out uint lpflOldProtect);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr VirtualAlloc(
+        IntPtr lpAddress,
+        UIntPtr dwSize,
+        uint flAllocationType,
+        uint flProtect);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FlushInstructionCache(
+        IntPtr hProcess,
+        IntPtr lpBaseAddress,
+        UIntPtr dwSize);
+
+    private const int HOOK_LENGTH_X64 = 12; // mov rax, imm64; jmp rax
+    private const int HOOK_LENGTH_X86 = 5;  // jmp rel32
+
+    private static readonly object HookSync = new object();
+
+    private static IntPtr _iscwTargetPtr = IntPtr.Zero;
+    private static byte[] _iscwOriginalBytes;
+    private static int _iscwPrologueLen;
+    private static IntPtr _iscwTrampolinePtr = IntPtr.Zero;
+    private static InitializeSecurityContextW_Delegate _iscwOriginalDelegate; // unused with unhook-call strategy
+    private static Delegate _currentHookDelegate; // keep hook delegate alive
+    private static bool _hookInstalled;
+    private static IntPtr _emptySpn = IntPtr.Zero; // stable SPN buffer
+
+    private static int HookLength
+    {
+        get { return IntPtr.Size == 8 ? HOOK_LENGTH_X64 : HOOK_LENGTH_X86; }
+    }
+
+    // Compute a safe prologue length by summing whole instruction lengths for common x64 prologue patterns
+    private static int GetSafePrologueLength(IntPtr funcPtr, int minLen)
+    {
+        int offset = 0;
+        // Read up to 64 bytes of prologue to be safe
+        byte[] buf = new byte[64];
+        Marshal.Copy(funcPtr, buf, 0, buf.Length);
+
+        while (offset < buf.Length && offset < 32) // limit scanning
+        {
+            byte b = buf[offset];
+            int len = 0;
+
+            // Common single-byte ops
+            if (b == 0x55) { len = 1; } // push rbp
+            else if (b == 0x48 && offset + 2 < buf.Length && buf[offset+1] == 0x89 && buf[offset+2] == 0xE5) { len = 3; } // mov rbp,rsp
+            else if (b == 0x48 && offset + 3 < buf.Length && buf[offset+1] == 0x83 && buf[offset+2] == 0xEC) { len = 4; } // sub rsp, imm8
+            else if (b == 0x48 && offset + 6 < buf.Length && buf[offset+1] == 0x81 && buf[offset+2] == 0xEC) { len = 7; } // sub rsp, imm32
+            else if (b == 0x48 && offset + 2 < buf.Length && buf[offset+1] == 0x8B) { len = 3; } // mov r64, r/m64 (simple)
+            else if (b == 0x48 && offset + 6 < buf.Length && (buf[offset+1] == 0x8D || buf[offset+1] == 0x8B)) { len = 7; } // lea/mov RIP-rel (approx)
+            else if ((b & 0xF0) == 0x50) { len = 1; } // push/pop r64
+            else if (b == 0x40 || b == 0x41 || b == 0x48 || b == 0x49) { // REX prefix: try to parse next simple opcode
+                // Assume next opcode is 0x89/0x8B reg/mem form => 3 bytes minimal
+                len = 1; // count rex, then loop will process next
+            }
+            else if (b == 0xE9) { len = 5; } // jmp rel32
+            else if (b == 0xEB) { len = 2; } // jmp rel8
+            else if (b == 0x90) { len = 1; } // nop
+            else {
+                // Fallback: assume 1 byte to avoid stalling
+                len = 1;
+            }
+
+            offset += len;
+            if (offset >= minLen) break;
+        }
+        if (offset < minLen) offset = minLen; // ensure minimum
+        return offset;
+    }
+
+    private static void EnsureInitializeSecurityContextHookInfrastructure()
+    {
+        if (_iscwTargetPtr != IntPtr.Zero && _iscwTrampolinePtr != IntPtr.Zero && _iscwOriginalDelegate != null)
+            return;
+
+        // Resolve to SspiCli.dll (secur32 often forwards this export)
+        var mod = GetModuleHandle("SspiCli.dll");
+        if (mod == IntPtr.Zero)
+        {
+            mod = LoadLibrary("SspiCli.dll");
+            if (mod == IntPtr.Zero)
+                throw new InvalidOperationException("Unable to load SspiCli.dll");
+        }
+
+        var target = GetProcAddress(mod, "InitializeSecurityContextW");
+        if (target == IntPtr.Zero)
+            throw new InvalidOperationException("Unable to locate InitializeSecurityContextW");
+
+        _iscwTargetPtr = target;
+
+        // Save original bytes (copy whole instructions for safe trampoline)
+        _iscwPrologueLen = GetSafePrologueLength(_iscwTargetPtr, HookLength);
+        _iscwOriginalBytes = new byte[_iscwPrologueLen];
+        Marshal.Copy(_iscwTargetPtr, _iscwOriginalBytes, 0, _iscwPrologueLen);
+
+        // Allocate trampoline (original bytes + jump back)
+        var trampSize = (uint)(_iscwPrologueLen + (IntPtr.Size == 8 ? HOOK_LENGTH_X64 : HOOK_LENGTH_X86));
+        _iscwTrampolinePtr = VirtualAlloc(
+            IntPtr.Zero,
+            (UIntPtr)trampSize,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE);
+
+        if (_iscwTrampolinePtr == IntPtr.Zero)
+            throw new InvalidOperationException("Unable to allocate trampoline memory");
+
+        // Copy original bytes into trampoline
+        Marshal.Copy(_iscwOriginalBytes, 0, _iscwTrampolinePtr, _iscwPrologueLen);
+
+        // Append jump back to original function (after overwritten bytes)
+        var jmpBackSrc = _iscwTrampolinePtr + _iscwPrologueLen;
+        var jmpBackDst = _iscwTargetPtr + _iscwPrologueLen;
+        WriteJump(jmpBackSrc, jmpBackDst);
+
+        // Create delegate that calls the trampoline (this is "original" function)
+        // Trampoline delegate not required with unhook-call strategy
+        _iscwOriginalDelegate = null;
+    }
+
+    private static void InstallInitializeSecurityContextHookInternal(IntPtr hookPtr)
+    {
+        var size = (UIntPtr)HookLength;
+        uint oldProtect;
+        if (!VirtualProtect(_iscwTargetPtr, size, PAGE_EXECUTE_READWRITE, out oldProtect))
+            throw new InvalidOperationException("VirtualProtect failed when installing hook");
+
+        WriteJump(_iscwTargetPtr, hookPtr);
+
+        uint dummy;
+        VirtualProtect(_iscwTargetPtr, size, oldProtect, out dummy);
+        FlushInstructionCache(GetCurrentProcess(), _iscwTargetPtr, size);
+    }
+
+    private static void InstallInitializeSecurityContextHook(InitializeSecurityContextW_Delegate hookDelegate)
+    {
+        lock (HookSync)
+        {
+            EnsureInitializeSecurityContextHookInfrastructure();
+
+            if (_hookInstalled)
+                return;
+
+            _currentHookDelegate = hookDelegate; // keep alive
+
+            var hookPtr = Marshal.GetFunctionPointerForDelegate(hookDelegate);
+            InstallInitializeSecurityContextHookInternal(hookPtr);
+
+            _hookInstalled = true;
+        }
+    }
+
+    private static void UninstallInitializeSecurityContextHookInternal()
+    {
+        var size = (UIntPtr)Math.Max(HookLength, _iscwOriginalBytes != null ? _iscwOriginalBytes.Length : HookLength);
+        uint oldProtect;
+        if (!VirtualProtect(_iscwTargetPtr, size, PAGE_EXECUTE_READWRITE, out oldProtect))
+            throw new InvalidOperationException("VirtualProtect failed when uninstalling hook");
+
+        if (_iscwOriginalBytes != null)
+            Marshal.Copy(_iscwOriginalBytes, 0, _iscwTargetPtr, _iscwOriginalBytes.Length);
+
+        uint dummy;
+        VirtualProtect(_iscwTargetPtr, size, oldProtect, out dummy);
+        FlushInstructionCache(GetCurrentProcess(), _iscwTargetPtr, size);
+    }
+
+    private static void UninstallInitializeSecurityContextHook()
+    {
+        lock (HookSync)
+        {
+            if (!_hookInstalled)
+                return;
+
+            UninstallInitializeSecurityContextHookInternal();
+
+            _hookInstalled = false;
+            _currentHookDelegate = null;
+        }
+    }
+
+    private static void WriteJump(IntPtr src, IntPtr dst)
+    {
+        if (IntPtr.Size == 8)
+        {
+            // x64: mov rax, imm64; jmp rax   (12 bytes)
+            var jmp = new byte[HOOK_LENGTH_X64];
+
+            jmp[0] = 0x48; // REX.W
+            jmp[1] = 0xB8; // mov rax, imm64
+            var addrBytes = BitConverter.GetBytes(dst.ToInt64());
+            Buffer.BlockCopy(addrBytes, 0, jmp, 2, 8);
+            jmp[10] = 0xFF; // jmp rax
+            jmp[11] = 0xE0;
+
+            Marshal.Copy(jmp, 0, src, jmp.Length);
+        }
+        else
+        {
+            // x86: jmp rel32   (5 bytes)
+            var jmp = new byte[HOOK_LENGTH_X86];
+            jmp[0] = 0xE9; // jmp rel32
+            int rel = dst.ToInt32() - src.ToInt32() - HOOK_LENGTH_X86;
+            var relBytes = BitConverter.GetBytes(rel);
+            Buffer.BlockCopy(relBytes, 0, jmp, 1, 4);
+            Marshal.Copy(jmp, 0, src, jmp.Length);
+        }
+    }
+
+    #endregion
+
+    #region Hook implementations
+
+    // Temporarily unhook, call the original function, then rehook.
+    private static int CallOriginalInitializeSecurityContextW(
+        IntPtr phCredential,
+        IntPtr phContext,
+        IntPtr pszTargetName,
+        uint fContextReq,
+        uint Reserved1,
+        uint TargetDataRep,
+        IntPtr pInput,
+        uint Reserved2,
+        IntPtr phNewContext,
+        IntPtr pOutput,
+        IntPtr pfContextAttr,
+        IntPtr ptsExpiry)
+    {
+        // Unhook
+        lock (HookSync)
+        {
+            if (_hookInstalled)
+            {
+                UninstallInitializeSecurityContextHookInternal();
+                _hookInstalled = false;
+            }
+        }
+
+        int ret;
+        try
+        {
+            ret = InitializeSecurityContextW(
+                phCredential,
+                phContext,
+                pszTargetName,
+                fContextReq,
+                Reserved1,
+                TargetDataRep,
+                pInput,
+                Reserved2,
+                phNewContext,
+                pOutput,
+                pfContextAttr,
+                ptsExpiry);
+        }
+        finally
+        {
+            // Rehook
+            if (_currentHookDelegate != null)
+            {
+                var hookPtr = Marshal.GetFunctionPointerForDelegate(_currentHookDelegate);
+                lock (HookSync)
+                {
+                    InstallInitializeSecurityContextHookInternal(hookPtr);
+                    _hookInstalled = true;
+                }
+            }
+        }
+
+        return ret;
+    }
+
+    public static int InitializeSecurityContextW_SBT_Hook(
+        IntPtr phCredential,
+        IntPtr phContext,
+        IntPtr pszTargetName,
+        uint fContextReq,
+        uint Reserved1,
+        uint TargetDataRep,
+        IntPtr pInput,
+        uint Reserved2,
+        IntPtr phNewContext,
+        IntPtr pOutput,
+        IntPtr pfContextAttr,
+        IntPtr ptsExpiry)
+    {
+        // Replace the target SPN with a stable, preallocated buffer
+        if (_emptySpn == IntPtr.Zero)
+        {
+            // allocate once for process lifetime
+            _emptySpn = Marshal.StringToHGlobalUni("empty");
+        }
+        if (pszTargetName != IntPtr.Zero)
+        {
+            pszTargetName = _emptySpn;
+        }
+
+        return CallOriginalInitializeSecurityContextW(
+            phCredential,
+            phContext,
+            pszTargetName,
+            fContextReq,
+            Reserved1,
+            TargetDataRep,
+            pInput,
+            Reserved2,
+            phNewContext,
+            pOutput,
+            pfContextAttr,
+            ptsExpiry);
+    }
+
+    public static int InitializeSecurityContextW_CBT_Hook(
+        IntPtr phCredential,
+        IntPtr phContext,
+        IntPtr pszTargetName,
+        uint fContextReq,
+        uint Reserved1,
+        uint TargetDataRep,
+        IntPtr pInput,
+        uint Reserved2,
+        IntPtr phNewContext,
+        IntPtr pOutput,
+        IntPtr pfContextAttr,
+        IntPtr ptsExpiry)
+    {
+        if (pInput != IntPtr.Zero)
+        {
+            var desc = (SecBufferDesc)Marshal.PtrToStructure(pInput, typeof(SecBufferDesc));
+            if (desc.cBuffers > 0 && desc.pBuffers != IntPtr.Zero)
+            {
+                int secBufSize = Marshal.SizeOf(typeof(SecBuffer));
+                for (uint i = 0; i < desc.cBuffers; i++)
+                {
+                    var ptr = new IntPtr(desc.pBuffers.ToInt64() + (i * secBufSize));
+                    var buf = (SecBuffer)Marshal.PtrToStructure(ptr, typeof(SecBuffer));
+
+                    // SECBUFFER_CHANNEL_BINDINGS = 0x0e
+                    if (buf.BufferType == 0x0e && buf.pvBuffer != IntPtr.Zero && buf.cbBuffer > 0)
+                    {
+                        var zeroes = new byte[buf.cbBuffer];
+                        Marshal.Copy(zeroes, 0, buf.pvBuffer, buf.cbBuffer);
+                    }
+                }
+            }
+        }
+
+        return CallOriginalInitializeSecurityContextW(
+            phCredential,
+            phContext,
+            pszTargetName,
+            fContextReq,
+            Reserved1,
+            TargetDataRep,
+            pInput,
+            Reserved2,
+            phNewContext,
+            pOutput,
+            pfContextAttr,
+            ptsExpiry);
+    }
+
+    #endregion
+
+    #region SQL connectivity helpers
+
+    public static string TryConnectDb(string host)
+    {
+        using (SqlConnection conn = new SqlConnection(string.Format("Data Source={0};Integrated Security=SSPI;", host)))
+        {
+            try
+            {
+                conn.Open();
+                return "success";
+            }
+            catch (Exception e)
+            {
+                if (e.Message.Contains("Login failed for"))
+                    return "login failed";
+                else if (e.Message.Contains("The login is from an untrusted domain"))
+                    return "untrusted domain";
+                else
+                    return e.Message;
+            }
+            finally
+            {
+                // .NET appears to reuse SQL connections
+                // We need to clear the SQL connection pool to create new connection attempts
+                SqlConnection.ClearPool(conn);
+            }
+        }
+    }
+
+    public static string TryConnectDb_NoSb(string host)
+    {
+        var hookDelegate = new InitializeSecurityContextW_Delegate(InitializeSecurityContextW_SBT_Hook);
+        string result;
+
+        InstallInitializeSecurityContextHook(hookDelegate);
+        try
+        {
+            result = TryConnectDb(host);
+        }
+        finally
+        {
+            UninstallInitializeSecurityContextHook();
+        }
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
+        return result;
+    }
+
+    public static string TryConnectDb_NoCbt(string host)
+    {
+        var hookDelegate = new InitializeSecurityContextW_Delegate(InitializeSecurityContextW_CBT_Hook);
+        string result;
+
+        InstallInitializeSecurityContextHook(hookDelegate);
+        try
+        {
+            result = TryConnectDb(host);
+        }
+        finally
+        {
+            UninstallInitializeSecurityContextHook();
+        }
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
+        return result;
+    }
+
+    #endregion
+
+    #region Public EPA test wrapper
+
+    public static EPATestResult TestEPA(string serverString)
+    {
+        var result = new EPATestResult
+        {
+            UnmodifiedConnection = TryConnectDb(serverString),
+            NoSBConnection = TryConnectDb_NoSb(serverString),
+            NoCBTConnection = TryConnectDb_NoCbt(serverString)
+        };
+
+        return result;
+    }
+
+    public class EPATestResult
+    {
+        public string PortIsOpen { get; set; }
+        public string ForceEncryption { get; set; }
+        public string ExtendedProtection { get; set; }
+        public string UnmodifiedConnection { get; set; }
+        public string NoSBConnection { get; set; }
+        public string NoCBTConnection { get; set; }
+    }
+    
+    #endregion
+}
+"@ -ReferencedAssemblies @(
+    "System.dll",
+    "System.Data.dll",
+    "System.Runtime.InteropServices.dll",
+    #"${sqlClientAsm}.dll",
+    "System.Threading.dll",
+    "System.Runtime.dll"
+) -ErrorAction Stop
+            # Build connection string for EPA test
+            Write-Host "Testing EPA settings for $($ServerString)"
+            
+            # Run the EPA test
+            $epaResult = [EPATester]::TestEPA($ServerString)
+            $epaResult.PortIsOpen = $portIsOpen
+            $epaResult.ForceEncryption = $forceEncryption
+    
+            Write-Host "  Unmodified connection: $($epaResult.UnmodifiedConnection)"
+            Write-Host "  No SB connection: $($epaResult.NoSBConnection)"
+            Write-Host "  No CBT connection: $($epaResult.NoCBTConnection)"
+    
+            # Channel binding token only considered when ForceEncryption is Yes
+            # Service binding checked when ForceEncryption is No and EPA is Allowed/Required, preventing relay
+            if ($epaResult.NoSBConnection -eq "untrusted domain") {
+                Write-Host "  Extended Protection: Allowed/Required (service binding)"
+                $epaResult.ExtendedProtection = "Allowed/Required"
+    
+            # Channel binding token checked when ForceEncryption is On and EPA is Allowed/Required, preventing relay                
+            } elseif ($epaResult.NoCBTConnection -eq "untrusted domain") {
+                Write-Host "  Extended Protection: Allowed/Required (channel binding)"
+                $epaResult.ExtendedProtection = "Allowed/Required"
+    
+            # If we didn't get an "untrusted domain" message when dropping service or channel binding info, EPA is not Allowed/Required if the connection didn't fail, whether or not login failed/succeeded
+            } elseif ($epaResult.UnmodifiedConnection -eq "success" -or $epaResult.UnmodifiedConnection -eq "login failed") {
+                Write-Host "  Extended Protection: Off"                
+                $epaResult.ExtendedProtection = "Off"
+            } else {
+                Write-Warning "There was an unexpected EPA configuration"
+                $epaResult.ExtendedProtection = "Error detecting settings"
+            }                 
+        } catch {
+            Write-Error "EPA testing failed: $($_.Exception.Message)"
+            # Create a minimal result object when an exception occurs
+            $epaResult = New-Object PSObject -Property @{
+                PortIsOpen = $portIsOpen
+                ForceEncryption = $forceEncryption
+                ExtendedProtection = "Error detecting settings"
+            }
+        } 
+        return $epaResult
+    }
+}
+
+function Get-SqlNumericVersion {
+    param(
+        [Parameter(Mandatory)]
+        [string]$VersionString
+    )
+
+    if ($VersionString -match '(\d+\.\d+\.\d+\.\d+)') {
+        return [version]$matches[1]
+    }
+
+    return $null
+}
+
+function Get-AlterAnyLoginVulnerability {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Version
+    )
+
+    if (-not $Version) {
+        Write-Warning "No version information found in server info, skipping CVE-2025-49758 check"
+        return
+    }
+
+    $sqlVersion = Get-SqlNumericVersion $Version
+
+    if (-not $sqlVersion) {
+        Write-Warning "Unable to parse SQL version from @@VERSION: $Version"
+    } else {
+        Write-Host "Detected SQL version: $sqlVersion"
+    }
+
+    # Check if the server is vulnerable to the ALTER ANY LOGIN password change without current password issue
+    # Reference: https://msrc.microsoft.com/update-guide/en-US/vulnerability/CVE-2025-49758
+    $sqlSecurityUpdates = @(
+        # SQL Server 2022
+        @{
+            Name        = 'SQL 2022 CU20+GDR'
+            KB          = '5063814'
+            MinAffected = [version]'16.0.4003.1'
+            MaxAffected = [version]'16.0.4205.1'
+            PatchedAt   = [version]'16.0.4210.1'
+        },
+        @{
+            Name        = 'SQL 2022 RTM+GDR'
+            KB          = '5063756'
+            MinAffected = [version]'16.0.1000.6'
+            MaxAffected = [version]'16.0.1140.6'
+            PatchedAt   = [version]'16.0.1145.1'
+        },
+
+        # SQL Server 2019
+        @{
+            Name        = 'SQL 2019 CU32+GDR'
+            KB          = '5063757'
+            MinAffected = [version]'15.0.4003.23'
+            MaxAffected = [version]'15.0.4435.7'
+            PatchedAt   = [version]'15.0.4440.1'
+        },
+        @{
+            Name        = 'SQL 2019 RTM+GDR'
+            KB          = '5063758'
+            MinAffected = [version]'15.0.2000.5'
+            MaxAffected = [version]'15.0.2135.5'
+            PatchedAt   = [version]'15.0.2140.1'
+        },
+
+        # SQL Server 2017
+        @{
+            Name        = 'SQL 2017 CU31+GDR'
+            KB          = '5063759'
+            MinAffected = [version]'14.0.3006.16'
+            MaxAffected = [version]'14.0.3495.9'
+            PatchedAt   = [version]'14.0.3500.1'
+        },
+        @{
+            Name        = 'SQL 2017 RTM+GDR'
+            KB          = '5063760'
+            MinAffected = [version]'14.0.1000.169'
+            MaxAffected = [version]'14.0.2075.8'
+            PatchedAt   = [version]'14.0.2080.1'
+        },
+
+        # SQL Server 2016
+        @{
+            Name        = 'SQL 2016 Azure Connect Feature Pack'
+            KB          = '5063761'
+            MinAffected = [version]'13.0.7000.253'
+            MaxAffected = [version]'13.0.7055.9'
+            PatchedAt   = [version]'13.0.7060.1'
+        },
+        @{
+            Name        = 'SQL 2016 SP3 RTM+GDR'
+            KB          = '5063762'
+            MinAffected = [version]'13.0.6300.2'
+            MaxAffected = [version]'13.0.6460.7'
+            PatchedAt   = [version]'13.0.6465.1'
+        }
+    )
+
+    # Check if SQL version is lower than SQL 2016 (version 13.x)
+    $isSQLVersionLowerThan2016 = $sqlVersion -and $sqlVersion -lt [version]'13.0.0.0'
+
+    $patchedResults = foreach ($update in $sqlSecurityUpdates) {
+
+        $applies =
+            $sqlVersion -ge $update.MinAffected -and
+            $sqlVersion -le $update.MaxAffected
+
+        $installed =
+            $sqlVersion -ge $update.PatchedAt
+
+        [pscustomobject]@{
+            VersionDetected = $sqlVersion.ToString()
+            UpdateName      = $update.Name
+            KB              = $update.KB
+            IsVulnerable    = ($applies -and -not $installed) -or $isSQLVersionLowerThan2016
+            IsPatched       = $installed
+            RequiredVersion = $update.PatchedAt.ToString()
+        }
+    }
+
+    # If version is lower than SQL 2016, add a result showing it's vulnerable
+    if ($isSQLVersionLowerThan2016) {
+        [pscustomobject]@{
+            VersionDetected = $sqlVersion.ToString()
+            UpdateName      = 'SQL Server < 2016'
+            KB              = 'N/A'
+            IsVulnerable    = $true
+            IsPatched       = $false
+            RequiredVersion = '13.0.6300.2 (SQL 2016 SP3)'
+        } | ForEach-Object { $patchedResults += $_ }
+    }
+
+    # Print if server is vulnerable or not
+    $isVuln = $false
+    foreach ($result in $patchedResults) {
+        if ($result.IsVulnerable) {
+            $isVuln = $true
+            break
+        }
+    }
+
+    if ($isVuln) {
+        Write-Host "The SQL Server is VULNERABLE to CVE-2025-49758"
+    } else {
+        Write-Host "The SQL Server is NOT vulnerable to CVE-2025-49758"
+    }
+
+    return $patchedResults
+}
+
 # Unified function to process SQL principals (server or database)
 function Process-SQLPrincipals {
     param (
@@ -5882,7 +6828,9 @@ function Process-ServerInstance {
     }
 
     # Before authenticating to the DBMS, test EPA from an unauthenticated perspective
-    # Work in progress
+    $epaResult = Get-MssqlEpaSettingsViaTDS -ServerNameOrIP $ServerName -Port $Port -ServerString $serverString
+    $serverInfo.ExtendedProtection = $epaResult.ExtendedProtection
+    $serverInfo.ForceEncryption = $epaResult.ForceEncryption
 
     # Create a connection to SQL Server
     $connectionString = "Server=${serverString};Database=master"
@@ -7990,9 +8938,18 @@ ORDER BY p.proxy_id
                 }
             }
         }
-            
+
+        # Check for ALTER ANY LOGIN vulnerability patch
+        if ($serverInfo.Version) {
+            Write-Host "Checking for CVE-2025-49758 patch status..."
+            $patchedResults = Get-AlterAnyLoginVulnerability -Version $serverInfo.Version
+        } else {
+            Write-Warning "Skipping CVE-2025-49758 patch status check - server version unknown"
+        }
+
         # Process Server Principal Permissions
         Write-Host "Creating edges for server principals"
+
         foreach ($principal in $serverInfo.ServerPrincipals) {
             
             foreach ($perm in $principal.Permissions) {
@@ -8076,8 +9033,28 @@ ORDER BY p.proxy_id
 
                                     # Create edge if the target does not have sysadmin or CONTROL SERVER
                                     if (-not ($targetHasSysadmin -or $targetHasControlServer)) {
-                                        Set-EdgeContext -SourcePrincipal $principal -TargetPrincipal $targetPrincipal -Permission $perm
-                                        Add-Edge -Kind "MSSQL_ChangePassword"
+
+                                        if ($patchedResults -ne $null) {
+                                            # Check for MSSQL version higher than patched version for CVE-2025-49758
+                                            if (($patchedResults | Where-Object { $_.IsVulnerable }).Count -gt 0) {
+                                                # Unpatched - can change password without current password
+                                                Set-EdgeContext -SourcePrincipal $principal -TargetPrincipal $targetPrincipal -Permission $perm
+                                                Add-Edge -Kind "MSSQL_ChangePassword"
+                                            } else {
+                                                # Patched - also need to check for securityadmin role membership or IMPERSONATE ANY LOGIN permission
+                                                $targetHasSecurityadmin = Get-NestedRoleMembership -Principal $targetPrincipal -TargetRoleName "securityadmin" -ServerInfo $serverInfo
+                                                $targetHasImpersonateAnyLogin = Get-EffectivePermissions -Principal $targetPrincipal -TargetPermission "IMPERSONATE ANY LOGIN" -ServerInfo $serverInfo
+
+                                                if (-not ($targetHasSecurityadmin -or $targetHasImpersonateAnyLogin)) {
+                                                    Set-EdgeContext -SourcePrincipal $principal -TargetPrincipal $targetPrincipal -Permission $perm
+                                                    Add-Edge -Kind "MSSQL_ChangePassword"
+                                                } else {
+                                                    Write-Host "Skipping MSSQL_ChangePassword edge from $($principal.Name) to $($targetPrincipal.Name) because server is patched for CVE-2025-49758 and target has securityadmin role or IMPERSONATE ANY LOGIN permission"
+                                                }
+                                            }
+                                        } else {
+                                            # No patch info - assume not vulnerable to reduce false positives
+                                        }
                                     } else {
                                         # If target has sysadmin or CONTROL SERVER, the source must also have sysadmin or CONTROL SERVER
                                         # If source is sysadmin or has CONTROL SERVER, don't create the edge because they can just abuse those permissions without ALTER LOGIN
