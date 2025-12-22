@@ -1093,10 +1093,11 @@ function New-StreamingBloodHoundWriter {
     
     # Start JSON structure
     $writerObj.Writer.WriteLine('{')
+    $writerObj.Writer.WriteLine('  "$schema": "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json",')
+    $writerObj.Writer.WriteLine('  "metadata": {')
+    $writerObj.Writer.WriteLine('    "source_kind": "MSSQL_Base"')
+    $writerObj.Writer.WriteLine('  },')
     $writerObj.Writer.WriteLine('  "graph": {')
-    $writerObj.Writer.WriteLine('    "metadata": {')
-    $writerObj.Writer.WriteLine('      "source_kind": "MSSQL_Base"')
-    $writerObj.Writer.WriteLine('    },')    
     $writerObj.Writer.WriteLine('    "nodes": [')
     $writerObj.Writer.Flush()
     
