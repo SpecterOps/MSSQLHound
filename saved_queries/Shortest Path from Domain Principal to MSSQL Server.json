@@ -1,0 +1,1 @@
+{"query":"MATCH p = shortestPath((n:Base)-[*1..]-\u003e(m:MSSQL_Server))\nWHERE NOT n = m\nRETURN p\nORDER BY LENGTH(p) DESC\nLIMIT 1","name":"Shortest Path from Domain Principal to MSSQL Server","description":""}

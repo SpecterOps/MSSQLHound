@@ -1,0 +1,1 @@
+{"query":"MATCH p = shortestPath((n)-[*1..]-\u003e(m))\nWHERE NOT n = m\nRETURN p\nORDER BY LENGTH(p) DESC\nLIMIT 1","name":"Longest Shortest Path","description":"Identifies the shortest path between any two nodes that has the most traversable edges between them"}
