@@ -5,81 +5,49 @@
   "graph": {
     "nodes": [
       {
-        "kinds": ["MSSQL_Server"],
-        "id": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01",
-        "properties": { "name": "FakeMSSQLServer" }
-      },
-      {
-        "kinds": ["MSSQL_Login"],
-        "id": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa",
-        "properties": { "name": "FakeLogin" }
-      },
-      {
-        "kinds": ["MSSQL_ServerRole"],
-        "id": "srvrole-91d41f0e-9b77-47a7-8c0c-9c9ef42c17a3",
-        "properties": { "name": "FakeServerRole" }
-      },
-      {
-        "kinds": ["MSSQL_Database"],
-        "id": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4",
-        "properties": { "name": "FakeDatabase" }
-      },
-      {
-        "kinds": ["MSSQL_DatabaseUser"],
-        "id": "dbuser-6cfe3d9a-9c2e-4d73-bc70-8a53f8bb5d61",
-        "properties": { "name": "FakeDBUser" }
-      },
-      {
-        "kinds": ["MSSQL_DatabaseRole"],
-        "id": "dbrole-7fbc1d94-bf34-46aa-a9d4-41a7c68e1c92",
-        "properties": { "name": "FakeDBRole" }
-      },
-      {
-        "kinds": ["MSSQL_ApplicationRole"],
-        "id": "approle-0e92b3c3-2a63-4b7a-b2c2-87db1c64a5ef",
-        "properties": { "name": "FakeAppRole" }
-      },
-      {
-        "kinds": ["Computer"],
-        "id": "comp-8c2cfa6a-2a7e-41c4-8bdf-9cfc3c2e7f9a",
-        "properties": { "name": "FakeHost" }
+        "kinds": ["IgnoreMe"],
+        "id": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01",
+        "properties": { "name": "IgnoreMe" }
       }
     ],
     "edges": [
-      { "kind": "CoerceAndRelayToMSSQL", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_AddMember", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srvrole-91d41f0e-9b77-47a7-8c0c-9c9ef42c17a3" } },
-      { "kind": "MSSQL_Alter", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } },
-      { "kind": "MSSQL_AlterAnyAppRole", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "approle-0e92b3c3-2a63-4b7a-b2c2-87db1c64a5ef" } },
-      { "kind": "MSSQL_AlterAnyDBRole", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "dbrole-7fbc1d94-bf34-46aa-a9d4-41a7c68e1c92" } },
-      { "kind": "MSSQL_AlterAnyLogin", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_AlterAnyServerRole", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srvrole-91d41f0e-9b77-47a7-8c0c-9c9ef42c17a3" } },
-      { "kind": "MSSQL_ChangeOwner", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } },
-      { "kind": "MSSQL_ChangePassword", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_Connect", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_ConnectAnyDatabase", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_Contains", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } },
-      { "kind": "MSSQL_Control", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_ControlDB", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } },
-      { "kind": "MSSQL_ControlServer", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_ExecuteAs", "start": { "value": "dbuser-6cfe3d9a-9c2e-4d73-bc70-8a53f8bb5d61" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_ExecuteAsOwner", "start": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_ExecuteOnHost", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "comp-8c2cfa6a-2a7e-41c4-8bdf-9cfc3c2e7f9a" } },
-      { "kind": "MSSQL_GetAdminTGS", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_GetTGS", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_GrantAnyDBPermission", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } },
-      { "kind": "MSSQL_GrantAnyPermission", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_HasLogin", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_HostFor", "start": { "value": "comp-8c2cfa6a-2a7e-41c4-8bdf-9cfc3c2e7f9a" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_Impersonate", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_ImpersonateAnyLogin", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_IsMappedTo", "start": { "value": "dbuser-6cfe3d9a-9c2e-4d73-bc70-8a53f8bb5d61" }, "end": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" } },
-      { "kind": "MSSQL_IsTrustedBy", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_LinkedAsAdmin", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_LinkedTo", "start": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_MemberOf", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srvrole-91d41f0e-9b77-47a7-8c0c-9c9ef42c17a3" } },
-      { "kind": "MSSQL_Owns", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } },
-      { "kind": "MSSQL_ServiceAccountFor", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "srv-9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
-      { "kind": "MSSQL_TakeOwnership", "start": { "value": "login-4e21bcb1-8e5a-4c4e-9bfa-2e1c3fd812aa" }, "end": { "value": "db-2fa78b84-5a69-44f1-bf4a-3f9f7e61e2c4" } }
+      { "kind": "CoerceAndRelayToMSSQL", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_AddMember", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_Alter", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_AlterAnyAppRole", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_AlterAnyDBRole", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_AlterAnyLogin", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_AlterAnyServerRole", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ChangeOwner", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ChangePassword", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_Connect", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ConnectAnyDatabase", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_Contains", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_Control", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ControlDB", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ControlServer", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ExecuteAs", "start": { "value": "dbuser-6cfe3d9a-9c2e-4d73-bc70-8a53f8bb5d61" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ExecuteAsOwner", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ExecuteOnHost", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_GetAdminTGS", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_GetTGS", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_GrantAnyDBPermission", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_GrantAnyPermission", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_HasDBScopedCred", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_HasLogin", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_HasMappedCred", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_HasProxyCred", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_HostFor", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_Impersonate", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ImpersonateAnyLogin", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_IsMappedTo", "start": { "value": "dbuser-6cfe3d9a-9c2e-4d73-bc70-8a53f8bb5d61" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_IsTrustedBy", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_LinkedAsAdmin", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_LinkedTo", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_MemberOf", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_Owns", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_ServiceAccountFor", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_TakeOwnership", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } }
     ]
   }
 }

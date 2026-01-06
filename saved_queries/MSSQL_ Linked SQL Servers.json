@@ -1,0 +1,1 @@
+{"query":"MATCH p = (:MSSQL_Server)-[:MSSQL_LinkedAsAdmin|:MSSQL_LinkedTo]-\u003e(:MSSQL_Server) RETURN p","name":"MSSQL: Linked SQL Servers","description":""}

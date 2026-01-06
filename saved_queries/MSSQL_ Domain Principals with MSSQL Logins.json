@@ -1,0 +1,1 @@
+{"query":"MATCH p = (:Base)-[:MSSQL_HasLogin]-\u003e() RETURN p","name":"MSSQL: Domain Principals with MSSQL Logins","description":""}

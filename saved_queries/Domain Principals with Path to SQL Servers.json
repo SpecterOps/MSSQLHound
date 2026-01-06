@@ -1,1 +1,0 @@
-{"query":"MATCH p = ()-[:CoerceAndRelayToMSSQL|MSSQL_GetTGS|MSSQL_GetAdminTGS|MSSQL_HasLogin|MSSQL_HostFor|MSSQL_ServiceAccountFor]-\u003e() RETURN p","name":"Domain Principals with Path to SQL Servers","description":""}

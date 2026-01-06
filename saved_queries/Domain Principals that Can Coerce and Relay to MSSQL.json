@@ -1,1 +1,0 @@
-{"query":"MATCH p = ()-[:CoerceAndRelayToMSSQL]-\u003e() RETURN p","name":"Domain Principals that Can Coerce and Relay to MSSQL","description":"Paths from domain computer principals to their corresponding SQL Server logins on servers where EPA is not required"}

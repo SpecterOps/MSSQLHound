@@ -1,0 +1,1 @@
+{"query":"MATCH p = ()-[:MSSQL_ExecuteOnHost|MSSQL_HasDBScopedCred|MSSQL_HasMappedCred|MSSQL_HasProxyCred]-\u003e(:Base) RETURN p","name":"MSSQL: Paths from MSSQL to Active Directory","description":""}
