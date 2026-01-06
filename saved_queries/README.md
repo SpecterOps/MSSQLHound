@@ -1,0 +1,1 @@
+Please not that you must ingest the `seed_data.json` file in order to successfully run the prebuilt Cypher queries in this directory if any of the edge classes are not already present in your BloodHound graph database.
