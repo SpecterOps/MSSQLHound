@@ -76,6 +76,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
   - PowerShell 4.0 or higher
   - Target is running SQL Server 2005 or higher
   - BloodHound v8.0.0+
+  - PowerShell 7+: EPA testing requires `Microsoft.Data.SqlClient` (install from NuGet if not present)
 
 ## Minimum Permissions:
 ### Windows Level:
@@ -108,6 +109,18 @@ Run MSSQLHound from a box where you aren’t highly concerned about resource con
 If you don't already have a specific target or targets in mind, start by running the script with the `-DomainEnumOnly` flag set to see just how many servers you’re dealing with in Active Directory. Then, use the `-ServerInstance` option to run it again for a single server or add all of the servers that look interesting to a file and run it again with the `-ServerListFile` option. 
 
 If you don't do a dry run first and collect from all SQL servers with SPNs in the domain (the default action), expect the script to take a very long time to finish and eat up a ton of disk space if there ar a lot of servers in the environment. Based on limited testing in client environments, the file size for each server before they are all zipped ranges significantly from 2MB to 50MB+, depending on how many objects are on the server.
+
+### Port-based SQL Server discovery
+If SPNs are unreliable or incomplete in your environment, you can discover SQL Servers by scanning ports on domain computers and/or subnets.
+
+Key options:
+- `-ScanDomainComputers` to enumerate all enabled AD computer objects and scan each host
+- `-ScanSubnets` to scan specific subnets (CIDR, range, or single IP)
+- `-ScanPorts` to customize ports (default `1433,1434`)
+- `-ScanTimeout` and `-ScanThreads` to tune performance
+- `-SkipSPNEnum` to skip SPN enumeration entirely
+
+PowerShell 7+ note for EPA: if you see an EPA compile error, install Microsoft.Data.SqlClient (NuGet) before running.
 
 To populate the MSSQL node glyphs in BloodHound, execute `MSSQLHound.ps1 -OutputFormat BloodHound-customnodes` (or copy the following) and use the API Explorer page to submit the JSON to the `custom-nodes` endpoint.
 
@@ -203,6 +216,14 @@ For the latest and most reliable information, please execute MSSQLHound with the
 | **-Password** `<string>` | • Specify a **password** for the login used to connect to the remote server(s) |
 | **-Domain** `<string>` | • Specify a **domain** to use for name and SID resolution |
 | **-DomainController** `<string>` | • Specify a **domain controller** FQDN/IP to use for name and SID resolution |
+| **-ScanSubnets** `<string>` | • Comma-separated list of subnets to scan for SQL ports<br>• Supports CIDR, range, or single IP |
+| **-ScanPorts** `<string>` | • Comma-separated list of ports to scan<br>• Default: `1433,1434` |
+| **-ScanTimeout** `<uint>` | • Timeout in milliseconds for port scan connections<br>• Default: `500` |
+| **-ScanThreads** `<uint>` | • Number of concurrent threads for port scanning<br>• Default: `50` |
+| **-SkipSPNEnum** (switch) | • **On**: Skip SPN enumeration (useful for port-only discovery)<br>• **Off (default)**: Enumerate SPNs |
+| **-ScanDomainComputers** (switch) | • **On**: Enumerate enabled AD computer objects and scan each host for SQL ports<br>• **Off (default)**: Do not scan all domain computers |
+| **-ScanComputerFilter** `<string>` | • LDAP filter for domain computer scanning<br>• Default: `(&(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))` |
+| **-ScanComputerLimit** `<uint>` | • Limit the number of computers scanned from AD (0 = no limit) |
 | **-IncludeNontraversableEdges** (switch) | • **On**: • Collect both **traversable and non-traversable edges**<br>• **Off (default)**: Collect **only traversable edges** (good for offensive engagements until Pathfinding supports OpenGraph edges) |
 | **-MakeInterestingEdgesTraversable** (switch) | • **On**: Make the following edges traversable (useful for offensive engagements but prone to false positive edges that may not be abusable):<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasDBScopedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasMappedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasProxyCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_IsTrustedBy**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_LinkedTo**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_ServiceAccountFor**<br>• **Off (default)**: The edges above are non-traversable |
 | **-SkipLinkedServerEnum** (switch) | • **On**: Don't enumerate linked servers<br>• **Off (default)**: Enumerate linked servers |

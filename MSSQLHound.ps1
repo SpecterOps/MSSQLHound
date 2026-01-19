@@ -142,6 +142,42 @@ Supported values:
 .PARAMETER FileSizeUpdateInterval
 Receive periodic size updates as files are being written for each server (in seconds)
 
+.PARAMETER ScanSubnets
+Comma-separated list of subnets to scan for SQL servers with open ports
+
+Supported formats:
+    - CIDR notation: 192.168.1.0/24, 10.0.0.0/16
+    - Range notation: 192.168.1.1-254
+    - Single IP: 192.168.1.100
+
+.PARAMETER ScanPorts
+Comma-separated list of ports to scan (default: 1433,1434)
+
+.PARAMETER ScanTimeout
+Timeout in milliseconds for port scan connection attempts (default: 500)
+
+.PARAMETER ScanThreads
+Number of concurrent threads for port scanning (default: 50)
+
+.PARAMETER SkipSPNEnum
+Switch/Flag:
+    - On: Skip SPN enumeration and only use other discovery methods (port scanning, server lists)
+    - Off (default): Perform SPN enumeration
+
+.PARAMETER ScanDomainComputers
+Switch/Flag:
+    - On: Enumerate all computers from Active Directory and scan them for open SQL ports
+    - Off (default): Do not scan domain computers
+
+.PARAMETER ScanComputerFilter
+LDAP filter for domain computer scanning (default: all enabled computers)
+Default: "(&(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+
+Examples:
+    - All computers: "(objectCategory=computer)"
+    - Only servers: "(&(objectCategory=computer)(operatingSystem=*Server*))"
+    - Specific OU: Use with domain parameter
+
 .PARAMETER Version
 Switch/Flag:
     - On: Display version information and exit
@@ -153,6 +189,26 @@ Display help text
 .EXAMPLE
 .\MSSQLHound.ps1 -DomainEnumOnly
 Enumerate SPNS in the Active Directory domain for current logon context, skipping collection from individual servers
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanSubnets "192.168.1.0/24" -SkipSPNEnum
+Scan a subnet for SQL servers without relying on SPNs
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanDomainComputers -SkipSPNEnum
+Scan all domain computers for SQL ports without relying on SPNs
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanDomainComputers -DomainEnumOnly
+Discover SQL servers by scanning all domain computers, but don't perform full collection
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanDomainComputers -ScanComputerFilter "(&(objectCategory=computer)(operatingSystem=*Server*))"
+Scan only Windows Server machines in the domain for SQL ports
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanSubnets "10.0.0.0/24,192.168.1.0/24" -ScanPorts "1433,1434,1435"
+Scan multiple subnets on custom ports in addition to SPN enumeration
 
 .EXAMPLE
 .\MSSQLHound.ps1 -ServerInstance
@@ -258,6 +314,31 @@ param(
     [switch]$DomainEnumOnly,#=$true,
 
     [switch]$InstallADModule,#=$true,
+
+    # Port scanning parameters for discovering SQL servers without SPNs
+    # Comma-separated list of subnets to scan (e.g., "192.168.1.0/24,10.0.0.0/16")
+    [string]$ScanSubnets,
+
+    # Comma-separated list of ports to scan (default: 1433,1434)
+    [string]$ScanPorts = "1433,1434",
+
+    # Timeout in milliseconds for port scan connection attempts
+    [int]$ScanTimeout = 500,
+
+    # Number of concurrent threads for port scanning
+    [int]$ScanThreads = 50,
+
+    # Skip SPN enumeration and only use port scanning
+    [switch]$SkipSPNEnum,
+
+    # Scan all domain computers for SQL ports
+    [switch]$ScanDomainComputers,
+
+    # LDAP filter for domain computer scanning (default: all enabled computers)
+    [string]$ScanComputerFilter = "(&(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))",
+
+    # Limit the number of domain computers to scan (0 = no limit)
+    [int]$ScanComputerLimit = 0,
 
     [int]$LinkedServerTimeout = 300, # seconds
 
@@ -5130,6 +5211,339 @@ function Parse-ServerListEntry {
 }
 
 # Function to collect MSSQL SPNs from Active Directory
+function Get-DomainComputers {
+    param (
+        [string]$DomainName = $script:Domain,
+        [string]$LdapFilter = "(&(objectCategory=computer)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+    )
+    
+    Write-Host "Enumerating domain computers from Active Directory..." -ForegroundColor Cyan
+    
+    $computers = @()
+    
+    try {
+        $searcher = [adsisearcher]$LdapFilter
+        if ($DomainName) {
+            $searcher.SearchRoot = [adsi]"LDAP://$DomainName"
+        }
+        $searcher.PageSize = 1000
+        $searcher.PropertiesToLoad.AddRange(@('dNSHostName', 'name', 'objectSid', 'operatingSystem'))
+        
+        $results = $searcher.FindAll()
+        
+        foreach ($result in $results) {
+            $dnsName = $null
+            $name = $null
+            $sid = $null
+            $os = $null
+            
+            if ($result.Properties['dnshostname'] -and $result.Properties['dnshostname'].Count -gt 0) {
+                $dnsName = $result.Properties['dnshostname'][0]
+            }
+            if ($result.Properties['name'] -and $result.Properties['name'].Count -gt 0) {
+                $name = $result.Properties['name'][0]
+            }
+            if ($result.Properties['objectsid'] -and $result.Properties['objectsid'].Count -gt 0) {
+                $sid = (New-Object System.Security.Principal.SecurityIdentifier($result.Properties['objectsid'][0], 0)).Value
+            }
+            if ($result.Properties['operatingsystem'] -and $result.Properties['operatingsystem'].Count -gt 0) {
+                $os = $result.Properties['operatingsystem'][0]
+            }
+            
+            # Prefer DNS hostname, fall back to name
+            $hostname = if ($dnsName) { $dnsName } else { $name }
+            
+            if ($hostname) {
+                $computers += [PSCustomObject]@{
+                    Hostname = $hostname
+                    Name = $name
+                    SID = $sid
+                    OperatingSystem = $os
+                }
+            }
+        }
+        
+        Write-Host "  Found $($computers.Count) computers in domain" -ForegroundColor Green
+        
+        # Show OS breakdown if available
+        $osGroups = $computers | Where-Object { $_.OperatingSystem } | Group-Object OperatingSystem | Sort-Object Count -Descending
+        if ($osGroups) {
+            Write-Host "  Operating System breakdown:" -ForegroundColor Gray
+            foreach ($group in $osGroups | Select-Object -First 5) {
+                Write-Host "    - $($group.Name): $($group.Count)" -ForegroundColor Gray
+            }
+            if ($osGroups.Count -gt 5) {
+                Write-Host "    - ... and $($osGroups.Count - 5) more OS types" -ForegroundColor Gray
+            }
+        }
+    }
+    catch {
+        Write-Warning "Error enumerating domain computers: $_"
+    }
+    
+    return $computers
+}
+
+function Get-MSSQLServersFromPortScan {
+    param (
+        [Parameter(Mandatory=$false)]
+        [string]$Subnets,
+        
+        [Parameter(Mandatory=$false)]
+        [array]$Hostnames,
+        
+        [string]$Ports = "1433,1434",
+        
+        [int]$Timeout = 500,
+        
+        [int]$MaxThreads = 50
+    )
+    
+    Write-Host "Scanning for SQL Servers via open ports..." -ForegroundColor Cyan
+    
+    # Parse ports
+    $portList = $Ports -split ',' | ForEach-Object { [int]$_.Trim() }
+    Write-Host "  Ports to scan: $($portList -join ', ')" -ForegroundColor Gray
+    
+    # Collect all targets (IPs from subnets + hostnames)
+    $scanTargetHosts = @()
+    
+    # Parse subnets and expand to IP addresses (only if subnets provided)
+    $ipAddresses = @()
+    if ($Subnets -and $Subnets.Trim()) {
+        foreach ($subnet in ($Subnets -split ',')) {
+            $subnet = $subnet.Trim()
+            if ([string]::IsNullOrWhiteSpace($subnet)) { continue }
+            
+            if ($subnet -match '^(\d+\.\d+\.\d+\.\d+)/(\d+)$') {
+            # CIDR notation
+            $networkAddress = $matches[1]
+            $cidr = [int]$matches[2]
+            
+            $ipBytes = [System.Net.IPAddress]::Parse($networkAddress).GetAddressBytes()
+            [Array]::Reverse($ipBytes)
+            $ipInt = [BitConverter]::ToUInt32($ipBytes, 0)
+            
+            $hostBits = 32 - $cidr
+            $numHosts = [Math]::Pow(2, $hostBits) - 2  # Exclude network and broadcast
+            
+            if ($numHosts -gt 65534) {
+                Write-Warning "Subnet $subnet has more than 65534 hosts. Consider using smaller subnets."
+                $numHosts = 65534
+            }
+            
+            $networkInt = $ipInt -band ([uint32]::MaxValue -shl $hostBits)
+            
+            Write-Host "  Expanding $subnet ($([int]$numHosts) hosts)..." -ForegroundColor Gray
+            
+            for ($i = 1; $i -le $numHosts; $i++) {
+                $currentIpInt = $networkInt + $i
+                $currentIpBytes = [BitConverter]::GetBytes([uint32]$currentIpInt)
+                [Array]::Reverse($currentIpBytes)
+                $ipAddresses += ([System.Net.IPAddress]::new($currentIpBytes)).ToString()
+            }
+        }
+        elseif ($subnet -match '^(\d+\.\d+\.\d+)\.(\d+)-(\d+)$') {
+            # Range notation: 192.168.1.1-254
+            $baseIp = $matches[1]
+            $startOctet = [int]$matches[2]
+            $endOctet = [int]$matches[3]
+            
+            Write-Host "  Expanding range $subnet ($($endOctet - $startOctet + 1) hosts)..." -ForegroundColor Gray
+            
+            for ($i = $startOctet; $i -le $endOctet; $i++) {
+                $ipAddresses += "$baseIp.$i"
+            }
+        }
+        elseif ($subnet -match '^\d+\.\d+\.\d+\.\d+$') {
+            # Single IP
+            $ipAddresses += $subnet
+        }
+        else {
+            Write-Warning "Invalid subnet format: $subnet (use CIDR like 192.168.1.0/24, range like 192.168.1.1-254, or single IP)"
+        }
+    }
+    
+    # Add IPs to target hosts
+    foreach ($ip in $ipAddresses) {
+        $scanTargetHosts += [PSCustomObject]@{
+            Host = $ip
+            IsIP = $true
+            SID = $null
+        }
+    }
+    
+    if ($ipAddresses.Count -gt 0) {
+        Write-Host "  IPs from subnets: $($ipAddresses.Count)" -ForegroundColor Gray
+    }
+    } # End of if ($Subnets)
+    
+    # Add hostnames to target list
+    if ($Hostnames -and $Hostnames.Count -gt 0) {
+        Write-Host "  Hostnames to scan: $($Hostnames.Count)" -ForegroundColor Gray
+        foreach ($hostInfo in $Hostnames) {
+            if ($hostInfo -is [PSCustomObject] -and $hostInfo.Hostname) {
+                $scanTargetHosts += [PSCustomObject]@{
+                    Host = $hostInfo.Hostname
+                    IsIP = $false
+                    SID = $hostInfo.SID
+                }
+            } elseif ($hostInfo -is [string]) {
+                $scanTargetHosts += [PSCustomObject]@{
+                    Host = $hostInfo
+                    IsIP = $false
+                    SID = $null
+                }
+            }
+        }
+    }
+    
+    if ($scanTargetHosts.Count -eq 0) {
+        Write-Warning "No valid targets to scan"
+        return
+    }
+    
+    Write-Host "  Total hosts to scan: $($scanTargetHosts.Count)" -ForegroundColor Gray
+    Write-Host "  Total scan targets: $($scanTargetHosts.Count * $portList.Count) (Hosts x Ports)" -ForegroundColor Gray
+    
+    # Create scan targets (Host:Port combinations)
+    $scanTargets = @()
+    foreach ($targetHost in $scanTargetHosts) {
+        foreach ($port in $portList) {
+            $scanTargets += [PSCustomObject]@{
+                Host = $targetHost.Host
+                Port = $port
+                IsIP = $targetHost.IsIP
+                SID = $targetHost.SID
+            }
+        }
+    }
+    
+    # Use runspace pool for concurrent scanning
+    $runspacePool = [runspacefactory]::CreateRunspacePool(1, $MaxThreads)
+    $runspacePool.Open()
+    
+    $jobs = @()
+    $openPorts = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
+    
+    $scanScriptBlock = {
+        param($TargetHost, $Port, $TimeoutMs, $IsIP, $SID)
+        
+        try {
+            $tcpClient = New-Object System.Net.Sockets.TcpClient
+            $asyncResult = $tcpClient.BeginConnect($TargetHost, $Port, $null, $null)
+            $waitHandle = $asyncResult.AsyncWaitHandle
+            
+            if ($waitHandle.WaitOne($TimeoutMs, $false)) {
+                if ($tcpClient.Connected) {
+                    $tcpClient.EndConnect($asyncResult)
+                    $tcpClient.Close()
+                    return [PSCustomObject]@{
+                        Host = $TargetHost
+                        Port = $Port
+                        IsIP = $IsIP
+                        SID = $SID
+                        Open = $true
+                    }
+                }
+            }
+            $tcpClient.Close()
+        }
+        catch {
+            # Connection failed - port closed or filtered
+        }
+        return $null
+    }
+    
+    Write-Host "  Starting port scan with $MaxThreads threads..." -ForegroundColor Cyan
+    $startTime = Get-Date
+    $completedCount = 0
+    $totalTargets = $scanTargets.Count
+    
+    foreach ($target in $scanTargets) {
+        $powershell = [powershell]::Create().AddScript($scanScriptBlock)
+        $powershell.AddParameter("TargetHost", $target.Host) | Out-Null
+        $powershell.AddParameter("Port", $target.Port) | Out-Null
+        $powershell.AddParameter("TimeoutMs", $Timeout) | Out-Null
+        $powershell.AddParameter("IsIP", $target.IsIP) | Out-Null
+        $powershell.AddParameter("SID", $target.SID) | Out-Null
+        $powershell.RunspacePool = $runspacePool
+        
+        $jobs += [PSCustomObject]@{
+            PowerShell = $powershell
+            Handle = $powershell.BeginInvoke()
+            Target = $target
+        }
+    }
+    
+    # Collect results with progress
+    $foundServers = @()
+    $lastProgressUpdate = Get-Date
+    
+    while ($jobs.Count -gt 0) {
+        $completedJobs = @($jobs | Where-Object { $_.Handle.IsCompleted })
+        
+        foreach ($job in $completedJobs) {
+            $result = $job.PowerShell.EndInvoke($job.Handle)
+            if ($result -and $result.Open) {
+                $foundServers += $result
+                Write-Host "    [+] Found open port: $($result.Host):$($result.Port)" -ForegroundColor Green
+            }
+            $job.PowerShell.Dispose()
+            $completedCount++
+        }
+        
+        $jobs = @($jobs | Where-Object { -not $_.Handle.IsCompleted })
+        
+        # Progress update every 2 seconds
+        if (((Get-Date) - $lastProgressUpdate).TotalSeconds -ge 2) {
+            $percentComplete = [math]::Round(($completedCount / $totalTargets) * 100, 1)
+            $elapsed = (Get-Date) - $startTime
+            Write-Host "    Progress: $completedCount/$totalTargets ($percentComplete%) - Elapsed: $([math]::Round($elapsed.TotalSeconds, 0))s - Found: $($foundServers.Count)" -ForegroundColor Gray
+            $lastProgressUpdate = Get-Date
+        }
+        
+        Start-Sleep -Milliseconds 100
+    }
+    
+    $runspacePool.Close()
+    $runspacePool.Dispose()
+    
+    $elapsed = (Get-Date) - $startTime
+    Write-Host "`n  Scan completed in $([math]::Round($elapsed.TotalSeconds, 1)) seconds" -ForegroundColor Cyan
+    Write-Host "  Found $($foundServers.Count) open SQL port(s)" -ForegroundColor $(if ($foundServers.Count -gt 0) { 'Green' } else { 'Yellow' })
+    
+    # Add discovered servers to processing queue
+    foreach ($server in $foundServers) {
+        $serverString = "$($server.Host):$($server.Port)"
+        Write-Host "  Adding to collection queue: $serverString" -ForegroundColor Cyan
+        
+        # If we already have the SID from domain enumeration, add directly
+        if ($server.SID) {
+            $objectIdentifier = "$($server.SID):$($server.Port)"
+            if (-not $script:serversToProcess.ContainsKey($objectIdentifier)) {
+                $script:serversToProcess[$objectIdentifier] = [PSCustomObject]@{
+                    ObjectIdentifier = $objectIdentifier
+                    ServerName = $server.Host
+                    Port = $server.Port
+                    InstanceName = $null
+                    ServiceAccountSIDs = @()
+                    ServicePrincipalNames = @()
+                    ServerFullName = "$($server.Host):$($server.Port)"
+                    DiscoveredViaPortScan = $true
+                    HostSID = $server.SID
+                }
+                Write-Host "    Added with known SID: $($server.SID)" -ForegroundColor Gray
+            }
+        } else {
+            # Fall back to resolving the hostname
+            Get-MSSQLServerFromString -Server $serverString
+        }
+    }
+    
+    return $foundServers
+}
+
 function Get-MSSQLServersFromSPNs {
     param (
         [string]$DomainName = $script:Domain
@@ -5567,8 +5981,33 @@ function Get-MssqlEpaSettingsViaTDS {
             if ($PSVersionTable.PSVersion.Major -ge 7) {
                 Write-Warning "Running in PowerShell 7+, so System.Data.SqlClient is unavailable, trying Microsoft.Data.SqlClient, may require installation"
                 $sqlClientAsm = "Microsoft.Data.SqlClient"
+
+                # Locate Microsoft.Data.SqlClient from NuGet cache (PS7+ does not ship this in-box)
+                $sqlClientAssemblyPath = Get-ChildItem "$HOME\.nuget\packages\microsoft.data.sqlclient\*\lib\**\Microsoft.Data.SqlClient.dll" -ErrorAction SilentlyContinue |
+                    Sort-Object FullName -Descending |
+                    Select-Object -First 1
+
+                if (-not $sqlClientAssemblyPath) {
+                    throw "Microsoft.Data.SqlClient.dll not found. Install with: Install-Package Microsoft.Data.SqlClient -Scope CurrentUser -Source https://www.nuget.org/api/v2"
+                }
+
+                $referencedAssemblies = @(
+                    "System.dll",
+                    "System.Data.dll",
+                    "System.Runtime.InteropServices.dll",
+                    "System.Threading.dll",
+                    "System.Runtime.dll",
+                    $sqlClientAssemblyPath.FullName
+                )
             } else {
                 $sqlClientAsm = "System.Data.SqlClient"
+                $referencedAssemblies = @(
+                    "System.dll",
+                    "System.Data.dll",
+                    "System.Runtime.InteropServices.dll",
+                    "System.Threading.dll",
+                    "System.Runtime.dll"
+                )
             }
 
             # This must be run remotely and will not display the correct settings if run locally on the SQL server
@@ -6120,14 +6559,7 @@ public class EPATester
     
     #endregion
 }
-"@ -ReferencedAssemblies @(
-    "System.dll",
-    "System.Data.dll",
-    "System.Runtime.InteropServices.dll",
-    #"${sqlClientAsm}.dll",
-    "System.Threading.dll",
-    "System.Runtime.dll"
-) -ErrorAction Stop
+"@ -ReferencedAssemblies $referencedAssemblies -ErrorAction Stop
             # Build connection string for EPA test
             Write-Host "Testing EPA settings for $($ServerString)"
             
@@ -6768,11 +7200,18 @@ function Process-ServerInstance {
     param (
         [string]$ServerName,
         [int]$Port = 1433,
-        [string]$InstanceName
+        [string]$InstanceName,
+        [string]$HostSID
     )
 
     # Get server SID for ObjectIdentifier
-    $serverSid = (Resolve-DomainPrincipal $serverName).SID
+    $serverSid = $null
+    if ($HostSID) {
+        $serverSid = $HostSID
+    } else {
+        $serverSid = (Resolve-DomainPrincipal $serverName).SID
+    }
+    
     if (-not $serverSid) {
         Write-Warning "Unable to resolve SID for server $serverName, using hostname instead."
         $serverSid = $serverName
@@ -6799,6 +7238,7 @@ function Process-ServerInstance {
         ExtendedProtection = $null
         ForceEncryption = $null
         Hostname = $serverName
+        HostSID = if ($HostSID) { $HostSID } elseif ($serverSid -ne $serverName) { $serverSid } else { $null }
         InstanceName = $instanceName
         IsAnyDomainPrincipalSysadmin = $null
         IsMixedModeAuthEnabled = $null
@@ -9669,18 +10109,31 @@ ORDER BY p.proxy_id
             }
         }
 
-        $computerId = (Resolve-DomainPrincipal $serverInfo.Hostname).SID
+        # Get computer SID - prefer stored HostSID from port scan, fallback to resolution
+        $computerId = $null
+        if ($serverInfo.HostSID) {
+            $computerId = $serverInfo.HostSID
+        } else {
+            $resolvedComputer = Resolve-DomainPrincipal $serverInfo.Hostname
+            if ($resolvedComputer -and $resolvedComputer.SID) {
+                $computerId = $resolvedComputer.SID
+            }
+        }
 
-        # Computer-Server relationships
-        Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $computerId } -TargetPrincipal $serverInfo -SourceType "Computer" -TargetType "MSSQL_Server"
-        Add-Edge -Source $computerId `
-                -Target $serverInfo.ObjectIdentifier `
-                -Kind "MSSQL_HostFor"
+        # Computer-Server relationships (only if we have a valid computer ID)
+        if ($computerId) {
+            Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $computerId } -TargetPrincipal $serverInfo -SourceType "Computer" -TargetType "MSSQL_Server"
+            Add-Edge -Source $computerId `
+                    -Target $serverInfo.ObjectIdentifier `
+                    -Kind "MSSQL_HostFor"
 
-        Set-EdgeContext -SourcePrincipal $serverInfo -TargetPrincipal @{ ObjectIdentifier = $computerId } -SourceType "MSSQL_Server" -TargetType "Computer"
-        Add-Edge -Source $serverInfo.ObjectIdentifier `
-                -Target $computerId `
-                -Kind "MSSQL_ExecuteOnHost" 
+            Set-EdgeContext -SourcePrincipal $serverInfo -TargetPrincipal @{ ObjectIdentifier = $computerId } -SourceType "MSSQL_Server" -TargetType "Computer"
+            Add-Edge -Source $serverInfo.ObjectIdentifier `
+                    -Target $computerId `
+                    -Kind "MSSQL_ExecuteOnHost"
+        } else {
+            Write-Warning "Could not determine computer SID for $($serverInfo.Hostname) - skipping host relationship edges"
+        } 
 
         # Service Account relationships
         foreach ($serviceAccount in $serverInfo.ServiceAccounts) {
@@ -10146,23 +10599,77 @@ if ($ServerInstance) {
     Write-Host "Added $($listServers.Count) servers from list" -ForegroundColor Green
 
 } else {
-    # Collect MSSQL SPNs from Active Directory if domain is available
+    # Collect MSSQL SPNs from Active Directory if domain is available (unless skipped)
+    if (-not $SkipSPNEnum) {
+        try {
+            Get-MSSQLServersFromSPNs
+        }
+        catch {
+            Write-Warning "Could not collect MSSQL SPNs from Active Directory: $_"
+        }
+    } else {
+        Write-Host "Skipping SPN enumeration (SkipSPNEnum specified)" -ForegroundColor Yellow
+    }
+}
+
+# Port scanning for SQL servers (runs in addition to other discovery methods)
+if ($ScanSubnets -or $ScanDomainComputers) {
+    Write-Host "`n=== Port-Based SQL Server Discovery ===" -ForegroundColor Cyan
+    
+    $scanHostnames = $null
+    
+    # Get domain computers if requested
+    if ($ScanDomainComputers) {
+        try {
+            $scanHostnames = Get-DomainComputers -DomainName $script:Domain -LdapFilter $ScanComputerFilter
+            if ($scanHostnames.Count -eq 0) {
+                Write-Warning "No domain computers found matching the filter"
+            }
+            elseif ($ScanComputerLimit -gt 0 -and $scanHostnames.Count -gt $ScanComputerLimit) {
+                Write-Host "  Limiting scan to first $ScanComputerLimit of $($scanHostnames.Count) computers" -ForegroundColor Yellow
+                $scanHostnames = $scanHostnames | Select-Object -First $ScanComputerLimit
+            }
+        }
+        catch {
+            Write-Warning "Error enumerating domain computers: $_"
+        }
+    }
+    
+    # Run port scan with subnets and/or hostnames
     try {
-        Get-MSSQLServersFromSPNs
+        $scanParams = @{
+            Ports = $ScanPorts
+            Timeout = $ScanTimeout
+            MaxThreads = $ScanThreads
+        }
+        
+        if ($ScanSubnets) {
+            $scanParams['Subnets'] = $ScanSubnets
+        }
+        
+        if ($scanHostnames -and $scanHostnames.Count -gt 0) {
+            $scanParams['Hostnames'] = $scanHostnames
+        }
+        
+        if ($ScanSubnets -or ($scanHostnames -and $scanHostnames.Count -gt 0)) {
+            Get-MSSQLServersFromPortScan @scanParams
+        }
     }
     catch {
-        Write-Warning "Could not collect MSSQL SPNs from Active Directory: $_"
+        Write-Warning "Error during port scan: $_"
     }
 }
 
 # If no servers to process, exit
 if ($script:serversToProcess.Count -eq 0) {
-    Write-Host "No SQL servers to process. Specify -ServerInstance, -ServerListFile, -ServerList, or ensure SPNs are discoverable in AD." -ForegroundColor Yellow
+    Write-Host "No SQL servers to process. Specify -ServerInstance, -ServerListFile, -ServerList, -ScanSubnets, -ScanDomainComputers, or ensure SPNs are discoverable in AD." -ForegroundColor Yellow
     return
 }
 
-# If user specified this option, exit
+# If user specified this option, exit (show discovered servers but don't collect)
 if ($DomainEnumOnly) {
+    Write-Host "`n=== Discovery Complete (DomainEnumOnly mode) ===" -ForegroundColor Cyan
+    Write-Host "Found $($script:serversToProcess.Count) SQL server(s):" -ForegroundColor Green
     if ($script:serversToProcess.Count -gt 0) {
         Write-Host "SQL servers to process:`n    $(($serversToProcess.GetEnumerator() | ForEach-Object { "$($_.Value.ServerName) ($($_.Value.ObjectIdentifier))" }) -join "`n    ")"    }
     return
@@ -10221,7 +10728,7 @@ try {
             }
         }
         
-        $serverResult = Process-ServerInstance -ServerName $serverToProcess.ServerName -Port $serverToProcess.Port -InstanceName $serverToProcess.InstanceName
+        $serverResult = Process-ServerInstance -ServerName $serverToProcess.ServerName -Port $serverToProcess.Port -InstanceName $serverToProcess.InstanceName -HostSID $serverToProcess.HostSID
         
         if ($serverResult) {
             Write-Host "Server result obtained for $($serverToProcess.ServerName)"
