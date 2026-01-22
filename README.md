@@ -3,7 +3,9 @@
 
 A PowerShell collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with [OpenGraph](https://specterops.io/opengraph) by Chris Thompson at [SpecterOps](https://x.com/SpecterOps)
 
-Introductory blog post: https://specterops.io/blog/2025/08/04/adding-mssql-to-bloodhound-with-opengraph/
+Introductory blog posts:
+- https://specterops.io/blog/2025/08/04/adding-mssql-to-bloodhound-with-opengraph/
+- https://specterops.io/blog/2026/01/20/updates-to-the-mssqlhound-opengraph-collector-for-bloodhound/
 
 Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), Twitter ([@_Mayyhem](https://x.com/_Mayyhem)), or open an issue if you have any questions I can help with!
 
@@ -183,6 +185,8 @@ There are several new edges that have to be non-traversable because they are not
 Want to be a bit more aggressive with your pathfinding queries? You can make these edges traversable using the `-MakeInterestingEdgesTraversable` flag.
 
 I also recommend conducting a collection with the `-IncludeNontraversableEdges` flag enabled at some point if you need to understand what permissions on which objects allow the traversable edges to be created. By default, non-traversable edges are skipped to make querying the data for valid attack paths easier. This is still a work in progress, but look out for the “Composition” item in the edge entity panel for each traversable edges to grab a pastable cypher query to identify the offending permissions.
+
+If the [prebuilt Cypher queries](saved_queries) are returning `failed to translate kinds: unable to map kinds:` errors, upload [seed_data.json](seed_data.json) to populate a single fake instance of each new edge class so they can be queried.
 
 # Command Line Options
 For the latest and most reliable information, please execute MSSQLHound with the `-Help` flag.
