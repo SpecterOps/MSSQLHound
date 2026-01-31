@@ -9,25 +9,30 @@ import (
 
 // ServerInfo represents a SQL Server instance and all collected data
 type ServerInfo struct {
-	ObjectIdentifier string            `json:"objectIdentifier"`
-	Hostname         string            `json:"hostname"`
-	ServerName       string            `json:"serverName"`
-	SQLServerName    string            `json:"sqlServerName"` // Display name for BloodHound
-	InstanceName     string            `json:"instanceName"`
-	Port             int               `json:"port"`
-	Version          string            `json:"version"`
-	VersionNumber    string            `json:"versionNumber"`
-	ProductLevel     string            `json:"productLevel"`
-	Edition          string            `json:"edition"`
-	IsClustered      bool              `json:"isClustered"`
-	ComputerSID      string            `json:"computerSID"`
-	DomainSID        string            `json:"domainSID"`
-	FQDN             string            `json:"fqdn"`
-	SPNs             []string          `json:"spns,omitempty"`
-	ServiceAccounts  []ServiceAccount  `json:"serviceAccounts,omitempty"`
-	ServerPrincipals []ServerPrincipal `json:"serverPrincipals,omitempty"`
-	Databases        []Database        `json:"databases,omitempty"`
-	LinkedServers    []LinkedServer    `json:"linkedServers,omitempty"`
+	ObjectIdentifier     string            `json:"objectIdentifier"`
+	Hostname             string            `json:"hostname"`
+	ServerName           string            `json:"serverName"`
+	SQLServerName        string            `json:"sqlServerName"` // Display name for BloodHound
+	InstanceName         string            `json:"instanceName"`
+	Port                 int               `json:"port"`
+	Version              string            `json:"version"`
+	VersionNumber        string            `json:"versionNumber"`
+	ProductLevel         string            `json:"productLevel"`
+	Edition              string            `json:"edition"`
+	IsClustered          bool              `json:"isClustered"`
+	IsMixedModeAuth      bool              `json:"isMixedModeAuth"`
+	ForceEncryption      string            `json:"forceEncryption,omitempty"`
+	ExtendedProtection   string            `json:"extendedProtection,omitempty"`
+	ComputerSID          string            `json:"computerSID"`
+	DomainSID            string            `json:"domainSID"`
+	FQDN                 string            `json:"fqdn"`
+	SPNs                 []string          `json:"spns,omitempty"`
+	ServiceAccounts      []ServiceAccount  `json:"serviceAccounts,omitempty"`
+	Credentials          []Credential      `json:"credentials,omitempty"`
+	ProxyAccounts        []ProxyAccount    `json:"proxyAccounts,omitempty"`
+	ServerPrincipals     []ServerPrincipal `json:"serverPrincipals,omitempty"`
+	Databases            []Database        `json:"databases,omitempty"`
+	LinkedServers        []LinkedServer    `json:"linkedServers,omitempty"`
 }
 
 // ServiceAccount represents a SQL Server service account
@@ -60,6 +65,7 @@ type ServerPrincipal struct {
 	Members                    []string         `json:"members,omitempty"`
 	Permissions                []Permission     `json:"permissions,omitempty"`
 	DatabaseUsers              []string         `json:"databaseUsers,omitempty"`
+	MappedCredential           *Credential      `json:"mappedCredential,omitempty"` // Credential mapped via ALTER LOGIN ... WITH CREDENTIAL
 }
 
 // RoleMembership represents membership in a role

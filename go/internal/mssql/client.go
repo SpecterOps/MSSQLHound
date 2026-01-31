@@ -227,6 +227,31 @@ func (c *Client) CollectServerInfo(ctx context.Context) (*types.ServerInfo, erro
 	// Set SQLServerName for display purposes (FQDN:Port format)
 	info.SQLServerName = fmt.Sprintf("%s:%d", info.FQDN, info.Port)
 
+	// Collect authentication mode
+	if err := c.collectAuthenticationMode(ctx, info); err != nil {
+		fmt.Printf("Warning: failed to collect auth mode: %v\n", err)
+	}
+
+	// Collect encryption settings (Force Encryption, Extended Protection)
+	if err := c.collectEncryptionSettings(ctx, info); err != nil {
+		fmt.Printf("Warning: failed to collect encryption settings: %v\n", err)
+	}
+
+	// Get service accounts
+	if err := c.collectServiceAccounts(ctx, info); err != nil {
+		fmt.Printf("Warning: failed to collect service accounts: %v\n", err)
+	}
+
+	// Get server-level credentials
+	if err := c.collectCredentials(ctx, info); err != nil {
+		fmt.Printf("Warning: failed to collect credentials: %v\n", err)
+	}
+
+	// Get proxy accounts
+	if err := c.collectProxyAccounts(ctx, info); err != nil {
+		fmt.Printf("Warning: failed to collect proxy accounts: %v\n", err)
+	}
+
 	// Get server principals
 	principals, err := c.collectServerPrincipals(ctx, info)
 	if err != nil {
@@ -234,10 +259,22 @@ func (c *Client) CollectServerInfo(ctx context.Context) (*types.ServerInfo, erro
 	}
 	info.ServerPrincipals = principals
 
+	// Get credential mappings for logins
+	if err := c.collectLoginCredentialMappings(ctx, principals, info); err != nil {
+		fmt.Printf("Warning: failed to collect login credential mappings: %v\n", err)
+	}
+
 	// Get databases
 	databases, err := c.collectDatabases(ctx, info)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect databases: %w", err)
+	}
+
+	// Collect database-scoped credentials for each database
+	for i := range databases {
+		if err := c.collectDBScopedCredentials(ctx, &databases[i]); err != nil {
+			fmt.Printf("Warning: failed to collect DB-scoped credentials for %s: %v\n", databases[i].Name, err)
+		}
 	}
 	info.Databases = databases
 
@@ -1058,7 +1095,7 @@ func (c *Client) collectLinkedServers(ctx context.Context) ([]types.LinkedServer
 // collectLinkedServerLogins gets login mappings for a linked server
 func (c *Client) collectLinkedServerLogins(ctx context.Context, server *types.LinkedServer) error {
 	query := `
-		SELECT 
+		SELECT
 			ll.local_principal_id,
 			ll.uses_self_credential,
 			ll.remote_name,
@@ -1086,6 +1123,400 @@ func (c *Client) collectLinkedServerLogins(ctx context.Context, server *types.Li
 		server.LocalLogin = localName.String
 		server.RemoteLogin = remoteName.String
 		server.IsSelfMapping = usesSelf
+	}
+
+	return nil
+}
+
+// collectServiceAccounts gets SQL Server service account information
+func (c *Client) collectServiceAccounts(ctx context.Context, info *types.ServerInfo) error {
+	// Try sys.dm_server_services first (SQL Server 2008 R2+)
+	query := `
+		SELECT
+			servicename,
+			service_account,
+			startup_type_desc
+		FROM sys.dm_server_services
+		WHERE servicename LIKE 'SQL Server%'
+	`
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		// DMV might not exist or user doesn't have permission
+		// Fall back to registry read
+		return c.collectServiceAccountFromRegistry(ctx, info)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var serviceName, serviceAccount, startupType sql.NullString
+
+		if err := rows.Scan(&serviceName, &serviceAccount, &startupType); err != nil {
+			continue
+		}
+
+		if serviceAccount.Valid && serviceAccount.String != "" {
+			sa := types.ServiceAccount{
+				Name:        serviceAccount.String,
+				ServiceName: serviceName.String,
+				StartupType: startupType.String,
+			}
+
+			// Determine service type
+			if strings.Contains(serviceName.String, "Agent") {
+				sa.ServiceType = "SQLServerAgent"
+			} else {
+				sa.ServiceType = "SQLServer"
+			}
+
+			info.ServiceAccounts = append(info.ServiceAccounts, sa)
+		}
+	}
+
+	// If no results, try registry fallback
+	if len(info.ServiceAccounts) == 0 {
+		return c.collectServiceAccountFromRegistry(ctx, info)
+	}
+
+	return nil
+}
+
+// collectServiceAccountFromRegistry tries to get service account from registry via xp_instance_regread
+func (c *Client) collectServiceAccountFromRegistry(ctx context.Context, info *types.ServerInfo) error {
+	query := `
+		DECLARE @ServiceAccount NVARCHAR(256)
+		EXEC master.dbo.xp_instance_regread
+			N'HKEY_LOCAL_MACHINE',
+			N'SYSTEM\CurrentControlSet\Services\MSSQLSERVER',
+			N'ObjectName',
+			@ServiceAccount OUTPUT
+		SELECT @ServiceAccount AS ServiceAccount
+	`
+
+	var serviceAccount sql.NullString
+	err := c.db.QueryRowContext(ctx, query).Scan(&serviceAccount)
+	if err != nil || !serviceAccount.Valid {
+		// Try named instance path
+		query = `
+			DECLARE @ServiceAccount NVARCHAR(256)
+			DECLARE @ServiceKey NVARCHAR(256)
+			SET @ServiceKey = N'SYSTEM\CurrentControlSet\Services\MSSQL$' + CAST(SERVERPROPERTY('InstanceName') AS NVARCHAR)
+			EXEC master.dbo.xp_instance_regread
+				N'HKEY_LOCAL_MACHINE',
+				@ServiceKey,
+				N'ObjectName',
+				@ServiceAccount OUTPUT
+			SELECT @ServiceAccount AS ServiceAccount
+		`
+		err = c.db.QueryRowContext(ctx, query).Scan(&serviceAccount)
+	}
+
+	if err == nil && serviceAccount.Valid && serviceAccount.String != "" {
+		sa := types.ServiceAccount{
+			Name:        serviceAccount.String,
+			ServiceName: "SQL Server",
+			ServiceType: "SQLServer",
+		}
+		info.ServiceAccounts = append(info.ServiceAccounts, sa)
+	}
+
+	return nil
+}
+
+// collectCredentials gets server-level credentials
+func (c *Client) collectCredentials(ctx context.Context, info *types.ServerInfo) error {
+	query := `
+		SELECT
+			credential_id,
+			name,
+			credential_identity,
+			create_date,
+			modify_date
+		FROM sys.credentials
+		ORDER BY credential_id
+	`
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		// User might not have permission to view credentials
+		return nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cred types.Credential
+
+		err := rows.Scan(
+			&cred.CredentialID,
+			&cred.Name,
+			&cred.CredentialIdentity,
+			&cred.CreateDate,
+			&cred.ModifyDate,
+		)
+		if err != nil {
+			continue
+		}
+
+		info.Credentials = append(info.Credentials, cred)
+	}
+
+	return nil
+}
+
+// collectLoginCredentialMappings gets credential mappings for logins
+func (c *Client) collectLoginCredentialMappings(ctx context.Context, principals []types.ServerPrincipal, serverInfo *types.ServerInfo) error {
+	// Query to get login-to-credential mappings
+	query := `
+		SELECT
+			sp.principal_id,
+			c.credential_id,
+			c.name AS credential_name,
+			c.credential_identity
+		FROM sys.server_principals sp
+		JOIN sys.server_principal_credentials spc ON sp.principal_id = spc.principal_id
+		JOIN sys.credentials c ON spc.credential_id = c.credential_id
+	`
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		// sys.server_principal_credentials might not exist in older versions
+		return nil
+	}
+	defer rows.Close()
+
+	// Build principal map
+	principalMap := make(map[int]*types.ServerPrincipal)
+	for i := range principals {
+		principalMap[principals[i].PrincipalID] = &principals[i]
+	}
+
+	for rows.Next() {
+		var principalID, credentialID int
+		var credName, credIdentity string
+
+		if err := rows.Scan(&principalID, &credentialID, &credName, &credIdentity); err != nil {
+			continue
+		}
+
+		if principal, ok := principalMap[principalID]; ok {
+			principal.MappedCredential = &types.Credential{
+				CredentialID:       credentialID,
+				Name:               credName,
+				CredentialIdentity: credIdentity,
+			}
+		}
+	}
+
+	return nil
+}
+
+// collectProxyAccounts gets SQL Agent proxy accounts
+func (c *Client) collectProxyAccounts(ctx context.Context, info *types.ServerInfo) error {
+	// Query for proxy accounts with their credentials and subsystems
+	query := `
+		SELECT
+			p.proxy_id,
+			p.name AS proxy_name,
+			p.credential_id,
+			c.credential_identity,
+			p.enabled,
+			ISNULL(p.description, '') AS description
+		FROM msdb.dbo.sysproxies p
+		JOIN sys.credentials c ON p.credential_id = c.credential_id
+		ORDER BY p.proxy_id
+	`
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		// User might not have access to msdb
+		return nil
+	}
+	defer rows.Close()
+
+	proxies := make(map[int]*types.ProxyAccount)
+
+	for rows.Next() {
+		var proxy types.ProxyAccount
+		var enabled int
+
+		err := rows.Scan(
+			&proxy.ProxyID,
+			&proxy.Name,
+			&proxy.CredentialID,
+			&proxy.CredentialIdentity,
+			&enabled,
+			&proxy.Description,
+		)
+		if err != nil {
+			continue
+		}
+
+		proxy.Enabled = enabled == 1
+		proxies[proxy.ProxyID] = &proxy
+	}
+	rows.Close()
+
+	// Get subsystems for each proxy
+	subsystemQuery := `
+		SELECT
+			ps.proxy_id,
+			s.subsystem
+		FROM msdb.dbo.sysproxysubsystem ps
+		JOIN msdb.dbo.syssubsystems s ON ps.subsystem_id = s.subsystem_id
+	`
+
+	rows, err = c.db.QueryContext(ctx, subsystemQuery)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var proxyID int
+			var subsystem string
+			if err := rows.Scan(&proxyID, &subsystem); err != nil {
+				continue
+			}
+			if proxy, ok := proxies[proxyID]; ok {
+				proxy.Subsystems = append(proxy.Subsystems, subsystem)
+			}
+		}
+	}
+
+	// Get login authorizations for each proxy
+	loginQuery := `
+		SELECT
+			pl.proxy_id,
+			sp.name AS login_name
+		FROM msdb.dbo.sysproxylogin pl
+		JOIN sys.server_principals sp ON pl.sid = sp.sid
+	`
+
+	rows, err = c.db.QueryContext(ctx, loginQuery)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var proxyID int
+			var loginName string
+			if err := rows.Scan(&proxyID, &loginName); err != nil {
+				continue
+			}
+			if proxy, ok := proxies[proxyID]; ok {
+				proxy.Logins = append(proxy.Logins, loginName)
+			}
+		}
+	}
+
+	// Add all proxies to server info
+	for _, proxy := range proxies {
+		info.ProxyAccounts = append(info.ProxyAccounts, *proxy)
+	}
+
+	return nil
+}
+
+// collectDBScopedCredentials gets database-scoped credentials for a database
+func (c *Client) collectDBScopedCredentials(ctx context.Context, db *types.Database) error {
+	query := fmt.Sprintf(`
+		SELECT
+			credential_id,
+			name,
+			credential_identity,
+			create_date,
+			modify_date
+		FROM [%s].sys.database_scoped_credentials
+		ORDER BY credential_id
+	`, db.Name)
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		// sys.database_scoped_credentials might not exist (pre-SQL 2016) or user lacks permission
+		return nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cred types.DBScopedCredential
+
+		err := rows.Scan(
+			&cred.CredentialID,
+			&cred.Name,
+			&cred.CredentialIdentity,
+			&cred.CreateDate,
+			&cred.ModifyDate,
+		)
+		if err != nil {
+			continue
+		}
+
+		db.DBScopedCredentials = append(db.DBScopedCredentials, cred)
+	}
+
+	return nil
+}
+
+// collectAuthenticationMode gets the authentication mode (Windows-only vs Mixed)
+func (c *Client) collectAuthenticationMode(ctx context.Context, info *types.ServerInfo) error {
+	query := `
+		SELECT
+			CASE SERVERPROPERTY('IsIntegratedSecurityOnly')
+				WHEN 1 THEN 0  -- Windows Authentication only
+				WHEN 0 THEN 1  -- Mixed mode
+			END AS IsMixedModeAuthEnabled
+	`
+
+	var isMixed int
+	if err := c.db.QueryRowContext(ctx, query).Scan(&isMixed); err == nil {
+		info.IsMixedModeAuth = isMixed == 1
+	}
+
+	return nil
+}
+
+// collectEncryptionSettings gets the force encryption and EPA settings
+func (c *Client) collectEncryptionSettings(ctx context.Context, info *types.ServerInfo) error {
+	query := `
+		DECLARE @ForceEncryption INT
+		DECLARE @ExtendedProtection INT
+
+		EXEC master.dbo.xp_instance_regread
+			N'HKEY_LOCAL_MACHINE',
+			N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib',
+			N'ForceEncryption',
+			@ForceEncryption OUTPUT
+
+		EXEC master.dbo.xp_instance_regread
+			N'HKEY_LOCAL_MACHINE',
+			N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer\SuperSocketNetLib',
+			N'ExtendedProtection',
+			@ExtendedProtection OUTPUT
+
+		SELECT
+			@ForceEncryption AS ForceEncryption,
+			@ExtendedProtection AS ExtendedProtection
+	`
+
+	var forceEnc, extProt sql.NullInt64
+
+	err := c.db.QueryRowContext(ctx, query).Scan(&forceEnc, &extProt)
+	if err != nil {
+		return nil // Non-fatal - user might not have permission
+	}
+
+	if forceEnc.Valid {
+		if forceEnc.Int64 == 1 {
+			info.ForceEncryption = "Yes"
+		} else {
+			info.ForceEncryption = "No"
+		}
+	}
+
+	if extProt.Valid {
+		switch extProt.Int64 {
+		case 0:
+			info.ExtendedProtection = "Off"
+		case 1:
+			info.ExtendedProtection = "Allowed"
+		case 2:
+			info.ExtendedProtection = "Required"
+		}
 	}
 
 	return nil

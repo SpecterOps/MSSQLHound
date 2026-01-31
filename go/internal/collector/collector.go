@@ -157,7 +157,67 @@ func (c *Collector) buildServerList() error {
 		}
 	}
 
-	// TODO: Add SPN enumeration if no servers specified
+	// If no servers specified, enumerate SPNs from Active Directory
+	if len(c.serversToProcess) == 0 && c.config.Domain != "" {
+		fmt.Println("No servers specified, enumerating MSSQL SPNs from Active Directory...")
+		if err := c.enumerateServersFromAD(); err != nil {
+			fmt.Printf("Warning: SPN enumeration failed: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+// enumerateServersFromAD discovers MSSQL servers from Active Directory SPNs
+func (c *Collector) enumerateServersFromAD() error {
+	adClient := ad.NewClient(c.config.Domain, c.config.DomainController, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword)
+	defer adClient.Close()
+
+	// Enumerate MSSQL SPNs
+	spns, err := adClient.EnumerateMSSQLSPNs()
+	if err != nil {
+		return fmt.Errorf("failed to enumerate MSSQL SPNs: %w", err)
+	}
+
+	fmt.Printf("Found %d MSSQL SPNs\n", len(spns))
+
+	// Track unique servers
+	seenServers := make(map[string]bool)
+
+	for _, spn := range spns {
+		// Build server string from SPN
+		var serverStr string
+		if spn.Port != "" {
+			serverStr = fmt.Sprintf("%s:%s", spn.Hostname, spn.Port)
+		} else if spn.InstanceName != "" {
+			serverStr = fmt.Sprintf("%s\\%s", spn.Hostname, spn.InstanceName)
+		} else {
+			serverStr = spn.Hostname
+		}
+
+		if !seenServers[serverStr] {
+			seenServers[serverStr] = true
+			c.serversToProcess = append(c.serversToProcess, serverStr)
+			fmt.Printf("  Found: %s (service account: %s)\n", serverStr, spn.AccountName)
+		}
+	}
+
+	// If ScanAllComputers is enabled, also enumerate all domain computers
+	if c.config.ScanAllComputers {
+		fmt.Println("ScanAllComputers enabled, enumerating all domain computers...")
+		computers, err := adClient.EnumerateAllComputers()
+		if err != nil {
+			fmt.Printf("Warning: failed to enumerate domain computers: %v\n", err)
+		} else {
+			for _, computer := range computers {
+				if !seenServers[computer] {
+					seenServers[computer] = true
+					c.serversToProcess = append(c.serversToProcess, computer)
+				}
+			}
+			fmt.Printf("Added %d additional computers to scan\n", len(computers))
+		}
+	}
 
 	return nil
 }
@@ -941,6 +1001,255 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 		)
 		if err := writer.WriteEdge(edge); err != nil {
 			return err
+		}
+	}
+
+	// =========================================================================
+	// SERVICE ACCOUNT EDGES (including Kerberoasting edges)
+	// =========================================================================
+
+	// Track domain principals with admin privileges for GetAdminTGS
+	var domainPrincipalsWithAdmin []string
+	var enabledDomainLoginsWithConnectSQL []types.ServerPrincipal
+
+	for _, principal := range serverInfo.ServerPrincipals {
+		if !principal.IsActiveDirectoryPrincipal || principal.SecurityIdentifier == "" {
+			continue
+		}
+
+		// Skip non-domain SIDs
+		if !strings.HasPrefix(principal.SecurityIdentifier, "S-1-5-21-") {
+			continue
+		}
+
+		// Check if has admin-level access
+		hasAdmin := false
+
+		// Check for sysadmin or securityadmin membership
+		for _, membership := range principal.MemberOf {
+			if membership.Name == "sysadmin" || membership.Name == "securityadmin" {
+				hasAdmin = true
+				break
+			}
+		}
+
+		// Check for CONTROL SERVER or IMPERSONATE ANY LOGIN
+		if !hasAdmin {
+			for _, perm := range principal.Permissions {
+				if (perm.Permission == "CONTROL SERVER" || perm.Permission == "IMPERSONATE ANY LOGIN") &&
+					(perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
+					hasAdmin = true
+					break
+				}
+			}
+		}
+
+		if hasAdmin {
+			domainPrincipalsWithAdmin = append(domainPrincipalsWithAdmin, principal.ObjectIdentifier)
+		}
+
+		// Track enabled domain logins with CONNECT SQL for GetTGS
+		if !principal.IsDisabled {
+			hasConnect := false
+			for _, perm := range principal.Permissions {
+				if perm.Permission == "CONNECT SQL" && (perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
+					hasConnect = true
+					break
+				}
+			}
+			// Also check if member of sysadmin (implies CONNECT)
+			if !hasConnect {
+				for _, membership := range principal.MemberOf {
+					if membership.Name == "sysadmin" || membership.Name == "securityadmin" {
+						hasConnect = true
+						break
+					}
+				}
+			}
+			if hasConnect {
+				enabledDomainLoginsWithConnectSQL = append(enabledDomainLoginsWithConnectSQL, principal)
+			}
+		}
+	}
+
+	// Create ServiceAccountFor and Kerberoasting edges from service accounts to the server
+	for _, sa := range serverInfo.ServiceAccounts {
+		if sa.ObjectIdentifier == "" && sa.SID == "" {
+			continue
+		}
+
+		saID := sa.SID
+		if saID == "" {
+			saID = sa.ObjectIdentifier
+		}
+
+		// ServiceAccountFor: Service Account (SID) -> SQL Server
+		edge := c.createEdge(
+			saID,
+			serverInfo.ObjectIdentifier,
+			bloodhound.EdgeKinds.ServiceAccountFor,
+			&bloodhound.EdgeContext{
+				SourceName:    sa.Name,
+				SourceType:    "Base", // Could be User or Computer
+				TargetName:    serverInfo.SQLServerName,
+				TargetType:    bloodhound.NodeKinds.Server,
+				SQLServerName: serverInfo.SQLServerName,
+			},
+		)
+		if err := writer.WriteEdge(edge); err != nil {
+			return err
+		}
+
+		// GetAdminTGS: Service Account -> Server (if any domain principal has admin)
+		if len(domainPrincipalsWithAdmin) > 0 {
+			edge := c.createEdge(
+				saID,
+				serverInfo.ObjectIdentifier,
+				bloodhound.EdgeKinds.GetAdminTGS,
+				&bloodhound.EdgeContext{
+					SourceName:    sa.Name,
+					SourceType:    "Base",
+					TargetName:    serverInfo.SQLServerName,
+					TargetType:    bloodhound.NodeKinds.Server,
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
+		}
+
+		// GetTGS: Service Account -> each enabled domain login with CONNECT SQL
+		for _, login := range enabledDomainLoginsWithConnectSQL {
+			edge := c.createEdge(
+				saID,
+				login.ObjectIdentifier,
+				bloodhound.EdgeKinds.GetTGS,
+				&bloodhound.EdgeContext{
+					SourceName:    sa.Name,
+					SourceType:    "Base",
+					TargetName:    login.Name,
+					TargetType:    bloodhound.NodeKinds.Login,
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
+		}
+	}
+
+	// =========================================================================
+	// CREDENTIAL EDGES
+	// =========================================================================
+
+	// Create HasMappedCred edges from logins to their mapped credentials
+	for _, principal := range serverInfo.ServerPrincipals {
+		if principal.MappedCredential == nil {
+			continue
+		}
+
+		cred := principal.MappedCredential
+
+		// Only create edges for domain credentials (has backslash or @ in identity)
+		if !strings.Contains(cred.CredentialIdentity, "\\") && !strings.Contains(cred.CredentialIdentity, "@") {
+			continue
+		}
+
+		// HasMappedCred: Login -> AD Principal (based on credential identity)
+		// Note: In a real implementation, we'd resolve the credential identity to a SID
+		// For now, we create an edge using the credential identity as the target
+		edge := c.createEdge(
+			principal.ObjectIdentifier,
+			cred.CredentialIdentity, // This would ideally be the resolved SID
+			bloodhound.EdgeKinds.HasMappedCred,
+			&bloodhound.EdgeContext{
+				SourceName:    principal.Name,
+				SourceType:    bloodhound.NodeKinds.Login,
+				TargetName:    cred.CredentialIdentity,
+				TargetType:    "Base",
+				SQLServerName: serverInfo.SQLServerName,
+			},
+		)
+		if err := writer.WriteEdge(edge); err != nil {
+			return err
+		}
+	}
+
+	// =========================================================================
+	// PROXY ACCOUNT EDGES
+	// =========================================================================
+
+	// Create HasProxyCred edges from logins authorized to use proxies
+	for _, proxy := range serverInfo.ProxyAccounts {
+		// Only create edges for domain credentials
+		if !strings.Contains(proxy.CredentialIdentity, "\\") && !strings.Contains(proxy.CredentialIdentity, "@") {
+			continue
+		}
+
+		// For each login authorized to use this proxy
+		for _, loginName := range proxy.Logins {
+			// Find the login's ObjectIdentifier
+			var loginObjectID string
+			for _, principal := range serverInfo.ServerPrincipals {
+				if principal.Name == loginName {
+					loginObjectID = principal.ObjectIdentifier
+					break
+				}
+			}
+
+			if loginObjectID == "" {
+				continue
+			}
+
+			// HasProxyCred: Login -> AD Principal (credential identity)
+			edge := c.createEdge(
+				loginObjectID,
+				proxy.CredentialIdentity, // This would ideally be the resolved SID
+				bloodhound.EdgeKinds.HasProxyCred,
+				&bloodhound.EdgeContext{
+					SourceName:    loginName,
+					SourceType:    bloodhound.NodeKinds.Login,
+					TargetName:    proxy.CredentialIdentity,
+					TargetType:    "Base",
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
+		}
+	}
+
+	// =========================================================================
+	// DATABASE-SCOPED CREDENTIAL EDGES
+	// =========================================================================
+
+	// Create HasDBScopedCred edges from databases to credential identities
+	for _, db := range serverInfo.Databases {
+		for _, cred := range db.DBScopedCredentials {
+			// Only create edges for domain credentials
+			if !strings.Contains(cred.CredentialIdentity, "\\") && !strings.Contains(cred.CredentialIdentity, "@") {
+				continue
+			}
+
+			// HasDBScopedCred: Database -> AD Principal (credential identity)
+			edge := c.createEdge(
+				db.ObjectIdentifier,
+				cred.CredentialIdentity, // This would ideally be the resolved SID
+				bloodhound.EdgeKinds.HasDBScopedCred,
+				&bloodhound.EdgeContext{
+					SourceName:    db.Name,
+					SourceType:    bloodhound.NodeKinds.Database,
+					TargetName:    cred.CredentialIdentity,
+					TargetType:    "Base",
+					SQLServerName: serverInfo.SQLServerName,
+					DatabaseName:  db.Name,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
 		}
 	}
 
