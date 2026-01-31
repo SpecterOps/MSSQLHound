@@ -142,19 +142,26 @@ type DBScopedCredential struct {
 
 // LinkedServer represents a linked server configuration
 type LinkedServer struct {
-	ServerID             int    `json:"serverId"`
-	Name                 string `json:"name"`
-	Product              string `json:"product"`
-	Provider             string `json:"provider"`
-	DataSource           string `json:"dataSource"`
-	Catalog              string `json:"catalog,omitempty"`
-	IsLinkedServer       bool   `json:"isLinkedServer"`
-	IsRemoteLoginEnabled bool   `json:"isRemoteLoginEnabled"`
-	IsRPCOutEnabled      bool   `json:"isRpcOutEnabled"`
-	IsDataAccessEnabled  bool   `json:"isDataAccessEnabled"`
-	LocalLogin           string `json:"localLogin,omitempty"`
-	RemoteLogin          string `json:"remoteLogin,omitempty"`
-	IsSelfMapping        bool   `json:"isSelfMapping"`
+	ServerID                     int    `json:"serverId"`
+	Name                         string `json:"name"`
+	Product                      string `json:"product"`
+	Provider                     string `json:"provider"`
+	DataSource                   string `json:"dataSource"`
+	Catalog                      string `json:"catalog,omitempty"`
+	IsLinkedServer               bool   `json:"isLinkedServer"`
+	IsRemoteLoginEnabled         bool   `json:"isRemoteLoginEnabled"`
+	IsRPCOutEnabled              bool   `json:"isRpcOutEnabled"`
+	IsDataAccessEnabled          bool   `json:"isDataAccessEnabled"`
+	LocalLogin                   string `json:"localLogin,omitempty"`
+	RemoteLogin                  string `json:"remoteLogin,omitempty"`
+	IsSelfMapping                bool   `json:"isSelfMapping"`
+	ResolvedObjectIdentifier     string `json:"resolvedObjectIdentifier,omitempty"` // Target server ObjectIdentifier
+	RemoteIsSysadmin             bool   `json:"remoteIsSysadmin,omitempty"`
+	RemoteIsSecurityAdmin        bool   `json:"remoteIsSecurityAdmin,omitempty"`
+	RemoteHasControlServer       bool   `json:"remoteHasControlServer,omitempty"`
+	RemoteHasImpersonateAnyLogin bool   `json:"remoteHasImpersonateAnyLogin,omitempty"`
+	RemoteIsMixedMode            bool   `json:"remoteIsMixedMode,omitempty"`
+	UsesImpersonation            bool   `json:"usesImpersonation,omitempty"`
 }
 
 // ProxyAccount represents a SQL Agent proxy account

@@ -291,6 +291,8 @@ var EdgeKinds = struct {
 	GetTGS               string
 	GetAdminTGS          string
 	HasSession           string
+	LinkedAsAdmin        string
+	CoerceAndRelayTo     string
 }{
 	MemberOf:             "MSSQL_MemberOf",
 	IsMappedTo:           "MSSQL_IsMappedTo",
@@ -331,6 +333,8 @@ var EdgeKinds = struct {
 	GetTGS:               "MSSQL_GetTGS",
 	GetAdminTGS:          "MSSQL_GetAdminTGS",
 	HasSession:           "HasSession",
+	LinkedAsAdmin:        "MSSQL_LinkedAsAdmin",
+	CoerceAndRelayTo:     "CoerceAndRelayToMSSQL",
 }
 
 // Icons defines the default icons for MSSQL node types

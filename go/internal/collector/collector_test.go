@@ -363,8 +363,48 @@ func createMockServerInfo() *types.ServerInfo {
 				IsRPCOutEnabled:     true,
 				IsDataAccessEnabled: true,
 			},
+			// Linked server with admin privileges for LinkedAsAdmin test
+			{
+				ServerID:                     2,
+				Name:                         "ADMIN_LINKED_SERVER",
+				Product:                      "SQL Server",
+				Provider:                     "SQLNCLI11",
+				DataSource:                   "adminlinkedserver.domain.com",
+				IsLinkedServer:               true,
+				IsRPCOutEnabled:              true,
+				IsDataAccessEnabled:          true,
+				RemoteLogin:                  "admin_sql_login",
+				RemoteIsSysadmin:             true,
+				RemoteIsMixedMode:            true,
+				ResolvedObjectIdentifier:     "S-1-5-21-9999999999-9999999999-9999999999-1001:1433",
+			},
 		},
 	}
+}
+
+// createMockServerInfoWithComputerLogin creates a mock ServerInfo with a computer account login
+// for testing CoerceAndRelayToMSSQL edge
+func createMockServerInfoWithComputerLogin() *types.ServerInfo {
+	info := createMockServerInfo()
+	serverOID := info.ObjectIdentifier
+
+	// Add a computer account login
+	info.ServerPrincipals = append(info.ServerPrincipals, types.ServerPrincipal{
+		ObjectIdentifier:           "DOMAIN\\WORKSTATION1$@" + serverOID,
+		PrincipalID:                500,
+		Name:                       "DOMAIN\\WORKSTATION1$",
+		TypeDescription:            "WINDOWS_LOGIN",
+		IsDisabled:                 false,
+		IsFixedRole:                false,
+		SecurityIdentifier:         "S-1-5-21-1234567890-1234567890-1234567890-3001",
+		IsActiveDirectoryPrincipal: true,
+		SQLServerName:              "testserver.domain.com:1433",
+		Permissions: []types.Permission{
+			{Permission: "CONNECT SQL", State: "GRANT", ClassDesc: "SERVER"},
+		},
+	})
+
+	return info
 }
 
 // verifyEdges checks that all expected edges are present
@@ -536,6 +576,14 @@ func verifyEdges(t *testing.T, edges []bloodhound.Edge, nodes []bloodhound.Node)
 		linkedEdges := edgesByKind[bloodhound.EdgeKinds.LinkedTo]
 		if len(linkedEdges) == 0 {
 			t.Error("Expected MSSQL_LinkedTo edges, got none")
+		}
+	})
+
+	// Test: MSSQL_LinkedAsAdmin edges (for linked server with admin privileges)
+	t.Run("LinkedAsAdmin edges", func(t *testing.T) {
+		linkedAdminEdges := edgesByKind[bloodhound.EdgeKinds.LinkedAsAdmin]
+		if len(linkedAdminEdges) == 0 {
+			t.Error("Expected MSSQL_LinkedAsAdmin edges for linked server with admin login, got none")
 		}
 	})
 
@@ -775,5 +823,133 @@ func TestOutputFormat(t *testing.T) {
 	}
 	if len(output.Graph.Edges) != 1 {
 		t.Errorf("Expected 1 edge, got %d", len(output.Graph.Edges))
+	}
+}
+
+// TestCoerceAndRelayEdge tests that CoerceAndRelayToMSSQL edges are created
+// when Extended Protection is Off and a computer account has a login
+func TestCoerceAndRelayEdge(t *testing.T) {
+	// Create a temporary directory for output
+	tmpDir, err := os.MkdirTemp("", "mssqlhound-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a mock server info with a computer account login
+	serverInfo := createMockServerInfoWithComputerLogin()
+
+	// Create collector with a domain specified (needed for CoerceAndRelay)
+	config := &Config{
+		TempDir:                    tmpDir,
+		Domain:                     "domain.com",
+		IncludeNontraversableEdges: true,
+	}
+	c := New(config)
+
+	// Create output file
+	outputPath := filepath.Join(tmpDir, "test-output.json")
+	writer, err := bloodhound.NewStreamingWriter(outputPath)
+	if err != nil {
+		t.Fatalf("Failed to create writer: %v", err)
+	}
+
+	// Write nodes
+	serverNode := c.createServerNode(serverInfo)
+	if err := writer.WriteNode(serverNode); err != nil {
+		t.Fatalf("Failed to write server node: %v", err)
+	}
+
+	for _, principal := range serverInfo.ServerPrincipals {
+		principalNode := c.createServerPrincipalNode(&principal, serverInfo)
+		if err := writer.WriteNode(principalNode); err != nil {
+			t.Fatalf("Failed to write server principal node: %v", err)
+		}
+	}
+
+	// Create edges
+	if err := c.createEdges(writer, serverInfo); err != nil {
+		t.Fatalf("Failed to create edges: %v", err)
+	}
+
+	// Close writer
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	// Read and verify output
+	_, edges, err := bloodhound.ReadFromFile(outputPath)
+	if err != nil {
+		t.Fatalf("Failed to read output: %v", err)
+	}
+
+	// Check for CoerceAndRelayToMSSQL edge
+	found := false
+	for _, edge := range edges {
+		if edge.Kind == bloodhound.EdgeKinds.CoerceAndRelayTo {
+			found = true
+			// Verify it's from Authenticated Users to the computer login
+			if !strings.Contains(edge.Start.Value, "S-1-5-11") {
+				t.Errorf("Expected CoerceAndRelayToMSSQL source to be Authenticated Users SID, got %s", edge.Start.Value)
+			}
+			if !strings.Contains(edge.End.Value, "WORKSTATION1$") {
+				t.Errorf("Expected CoerceAndRelayToMSSQL target to be computer login, got %s", edge.End.Value)
+			}
+			break
+		}
+	}
+
+	if !found {
+		t.Error("Expected CoerceAndRelayToMSSQL edge for computer login with EPA Off, got none")
+		t.Logf("Edges found: %d", len(edges))
+		for _, edge := range edges {
+			t.Logf("  %s: %s -> %s", edge.Kind, edge.Start.Value, edge.End.Value)
+		}
+	}
+}
+
+// TestLinkedAsAdminEdgeProperties tests that LinkedAsAdmin edge properties are correctly set
+func TestLinkedAsAdminEdgeProperties(t *testing.T) {
+	ctx := &bloodhound.EdgeContext{
+		SourceName:    "SourceServer",
+		SourceType:    bloodhound.NodeKinds.Server,
+		TargetName:    "TargetServer",
+		TargetType:    bloodhound.NodeKinds.Server,
+		SQLServerName: "sourceserver.domain.com:1433",
+	}
+
+	props := bloodhound.GetEdgeProperties(bloodhound.EdgeKinds.LinkedAsAdmin, ctx)
+
+	if props["traversable"] != true {
+		t.Error("Expected LinkedAsAdmin to be traversable")
+	}
+	if props["general"] == nil || props["general"] == "" {
+		t.Error("Expected 'general' property to be set")
+	}
+	if props["windowsAbuse"] == nil {
+		t.Error("Expected 'windowsAbuse' property to be set")
+	}
+}
+
+// TestCoerceAndRelayEdgeProperties tests that CoerceAndRelayToMSSQL edge properties are correctly set
+func TestCoerceAndRelayEdgeProperties(t *testing.T) {
+	ctx := &bloodhound.EdgeContext{
+		SourceName:    "AUTHENTICATED USERS",
+		SourceType:    "Group",
+		TargetName:    "DOMAIN\\COMPUTER$",
+		TargetType:    bloodhound.NodeKinds.Login,
+		SQLServerName: "sqlserver.domain.com:1433",
+	}
+
+	props := bloodhound.GetEdgeProperties(bloodhound.EdgeKinds.CoerceAndRelayTo, ctx)
+
+	if props["traversable"] != true {
+		t.Error("Expected CoerceAndRelayToMSSQL to be traversable")
+	}
+	if props["general"] == nil || props["general"] == "" {
+		t.Error("Expected 'general' property to be set")
+	}
+	if props["windowsAbuse"] == nil {
+		t.Error("Expected 'windowsAbuse' property to be set")
 	}
 }
