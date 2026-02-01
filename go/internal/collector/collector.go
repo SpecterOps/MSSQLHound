@@ -1827,18 +1827,25 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 					targetPrincipal := principalMap[perm.TargetPrincipalID]
 					targetName := perm.TargetName
 					targetType := bloodhound.NodeKinds.Login
+					isServerRole := false
 					if targetPrincipal != nil {
 						targetName = targetPrincipal.Name
 						if targetPrincipal.TypeDescription == "SERVER_ROLE" {
 							targetType = bloodhound.NodeKinds.ServerRole
+							isServerRole = true
 						}
 					}
 
-					// Control edge
+					// Use specific edge type based on target
+					edgeKind := bloodhound.EdgeKinds.ControlLogin
+					if isServerRole {
+						edgeKind = bloodhound.EdgeKinds.ControlServerRole
+					}
+
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Control,
+						edgeKind,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -1852,12 +1859,8 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						return err
 					}
 
-					// Note: PowerShell creates ExecuteAs for CONTROL on logins, but only when the
-					// data actually contains CONTROL permissions on specific logins.
-					// The current test data doesn't have such permissions, so we skip this to match.
-
 					// CONTROL implies ChangeOwner for server roles
-					if targetType == bloodhound.NodeKinds.ServerRole {
+					if isServerRole {
 						edge := c.createEdge(
 							principal.ObjectIdentifier,
 							perm.TargetObjectIdentifier,
@@ -1878,22 +1881,30 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 				}
 
 			case "ALTER":
-				// ALTER on a server role
+				// ALTER on a server principal (login/role)
 				if perm.ClassDesc == "SERVER_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
 					targetPrincipal := principalMap[perm.TargetPrincipalID]
 					targetName := perm.TargetName
 					targetType := bloodhound.NodeKinds.Login
+					isServerRole := false
 					if targetPrincipal != nil {
 						targetName = targetPrincipal.Name
 						if targetPrincipal.TypeDescription == "SERVER_ROLE" {
 							targetType = bloodhound.NodeKinds.ServerRole
+							isServerRole = true
 						}
+					}
+
+					// Use specific edge type for server roles
+					edgeKind := bloodhound.EdgeKinds.Alter
+					if isServerRole {
+						edgeKind = bloodhound.EdgeKinds.AlterServerRole
 					}
 
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Alter,
+						edgeKind,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -1947,11 +1958,11 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						targetName = targetPrincipal.Name
 					}
 
-					// Impersonate edge
+					// ImpersonateLogin edge (specific for login impersonation)
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Impersonate,
+						bloodhound.EdgeKinds.ImpersonateLogin,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -2152,7 +2163,40 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 						return err
 					}
 				} else if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
-					// ...existing code...
+					// CONTROL on a database principal (user/role)
+					targetPrincipal := principalMap[perm.TargetPrincipalID]
+					targetName := perm.TargetName
+					targetType := bloodhound.NodeKinds.DatabaseUser
+					isRole := false
+					if targetPrincipal != nil {
+						targetName = targetPrincipal.Name
+						targetType = c.getDatabasePrincipalType(targetPrincipal.TypeDescription)
+						isRole = targetPrincipal.TypeDescription == "DATABASE_ROLE"
+					}
+
+					// Use specific edge type based on target
+					edgeKind := bloodhound.EdgeKinds.ControlDBUser
+					if isRole {
+						edgeKind = bloodhound.EdgeKinds.ControlDBRole
+					}
+
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						perm.TargetObjectIdentifier,
+						edgeKind,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    targetName,
+							TargetType:    targetType,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
 				}
 				break
 
@@ -2179,20 +2223,47 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 				}
 				break
 			case "ALTER":
-				// ALTER on a database principal
-				if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
+				if perm.ClassDesc == "DATABASE" {
+					// ALTER on the database itself
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						db.ObjectIdentifier,
+						bloodhound.EdgeKinds.AlterDB,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    db.Name,
+							TargetType:    bloodhound.NodeKinds.Database,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
+				} else if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
+					// ALTER on a database principal
 					targetPrincipal := principalMap[perm.TargetPrincipalID]
 					targetName := perm.TargetName
 					targetType := bloodhound.NodeKinds.DatabaseUser
+					isRole := false
 					if targetPrincipal != nil {
 						targetName = targetPrincipal.Name
 						targetType = c.getDatabasePrincipalType(targetPrincipal.TypeDescription)
+						isRole = targetPrincipal.TypeDescription == "DATABASE_ROLE"
+					}
+
+					// Use specific edge type for roles
+					edgeKind := bloodhound.EdgeKinds.Alter
+					if isRole {
+						edgeKind = bloodhound.EdgeKinds.AlterDBRole
 					}
 
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Alter,
+						edgeKind,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
@@ -2246,7 +2317,58 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 					return err
 				}
 				break
-				// ...other cases as needed...
+
+			case "IMPERSONATE":
+				// IMPERSONATE on a database user
+				if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
+					targetPrincipal := principalMap[perm.TargetPrincipalID]
+					targetName := perm.TargetName
+					if targetPrincipal != nil {
+						targetName = targetPrincipal.Name
+					}
+
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						perm.TargetObjectIdentifier,
+						bloodhound.EdgeKinds.ImpersonateDBUser,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    targetName,
+							TargetType:    bloodhound.NodeKinds.DatabaseUser,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
+				}
+				break
+
+			case "TAKE OWNERSHIP":
+				// TAKE OWNERSHIP on the database
+				if perm.ClassDesc == "DATABASE" {
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						db.ObjectIdentifier,
+						bloodhound.EdgeKinds.DBTakeOwnership,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    db.Name,
+							TargetType:    bloodhound.NodeKinds.Database,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
+				}
+				break
 			}
 		}
 	}

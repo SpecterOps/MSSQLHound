@@ -258,11 +258,20 @@ var EdgeKinds = struct {
 	Owns                 string
 	ControlServer        string
 	ControlDB            string
+	ControlDBRole        string
+	ControlDBUser        string
+	ControlLogin         string
+	ControlServerRole    string
 	Impersonate          string
 	ImpersonateAnyLogin  string
+	ImpersonateDBUser    string
+	ImpersonateLogin     string
 	ChangePassword       string
 	AddMember            string
 	Alter                string
+	AlterDB              string
+	AlterDBRole          string
+	AlterServerRole      string
 	Control              string
 	ChangeOwner          string
 	AlterAnyLogin        string
@@ -282,6 +291,7 @@ var EdgeKinds = struct {
 	HostFor              string
 	ExecuteOnHost        string
 	TakeOwnership        string
+	DBTakeOwnership      string
 	CanExecuteOnServer   string
 	CanExecuteOnDB       string
 	Connect              string
@@ -300,11 +310,20 @@ var EdgeKinds = struct {
 	Owns:                 "MSSQL_Owns",
 	ControlServer:        "MSSQL_ControlServer",
 	ControlDB:            "MSSQL_ControlDB",
+	ControlDBRole:        "MSSQL_ControlDBRole",
+	ControlDBUser:        "MSSQL_ControlDBUser",
+	ControlLogin:         "MSSQL_ControlLogin",
+	ControlServerRole:    "MSSQL_ControlServerRole",
 	Impersonate:          "MSSQL_Impersonate",
 	ImpersonateAnyLogin:  "MSSQL_ImpersonateAnyLogin",
+	ImpersonateDBUser:    "MSSQL_ImpersonateDBUser",
+	ImpersonateLogin:     "MSSQL_ImpersonateLogin",
 	ChangePassword:       "MSSQL_ChangePassword",
 	AddMember:            "MSSQL_AddMember",
 	Alter:                "MSSQL_Alter",
+	AlterDB:              "MSSQL_AlterDB",
+	AlterDBRole:          "MSSQL_AlterDBRole",
+	AlterServerRole:      "MSSQL_AlterServerRole",
 	Control:              "MSSQL_Control",
 	ChangeOwner:          "MSSQL_ChangeOwner",
 	AlterAnyLogin:        "MSSQL_AlterAnyLogin",
@@ -324,6 +343,7 @@ var EdgeKinds = struct {
 	HostFor:              "MSSQL_HostFor",
 	ExecuteOnHost:        "MSSQL_ExecuteOnHost",
 	TakeOwnership:        "MSSQL_TakeOwnership",
+	DBTakeOwnership:      "MSSQL_DBTakeOwnership",
 	CanExecuteOnServer:   "MSSQL_CanExecuteOnServer",
 	CanExecuteOnDB:       "MSSQL_CanExecuteOnDB",
 	Connect:              "MSSQL_Connect",

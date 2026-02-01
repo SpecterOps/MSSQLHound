@@ -585,4 +585,123 @@ Enable Extended Protection (EPA) on SQL Server to prevent this attack.`,
 - https://github.com/SecureAuthCorp/impacket/blob/master/examples/ntlmrelayx.py`,
 		}
 	},
+
+	// Database-level permission edges
+	EdgeKinds.AlterDB: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  false,
+			General:      "The " + ctx.SourceType + " has ALTER permission on the " + ctx.DatabaseName + " database, allowing modification of database settings and properties.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + " and execute: ALTER DATABASE [" + ctx.DatabaseName + "] SET TRUSTWORTHY ON; to enable trustworthy flag for privilege escalation.",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + " and execute: ALTER DATABASE [" + ctx.DatabaseName + "] SET TRUSTWORTHY ON; to enable trustworthy flag for privilege escalation.",
+			Opsec:        "ALTER DATABASE operations are logged in the SQL Server audit log and default trace.",
+			References:   "- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-database-transact-sql",
+		}
+	},
+
+	EdgeKinds.AlterDBRole: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  false,
+			General:      "The " + ctx.SourceType + " has ALTER permission on the target database role, allowing modification of role membership.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: ALTER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_user];",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: ALTER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_user];",
+			Opsec:        "Role membership changes are logged in SQL Server audit logs.",
+			References:   "- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-role-transact-sql",
+		}
+	},
+
+	EdgeKinds.AlterServerRole: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  false,
+			General:      "The " + ctx.SourceType + " has ALTER permission on the target server role, allowing modification of role membership.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + " and execute: ALTER SERVER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_login];",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + " and execute: ALTER SERVER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_login];",
+			Opsec:        "Server role membership changes are logged in SQL Server audit logs.",
+			References:   "- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-server-role-transact-sql",
+		}
+	},
+
+	EdgeKinds.ControlDBRole: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has CONTROL permission on the target database role, granting full control including ability to add/remove members and drop the role.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: ALTER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_user]; or DROP ROLE [" + ctx.TargetName + "];",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: ALTER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_user]; or DROP ROLE [" + ctx.TargetName + "];",
+			Opsec:        "CONTROL on database roles grants full administrative permissions. All modifications are logged.",
+			References:   "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine",
+		}
+	},
+
+	EdgeKinds.ControlDBUser: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has CONTROL permission on the target database user, granting full control including ability to impersonate.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: EXECUTE AS USER = '" + ctx.TargetName + "'; to impersonate the user.",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: EXECUTE AS USER = '" + ctx.TargetName + "'; to impersonate the user.",
+			Opsec:        "CONTROL on database users allows impersonation. Impersonation is logged in SQL Server audit logs.",
+			References:   "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine",
+		}
+	},
+
+	EdgeKinds.ControlLogin: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has CONTROL permission on the target login, granting full control including ability to impersonate and alter.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + " and execute: EXECUTE AS LOGIN = '" + ctx.TargetName + "'; to impersonate the login, or ALTER LOGIN [" + ctx.TargetName + "] WITH PASSWORD = 'NewPassword!';",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + " and execute: EXECUTE AS LOGIN = '" + ctx.TargetName + "'; to impersonate the login.",
+			Opsec:        "CONTROL on logins grants full administrative permissions including impersonation. All actions are logged.",
+			References:   "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine",
+		}
+	},
+
+	EdgeKinds.ControlServerRole: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has CONTROL permission on the target server role, granting full control including ability to add/remove members.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + " and execute: ALTER SERVER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_login];",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + " and execute: ALTER SERVER ROLE [" + ctx.TargetName + "] ADD MEMBER [attacker_login];",
+			Opsec:        "CONTROL on server roles grants full administrative permissions. All modifications are logged.",
+			References:   "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine",
+		}
+	},
+
+	EdgeKinds.DBTakeOwnership: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has TAKE OWNERSHIP permission on the " + ctx.DatabaseName + " database, allowing them to become the database owner.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + " and execute: ALTER AUTHORIZATION ON DATABASE::[" + ctx.DatabaseName + "] TO [" + ctx.SourceName + "]; to take ownership of the database.",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + " and execute: ALTER AUTHORIZATION ON DATABASE::[" + ctx.DatabaseName + "] TO [" + ctx.SourceName + "]; to take ownership of the database.",
+			Opsec:        "TAKE OWNERSHIP operations are logged in SQL Server audit logs. Database ownership changes are high-visibility events.",
+			References:   "- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-authorization-transact-sql",
+		}
+	},
+
+	EdgeKinds.ImpersonateDBUser: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has IMPERSONATE permission on the target database user, allowing execution of commands as that user.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: EXECUTE AS USER = '" + ctx.TargetName + "'; to impersonate the user.",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + ", switch to " + ctx.DatabaseName + " database, and execute: EXECUTE AS USER = '" + ctx.TargetName + "'; to impersonate the user.",
+			Opsec: `Database user impersonation is logged in SQL Server audit logs. To check current execution context:
+    SELECT USER_NAME(), ORIGINAL_LOGIN();
+To revert impersonation:
+    REVERT;`,
+			References: `- https://learn.microsoft.com/en-us/sql/t-sql/statements/execute-as-transact-sql
+- https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/impersonate-a-user`,
+		}
+	},
+
+	EdgeKinds.ImpersonateLogin: func(ctx *EdgeContext) EdgeProperties {
+		return EdgeProperties{
+			Traversable:  true,
+			General:      "The " + ctx.SourceType + " has IMPERSONATE permission on the target login, allowing execution of commands as that login.",
+			WindowsAbuse: "Connect to " + ctx.SQLServerName + " and execute: EXECUTE AS LOGIN = '" + ctx.TargetName + "'; to impersonate the login.",
+			LinuxAbuse:   "Connect to " + ctx.SQLServerName + " and execute: EXECUTE AS LOGIN = '" + ctx.TargetName + "'; to impersonate the login.",
+			Opsec: `Login impersonation is logged in SQL Server audit logs. To check current execution context:
+    SELECT SYSTEM_USER, ORIGINAL_LOGIN();
+To revert impersonation:
+    REVERT;`,
+			References: `- https://learn.microsoft.com/en-us/sql/t-sql/statements/execute-as-transact-sql
+- https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/impersonate-a-user`,
+		}
+	},
 }
