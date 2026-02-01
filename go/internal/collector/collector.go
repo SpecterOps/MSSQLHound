@@ -247,6 +247,11 @@ func (c *Collector) processServer(serverInstance string) error {
 		c.resolveComputerSIDViaLDAP(serverInfo)
 	}
 
+	// Resolve service account SIDs via LDAP if they don't have SIDs
+	if c.config.Domain != "" {
+		c.resolveServiceAccountSIDsViaLDAP(serverInfo)
+	}
+
 	fmt.Printf("  Collected: %d principals, %d databases\n",
 		len(serverInfo.ServerPrincipals), len(serverInfo.Databases))
 
@@ -345,6 +350,49 @@ func (c *Collector) updateObjectIdentifiers(serverInfo *types.ServerInfo, oldSer
 	}
 }
 
+// resolveServiceAccountSIDsViaLDAP resolves service account SIDs via LDAP
+func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInfo) {
+	// Skip if no domain
+	if c.config.Domain == "" {
+		return
+	}
+
+	// Create AD client
+	adClient := ad.NewClient(c.config.Domain, c.config.DomainController, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword)
+	defer adClient.Close()
+
+	for i := range serverInfo.ServiceAccounts {
+		sa := &serverInfo.ServiceAccounts[i]
+
+		// Skip if already has a SID
+		if sa.SID != "" {
+			continue
+		}
+
+		// Skip non-domain accounts (Local System, Local Service, etc.)
+		if !strings.Contains(sa.Name, "\\") && !strings.Contains(sa.Name, "@") {
+			continue
+		}
+
+		// Skip virtual accounts like NT SERVICE\*
+		if strings.HasPrefix(strings.ToUpper(sa.Name), "NT SERVICE\\") ||
+			strings.HasPrefix(strings.ToUpper(sa.Name), "NT AUTHORITY\\") {
+			continue
+		}
+
+		// Try to resolve the service account name to a SID
+		principal, err := adClient.ResolveName(sa.Name)
+		if err != nil {
+			fmt.Printf("  Note: Could not resolve service account %s via LDAP: %v\n", sa.Name, err)
+			continue
+		}
+
+		sa.SID = principal.SID
+		sa.ObjectIdentifier = principal.SID
+		fmt.Printf("  Resolved service account SID for %s: %s\n", sa.Name, sa.SID)
+	}
+}
+
 // generateOutput creates the BloodHound JSON output for a server
 func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile string) error {
 	writer, err := bloodhound.NewStreamingWriter(outputFile)
@@ -379,6 +427,13 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 			if err := writer.WriteNode(node); err != nil {
 				return err
 			}
+		}
+	}
+
+	// Create AD nodes (User, Group, Computer) if not skipped
+	if !c.config.SkipADNodeCreation {
+		if err := c.createADNodes(writer, serverInfo); err != nil {
+			return err
 		}
 	}
 
@@ -570,6 +625,163 @@ func (c *Collector) createDatabasePrincipalNode(principal *types.DatabasePrincip
 		Properties: props,
 		Icon:       icon,
 	}
+}
+
+// createADNodes creates BloodHound nodes for Active Directory principals referenced by SQL logins
+func (c *Collector) createADNodes(writer *bloodhound.StreamingWriter, serverInfo *types.ServerInfo) error {
+	createdNodes := make(map[string]bool)
+
+	// Track if we need to create Authenticated Users node for CoerceAndRelayToMSSQL
+	needsAuthUsersNode := false
+
+	// Check for computer accounts with EPA disabled (CoerceAndRelayToMSSQL condition)
+	if serverInfo.ExtendedProtection == "Off" {
+		for _, principal := range serverInfo.ServerPrincipals {
+			if principal.IsActiveDirectoryPrincipal &&
+				strings.HasPrefix(principal.SecurityIdentifier, "S-1-5-21-") &&
+				strings.HasSuffix(principal.Name, "$") &&
+				!principal.IsDisabled {
+				needsAuthUsersNode = true
+				break
+			}
+		}
+	}
+
+	// Create Authenticated Users node if needed
+	if needsAuthUsersNode {
+		authedUsersSID := "S-1-5-11"
+		if c.config.Domain != "" {
+			authedUsersSID = c.config.Domain + "-S-1-5-11"
+		}
+
+		if !createdNodes[authedUsersSID] {
+			node := &bloodhound.Node{
+				ID:    authedUsersSID,
+				Kinds: []string{bloodhound.NodeKinds.Group, "Base"},
+				Properties: map[string]interface{}{
+					"name": "AUTHENTICATED USERS@" + c.config.Domain,
+				},
+			}
+			if err := writer.WriteNode(node); err != nil {
+				return err
+			}
+			createdNodes[authedUsersSID] = true
+		}
+	}
+
+	// Create nodes for domain principals with SQL logins
+	for _, principal := range serverInfo.ServerPrincipals {
+		if !principal.IsActiveDirectoryPrincipal || principal.SecurityIdentifier == "" {
+			continue
+		}
+
+		// Skip if not a domain SID (skip NT AUTHORITY, NT SERVICE, etc.)
+		if !strings.HasPrefix(principal.SecurityIdentifier, "S-1-5-21-") {
+			continue
+		}
+
+		// Skip disabled logins and those without CONNECT SQL
+		if principal.IsDisabled {
+			continue
+		}
+
+		// Check if has CONNECT SQL permission
+		hasConnectSQL := false
+		for _, perm := range principal.Permissions {
+			if perm.Permission == "CONNECT SQL" && (perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
+				hasConnectSQL = true
+				break
+			}
+		}
+		// Also check if member of sysadmin or securityadmin (they have implicit CONNECT SQL)
+		if !hasConnectSQL {
+			for _, membership := range principal.MemberOf {
+				if membership.Name == "sysadmin" || membership.Name == "securityadmin" {
+					hasConnectSQL = true
+					break
+				}
+			}
+		}
+		if !hasConnectSQL {
+			continue
+		}
+
+		// Skip if already created
+		if createdNodes[principal.SecurityIdentifier] {
+			continue
+		}
+
+		// Determine the node kind based on the principal name
+		var kinds []string
+		if strings.HasSuffix(principal.Name, "$") {
+			kinds = []string{bloodhound.NodeKinds.Computer, "Base"}
+		} else if strings.Contains(principal.TypeDescription, "GROUP") {
+			kinds = []string{bloodhound.NodeKinds.Group, "Base"}
+		} else {
+			kinds = []string{bloodhound.NodeKinds.User, "Base"}
+		}
+
+		// Build the display name with domain
+		displayName := principal.Name
+		if c.config.Domain != "" && !strings.Contains(displayName, "@") {
+			displayName = principal.Name + "@" + c.config.Domain
+		}
+
+		node := &bloodhound.Node{
+			ID:    principal.SecurityIdentifier,
+			Kinds: kinds,
+			Properties: map[string]interface{}{
+				"name": displayName,
+			},
+		}
+		if err := writer.WriteNode(node); err != nil {
+			return err
+		}
+		createdNodes[principal.SecurityIdentifier] = true
+	}
+
+	// Create nodes for service accounts
+	for _, sa := range serverInfo.ServiceAccounts {
+		saID := sa.SID
+		if saID == "" {
+			saID = sa.ObjectIdentifier
+		}
+		if saID == "" || createdNodes[saID] {
+			continue
+		}
+
+		// Skip if not a domain SID
+		if !strings.HasPrefix(saID, "S-1-5-21-") {
+			continue
+		}
+
+		// Determine kind based on account name
+		var kinds []string
+		if strings.HasSuffix(sa.Name, "$") {
+			kinds = []string{bloodhound.NodeKinds.Computer, "Base"}
+		} else {
+			kinds = []string{bloodhound.NodeKinds.User, "Base"}
+		}
+
+		displayName := sa.Name
+		if c.config.Domain != "" && !strings.Contains(displayName, "@") {
+			displayName = sa.Name + "@" + c.config.Domain
+		}
+
+		node := &bloodhound.Node{
+			ID:    saID,
+			Kinds: kinds,
+			Properties: map[string]interface{}{
+				"name": displayName,
+			},
+		}
+		if err := writer.WriteNode(node); err != nil {
+			return err
+		}
+		createdNodes[saID] = true
+	}
+
+	return nil
 }
 
 // createEdges creates all edges for the server
@@ -816,9 +1028,16 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 
 	// Linked servers
 	for _, linked := range serverInfo.LinkedServers {
+		// Determine target ObjectIdentifier for linked server
+		targetID := linked.DataSource
+		if linked.ResolvedObjectIdentifier != "" {
+			targetID = linked.ResolvedObjectIdentifier
+		}
+
+		// MSSQL_LinkedTo edge
 		edge := c.createEdge(
 			serverInfo.ObjectIdentifier,
-			linked.DataSource,
+			targetID,
 			bloodhound.EdgeKinds.LinkedTo,
 			&bloodhound.EdgeContext{
 				SourceName:    serverInfo.ServerName,
@@ -830,6 +1049,33 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 		)
 		if err := writer.WriteEdge(edge); err != nil {
 			return err
+		}
+
+		// MSSQL_LinkedAsAdmin edge if conditions are met:
+		// - Remote login exists and is a SQL login (no backslash)
+		// - Remote login has admin privileges (sysadmin, securityadmin, CONTROL SERVER, or IMPERSONATE ANY LOGIN)
+		// - Target server has mixed mode authentication enabled
+		if linked.RemoteLogin != "" &&
+			!strings.Contains(linked.RemoteLogin, "\\") &&
+			(linked.RemoteIsSysadmin || linked.RemoteIsSecurityAdmin ||
+				linked.RemoteHasControlServer || linked.RemoteHasImpersonateAnyLogin) &&
+			linked.RemoteIsMixedMode {
+
+			edge := c.createEdge(
+				serverInfo.ObjectIdentifier,
+				targetID,
+				bloodhound.EdgeKinds.LinkedAsAdmin,
+				&bloodhound.EdgeContext{
+					SourceName:    serverInfo.ServerName,
+					SourceType:    bloodhound.NodeKinds.Server,
+					TargetName:    linked.Name,
+					TargetType:    bloodhound.NodeKinds.Server,
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1001,6 +1247,34 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 		)
 		if err := writer.WriteEdge(edge); err != nil {
 			return err
+		}
+
+		// CoerceAndRelayToMSSQL edge if conditions are met:
+		// - Extended Protection (EPA) is Off
+		// - Login is for a computer account (name ends with $)
+		if serverInfo.ExtendedProtection == "Off" && strings.HasSuffix(principal.Name, "$") {
+			// Create edge from Authenticated Users (S-1-5-11) to the SQL login
+			// The SID S-1-5-11 is prefixed with the domain SID for the full ObjectIdentifier
+			authedUsersSID := "S-1-5-11"
+			if c.config.Domain != "" {
+				authedUsersSID = c.config.Domain + "-S-1-5-11"
+			}
+
+			edge := c.createEdge(
+				authedUsersSID,
+				principal.ObjectIdentifier,
+				bloodhound.EdgeKinds.CoerceAndRelayTo,
+				&bloodhound.EdgeContext{
+					SourceName:    "AUTHENTICATED USERS",
+					SourceType:    "Group",
+					TargetName:    principal.Name,
+					TargetType:    bloodhound.NodeKinds.Login,
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1553,18 +1827,25 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 					targetPrincipal := principalMap[perm.TargetPrincipalID]
 					targetName := perm.TargetName
 					targetType := bloodhound.NodeKinds.Login
+					isServerRole := false
 					if targetPrincipal != nil {
 						targetName = targetPrincipal.Name
 						if targetPrincipal.TypeDescription == "SERVER_ROLE" {
 							targetType = bloodhound.NodeKinds.ServerRole
+							isServerRole = true
 						}
 					}
 
-					// Control edge
+					// Use specific edge type based on target
+					edgeKind := bloodhound.EdgeKinds.ControlLogin
+					if isServerRole {
+						edgeKind = bloodhound.EdgeKinds.ControlServerRole
+					}
+
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Control,
+						edgeKind,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -1578,12 +1859,8 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						return err
 					}
 
-					// Note: PowerShell creates ExecuteAs for CONTROL on logins, but only when the
-					// data actually contains CONTROL permissions on specific logins.
-					// The current test data doesn't have such permissions, so we skip this to match.
-
 					// CONTROL implies ChangeOwner for server roles
-					if targetType == bloodhound.NodeKinds.ServerRole {
+					if isServerRole {
 						edge := c.createEdge(
 							principal.ObjectIdentifier,
 							perm.TargetObjectIdentifier,
@@ -1604,22 +1881,30 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 				}
 
 			case "ALTER":
-				// ALTER on a server role
+				// ALTER on a server principal (login/role)
 				if perm.ClassDesc == "SERVER_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
 					targetPrincipal := principalMap[perm.TargetPrincipalID]
 					targetName := perm.TargetName
 					targetType := bloodhound.NodeKinds.Login
+					isServerRole := false
 					if targetPrincipal != nil {
 						targetName = targetPrincipal.Name
 						if targetPrincipal.TypeDescription == "SERVER_ROLE" {
 							targetType = bloodhound.NodeKinds.ServerRole
+							isServerRole = true
 						}
+					}
+
+					// Use specific edge type for server roles
+					edgeKind := bloodhound.EdgeKinds.Alter
+					if isServerRole {
+						edgeKind = bloodhound.EdgeKinds.AlterServerRole
 					}
 
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Alter,
+						edgeKind,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -1673,11 +1958,11 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						targetName = targetPrincipal.Name
 					}
 
-					// Impersonate edge
+					// ImpersonateLogin edge (specific for login impersonation)
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Impersonate,
+						bloodhound.EdgeKinds.ImpersonateLogin,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -1878,7 +2163,40 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 						return err
 					}
 				} else if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
-					// ...existing code...
+					// CONTROL on a database principal (user/role)
+					targetPrincipal := principalMap[perm.TargetPrincipalID]
+					targetName := perm.TargetName
+					targetType := bloodhound.NodeKinds.DatabaseUser
+					isRole := false
+					if targetPrincipal != nil {
+						targetName = targetPrincipal.Name
+						targetType = c.getDatabasePrincipalType(targetPrincipal.TypeDescription)
+						isRole = targetPrincipal.TypeDescription == "DATABASE_ROLE"
+					}
+
+					// Use specific edge type based on target
+					edgeKind := bloodhound.EdgeKinds.ControlDBUser
+					if isRole {
+						edgeKind = bloodhound.EdgeKinds.ControlDBRole
+					}
+
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						perm.TargetObjectIdentifier,
+						edgeKind,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    targetName,
+							TargetType:    targetType,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
 				}
 				break
 
@@ -1905,20 +2223,47 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 				}
 				break
 			case "ALTER":
-				// ALTER on a database principal
-				if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
+				if perm.ClassDesc == "DATABASE" {
+					// ALTER on the database itself
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						db.ObjectIdentifier,
+						bloodhound.EdgeKinds.AlterDB,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    db.Name,
+							TargetType:    bloodhound.NodeKinds.Database,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
+				} else if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
+					// ALTER on a database principal
 					targetPrincipal := principalMap[perm.TargetPrincipalID]
 					targetName := perm.TargetName
 					targetType := bloodhound.NodeKinds.DatabaseUser
+					isRole := false
 					if targetPrincipal != nil {
 						targetName = targetPrincipal.Name
 						targetType = c.getDatabasePrincipalType(targetPrincipal.TypeDescription)
+						isRole = targetPrincipal.TypeDescription == "DATABASE_ROLE"
+					}
+
+					// Use specific edge type for roles
+					edgeKind := bloodhound.EdgeKinds.Alter
+					if isRole {
+						edgeKind = bloodhound.EdgeKinds.AlterDBRole
 					}
 
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.Alter,
+						edgeKind,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
@@ -1972,7 +2317,58 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 					return err
 				}
 				break
-				// ...other cases as needed...
+
+			case "IMPERSONATE":
+				// IMPERSONATE on a database user
+				if perm.ClassDesc == "DATABASE_PRINCIPAL" && perm.TargetObjectIdentifier != "" {
+					targetPrincipal := principalMap[perm.TargetPrincipalID]
+					targetName := perm.TargetName
+					if targetPrincipal != nil {
+						targetName = targetPrincipal.Name
+					}
+
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						perm.TargetObjectIdentifier,
+						bloodhound.EdgeKinds.ImpersonateDBUser,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    targetName,
+							TargetType:    bloodhound.NodeKinds.DatabaseUser,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
+				}
+				break
+
+			case "TAKE OWNERSHIP":
+				// TAKE OWNERSHIP on the database
+				if perm.ClassDesc == "DATABASE" {
+					edge := c.createEdge(
+						principal.ObjectIdentifier,
+						db.ObjectIdentifier,
+						bloodhound.EdgeKinds.DBTakeOwnership,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+							TargetName:    db.Name,
+							TargetType:    bloodhound.NodeKinds.Database,
+							SQLServerName: serverInfo.SQLServerName,
+							DatabaseName:  db.Name,
+							Permission:    perm.Permission,
+						},
+					)
+					if err := writer.WriteEdge(edge); err != nil {
+						return err
+					}
+				}
+				break
 			}
 		}
 	}
