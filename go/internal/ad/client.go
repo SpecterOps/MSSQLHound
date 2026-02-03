@@ -53,62 +53,131 @@ func (c *Client) Connect() error {
 		}
 	}
 
-	// Connect to LDAP
-	conn, err := ldap.DialURL(fmt.Sprintf("ldap://%s:389", dc))
-	if err != nil {
-		return fmt.Errorf("failed to connect to LDAP: %w", err)
-	}
-
-	// Set timeout
-	conn.SetTimeout(30 * time.Second)
-
-	// Try authentication methods in order of preference
-	var bindErr error
-
-	// If explicit credentials provided, try NTLM first (more reliable with explicit creds)
-	if c.ldapUser != "" && c.ldapPassword != "" {
-		// Attempt StartTLS first for NTLM
-		_ = c.startTLS(conn, dc)
-
-		bindErr = c.ntlmBind(conn)
-		if bindErr == nil {
-			c.conn = conn
-			c.baseDN = domainToDN(c.domain)
-			return nil
-		}
-
-		// NTLM failed, try GSSAPI with explicit creds
-		bindErr = c.gssapiBind(conn, dc)
-		if bindErr == nil {
-			c.conn = conn
-			c.baseDN = domainToDN(c.domain)
-			return nil
-		}
-
-		return fmt.Errorf("failed to bind with provided credentials (NTLM and GSSAPI both failed): %w", bindErr)
-	}
-
-	// No explicit credentials - try GSSAPI with current user context
-	// Collect errors from each method for better debugging
-	var errors []string
-
-	// Build server name for TLS
+	// Build server name for TLS (used throughout)
 	serverName := dc
 	if !strings.Contains(serverName, ".") && c.domain != "" {
 		serverName = fmt.Sprintf("%s.%s", dc, c.domain)
 	}
 
-	// Close the initial port 389 connection
-	conn.Close()
+	// If explicit credentials provided, try multiple auth methods with TLS
+	if c.ldapUser != "" && c.ldapPassword != "" {
+		return c.connectWithExplicitCredentials(dc, serverName)
+	}
 
-	// Try LDAPS first (port 636) - most reliable with channel binding
-	conn, err = ldap.DialURL(fmt.Sprintf("ldaps://%s:636", dc), ldap.DialWithTLSConfig(&tls.Config{
+	// No explicit credentials - try GSSAPI with current user context
+	return c.connectWithCurrentUser(dc, serverName)
+}
+
+// connectWithExplicitCredentials tries multiple authentication methods with explicit credentials
+func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
+	var errors []string
+
+	// Try LDAPS first (port 636) - most secure
+	conn, err := ldap.DialURL(fmt.Sprintf("ldaps://%s:636", dc), ldap.DialWithTLSConfig(&tls.Config{
 		ServerName:         serverName,
 		InsecureSkipVerify: true,
 	}))
 	if err == nil {
 		conn.SetTimeout(30 * time.Second)
-		bindErr = c.gssapiBind(conn, dc)
+
+		// Try NTLM first (most reliable with explicit creds)
+		if bindErr := c.ntlmBind(conn); bindErr == nil {
+			c.conn = conn
+			c.baseDN = domainToDN(c.domain)
+			return nil
+		} else {
+			errors = append(errors, fmt.Sprintf("LDAPS:636 NTLM: %v", bindErr))
+		}
+
+		// Try Simple Bind (works well over TLS)
+		if bindErr := c.simpleBind(conn); bindErr == nil {
+			c.conn = conn
+			c.baseDN = domainToDN(c.domain)
+			return nil
+		} else {
+			errors = append(errors, fmt.Sprintf("LDAPS:636 SimpleBind: %v", bindErr))
+		}
+
+		// Try GSSAPI
+		if bindErr := c.gssapiBind(conn, dc); bindErr == nil {
+			c.conn = conn
+			c.baseDN = domainToDN(c.domain)
+			return nil
+		} else {
+			errors = append(errors, fmt.Sprintf("LDAPS:636 GSSAPI: %v", bindErr))
+		}
+		conn.Close()
+	} else {
+		errors = append(errors, fmt.Sprintf("LDAPS:636 connect: %v", err))
+	}
+
+	// Try StartTLS on port 389
+	conn, err = ldap.DialURL(fmt.Sprintf("ldap://%s:389", dc))
+	if err == nil {
+		conn.SetTimeout(30 * time.Second)
+		tlsErr := c.startTLS(conn, dc)
+		if tlsErr == nil {
+			// Try NTLM
+			if bindErr := c.ntlmBind(conn); bindErr == nil {
+				c.conn = conn
+				c.baseDN = domainToDN(c.domain)
+				return nil
+			} else {
+				errors = append(errors, fmt.Sprintf("LDAP:389+StartTLS NTLM: %v", bindErr))
+			}
+
+			// Try Simple Bind
+			if bindErr := c.simpleBind(conn); bindErr == nil {
+				c.conn = conn
+				c.baseDN = domainToDN(c.domain)
+				return nil
+			} else {
+				errors = append(errors, fmt.Sprintf("LDAP:389+StartTLS SimpleBind: %v", bindErr))
+			}
+
+			// Try GSSAPI
+			if bindErr := c.gssapiBind(conn, dc); bindErr == nil {
+				c.conn = conn
+				c.baseDN = domainToDN(c.domain)
+				return nil
+			} else {
+				errors = append(errors, fmt.Sprintf("LDAP:389+StartTLS GSSAPI: %v", bindErr))
+			}
+		} else {
+			errors = append(errors, fmt.Sprintf("LDAP:389 StartTLS: %v", tlsErr))
+		}
+		conn.Close()
+	}
+
+	// Try plain LDAP with NTLM (has built-in encryption via NTLM sealing)
+	conn, err = ldap.DialURL(fmt.Sprintf("ldap://%s:389", dc))
+	if err == nil {
+		conn.SetTimeout(30 * time.Second)
+		if bindErr := c.ntlmBind(conn); bindErr == nil {
+			c.conn = conn
+			c.baseDN = domainToDN(c.domain)
+			return nil
+		} else {
+			errors = append(errors, fmt.Sprintf("LDAP:389 NTLM: %v", bindErr))
+		}
+		conn.Close()
+	}
+
+	return fmt.Errorf("all LDAP authentication methods failed with explicit credentials: %s", strings.Join(errors, "; "))
+}
+
+// connectWithCurrentUser tries GSSAPI authentication with the current user's credentials
+func (c *Client) connectWithCurrentUser(dc, serverName string) error {
+	var errors []string
+
+	// Try LDAPS first (port 636) - most reliable with channel binding
+	conn, err := ldap.DialURL(fmt.Sprintf("ldaps://%s:636", dc), ldap.DialWithTLSConfig(&tls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: true,
+	}))
+	if err == nil {
+		conn.SetTimeout(30 * time.Second)
+		bindErr := c.gssapiBind(conn, dc)
 		if bindErr == nil {
 			c.conn = conn
 			c.baseDN = domainToDN(c.domain)
@@ -153,7 +222,35 @@ func (c *Client) Connect() error {
 		conn.Close()
 	}
 
-	return fmt.Errorf("all LDAP connection methods failed: %s", strings.Join(errors, "; "))
+	// Provide helpful troubleshooting message
+	errMsg := fmt.Sprintf("all LDAP connection methods failed: %s", strings.Join(errors, "; "))
+
+	// Check for common issues and provide suggestions
+	if containsAny(errors, "80090346", "Invalid Credentials") {
+		errMsg += "\n\nTroubleshooting suggestions for Kerberos authentication failures:"
+		errMsg += "\n  1. Verify your Kerberos ticket is valid: run 'klist' to check"
+		errMsg += "\n  2. Check time synchronization with the domain controller"
+		errMsg += "\n  3. Try using explicit credentials with --ldap-user and --ldap-password"
+		errMsg += "\n  4. If EPA (Extended Protection) is enabled, explicit credentials may be required"
+	}
+	if containsAny(errors, "Strong Auth Required", "integrity checking") {
+		errMsg += "\n\nNote: The domain controller requires LDAP signing. GSSAPI should provide this,"
+		errMsg += "\n      but if it's failing, try using explicit credentials which enables NTLM or Simple Bind."
+	}
+
+	return fmt.Errorf("%s", errMsg)
+}
+
+// containsAny checks if any of the error strings contain any of the substrings
+func containsAny(errors []string, substrings ...string) bool {
+	for _, err := range errors {
+		for _, sub := range substrings {
+			if strings.Contains(err, sub) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ntlmBind performs NTLM authentication
@@ -173,6 +270,45 @@ func (c *Client) ntlmBind(conn *ldap.Conn) error {
 	}
 
 	return conn.NTLMBind(domain, username, c.ldapPassword)
+}
+
+// simpleBind performs simple LDAP authentication (requires TLS for security)
+// This is a fallback when NTLM and GSSAPI fail
+func (c *Client) simpleBind(conn *ldap.Conn) error {
+	// Build the bind DN - try multiple formats
+	username := c.ldapUser
+
+	// If it's already a DN format, use it directly
+	if strings.Contains(strings.ToLower(username), "cn=") || strings.Contains(strings.ToLower(username), "dc=") {
+		return conn.Bind(username, c.ldapPassword)
+	}
+
+	// Try UPN format (user@domain) first - most compatible
+	if strings.Contains(username, "@") {
+		if err := conn.Bind(username, c.ldapPassword); err == nil {
+			return nil
+		}
+	}
+
+	// Try DOMAIN\user format converted to UPN
+	if strings.Contains(username, "\\") {
+		parts := strings.SplitN(username, "\\", 2)
+		upn := fmt.Sprintf("%s@%s", parts[1], parts[0])
+		if err := conn.Bind(upn, c.ldapPassword); err == nil {
+			return nil
+		}
+	}
+
+	// Try constructing UPN with the domain
+	if !strings.Contains(username, "@") && !strings.Contains(username, "\\") {
+		upn := fmt.Sprintf("%s@%s", username, c.domain)
+		if err := conn.Bind(upn, c.ldapPassword); err == nil {
+			return nil
+		}
+	}
+
+	// Final attempt with original username
+	return conn.Bind(username, c.ldapPassword)
 }
 
 func (c *Client) gssapiBind(conn *ldap.Conn, dc string) error {
