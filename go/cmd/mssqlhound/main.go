@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	version = "1.0.0"
+	version = "1.1.0"
 
 	// Connection options
 	serverInstance   string
@@ -27,6 +27,7 @@ var (
 	tempDir       string
 	zipDir        string
 	fileSizeLimit string
+	verbose       bool
 
 	// Collection options
 	domainEnumOnly                  bool
@@ -42,15 +43,19 @@ var (
 	linkedServerTimeout    int
 	memoryThresholdPercent int
 	fileSizeUpdateInterval int
+
+	// Concurrency
+	workers int
 )
 
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "mssqlhound",
 		Short: "MSSQLHound: Collector for adding MSSQL attack paths to BloodHound",
-		Long: `MSSQLHound: PowerShell collector for adding MSSQL attack paths to BloodHound with OpenGraph
+		Long: `MSSQLHound: Collector for adding MSSQL attack paths to BloodHound with OpenGraph
 
 Author: Chris Thompson (@_Mayyhem) at SpecterOps
+Go port: Javier Azofra at Siemens Healthineers
 
 Collects BloodHound OpenGraph compatible data from one or more MSSQL servers into individual files, then zips them.`,
 		Version: version,
@@ -73,6 +78,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().StringVar(&tempDir, "temp-dir", "", "Temporary directory for output files")
 	rootCmd.Flags().StringVar(&zipDir, "zip-dir", ".", "Directory for final zip file")
 	rootCmd.Flags().StringVar(&fileSizeLimit, "file-size-limit", "1GB", "Stop enumeration after files exceed this size")
+	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output showing detailed collection progress")
 
 	// Collection flags
 	rootCmd.Flags().BoolVar(&domainEnumOnly, "domain-enum-only", false, "Only enumerate SPNs, skip MSSQL collection")
@@ -89,6 +95,9 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().IntVar(&memoryThresholdPercent, "memory-threshold", 90, "Stop when memory exceeds this percentage")
 	rootCmd.Flags().IntVar(&fileSizeUpdateInterval, "size-update-interval", 5, "Interval for file size updates (seconds)")
 
+	// Concurrency flags
+	rootCmd.Flags().IntVarP(&workers, "workers", "w", 0, "Number of concurrent workers (0 = sequential processing)")
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -98,6 +107,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 func run(cmd *cobra.Command, args []string) error {
 	fmt.Printf("MSSQLHound v%s\n", version)
 	fmt.Println("Author: Chris Thompson (@_Mayyhem) at SpecterOps")
+	fmt.Println("Go port: Javier Azofra at Siemens Healthineers")
 	fmt.Println()
 
 	// Build configuration from flags
@@ -115,6 +125,7 @@ func run(cmd *cobra.Command, args []string) error {
 		TempDir:                         tempDir,
 		ZipDir:                          zipDir,
 		FileSizeLimit:                   fileSizeLimit,
+		Verbose:                         verbose,
 		DomainEnumOnly:                  domainEnumOnly,
 		SkipLinkedServerEnum:            skipLinkedServerEnum,
 		CollectFromLinkedServers:        collectFromLinkedServers,
@@ -126,6 +137,7 @@ func run(cmd *cobra.Command, args []string) error {
 		LinkedServerTimeout:             linkedServerTimeout,
 		MemoryThresholdPercent:          memoryThresholdPercent,
 		FileSizeUpdateInterval:          fileSizeUpdateInterval,
+		Workers:                         workers,
 	}
 
 	// Create and run collector

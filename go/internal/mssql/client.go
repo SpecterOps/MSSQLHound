@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/microsoft/go-mssqldb"
+	mssqldb "github.com/microsoft/go-mssqldb"
 
 	"github.com/SpecterOps/MSSQLHound/internal/types"
 )
@@ -86,6 +86,10 @@ type Client struct {
 	userID         string
 	password       string
 	useWindowsAuth bool
+	verbose        bool
+	encrypt        bool              // Whether to use encryption
+	usePowerShell  bool              // Whether using PowerShell fallback
+	psClient       *PowerShellClient // PowerShell client for fallback
 }
 
 // NewClient creates a new SQL Server client
@@ -145,26 +149,527 @@ func parseServerInstance(instance string) (hostname string, port int, instanceNa
 }
 
 // Connect establishes a connection to the SQL Server
+// It tries multiple connection strategies to maximize compatibility.
+// If go-mssqldb fails with the "untrusted domain" error, it will automatically
+// fall back to using PowerShell with System.Data.SqlClient which handles
+// some SSPI edge cases that go-mssqldb cannot.
 func (c *Client) Connect(ctx context.Context) error {
-	connStr := c.buildConnectionString()
+	// First try native go-mssqldb connection
+	err := c.connectNative(ctx)
+	if err == nil {
+		return nil
+	}
 
-	db, err := sql.Open("sqlserver", connStr)
+	// Check if this is the "untrusted domain" error that PowerShell can handle
+	if IsUntrustedDomainError(err) && c.useWindowsAuth {
+		c.logVerbose("Native connection failed with untrusted domain error, trying PowerShell fallback...")
+		// Try PowerShell fallback
+		psErr := c.connectPowerShell(ctx)
+		if psErr == nil {
+			c.logVerbose("PowerShell fallback succeeded")
+			return nil
+		}
+		// Both methods failed - return combined error for clarity
+		c.logVerbose("PowerShell fallback also failed: %v", psErr)
+		return fmt.Errorf("all connection methods failed (native: %v, PowerShell: %v)", err, psErr)
+	}
+
+	return err
+}
+
+// connectNative tries to connect using go-mssqldb
+func (c *Client) connectNative(ctx context.Context) error {
+	// Connection strategies to try in order
+	// NOTE: Some servers with specific SSPI configurations may fail to connect from Go
+	// even though PowerShell/System.Data.SqlClient works. This is a known limitation
+	// of the go-mssqldb driver's Windows SSPI implementation.
+
+	// Get short hostname for some strategies
+	shortHostname := c.hostname
+	if idx := strings.Index(c.hostname, "."); idx != -1 {
+		shortHostname = c.hostname[:idx]
+	}
+
+	type connStrategy struct {
+		name         string
+		serverName   string // The server name to use in connection string
+		encrypt      string // "false", "true", or "strict"
+		useServerSPN bool
+		spnHost      string // Host to use in SPN
+	}
+
+	strategies := []connStrategy{
+		// Try FQDN with encryption (most common)
+		{"FQDN+encrypt", c.hostname, "true", false, ""},
+		// Try with explicit SPN
+		{"FQDN+encrypt+SPN", c.hostname, "true", true, c.hostname},
+		// Try without encryption
+		{"FQDN+no-encrypt", c.hostname, "false", false, ""},
+		// Try short hostname
+		{"short+encrypt", shortHostname, "true", false, ""},
+		{"short+no-encrypt", shortHostname, "false", false, ""},
+	}
+
+	var lastErr error
+	for _, strategy := range strategies {
+		connStr := c.buildConnectionStringForStrategy(strategy.serverName, strategy.encrypt, strategy.useServerSPN, strategy.spnHost)
+		c.logVerbose("Trying connection strategy '%s': %s", strategy.name, connStr)
+
+		db, err := sql.Open("sqlserver", connStr)
+		if err != nil {
+			lastErr = err
+			c.logVerbose("  Strategy '%s' failed to open: %v", strategy.name, err)
+			continue
+		}
+
+		// Test the connection with a short timeout
+		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err = db.PingContext(pingCtx)
+		cancel()
+
+		if err != nil {
+			db.Close()
+			lastErr = err
+			c.logVerbose("  Strategy '%s' failed to connect: %v", strategy.name, err)
+			continue
+		}
+
+		c.logVerbose("  Strategy '%s' succeeded!", strategy.name)
+		c.db = db
+		return nil
+	}
+
+	return fmt.Errorf("all connection strategies failed, last error: %w", lastErr)
+}
+
+// connectPowerShell connects using PowerShell and System.Data.SqlClient
+func (c *Client) connectPowerShell(ctx context.Context) error {
+	c.psClient = NewPowerShellClient(c.serverInstance, c.userID, c.password)
+	c.psClient.SetVerbose(c.verbose)
+
+	err := c.psClient.TestConnection(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to open connection: %w", err)
+		c.psClient = nil
+		return err
 	}
 
-	// Test the connection
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-
-	c.db = db
+	c.usePowerShell = true
 	return nil
 }
 
-// buildConnectionString creates the connection string for go-mssqldb
+// UsingPowerShell returns true if the client is using the PowerShell fallback
+func (c *Client) UsingPowerShell() bool {
+	return c.usePowerShell
+}
+
+// executeQuery is a unified query interface that works with both native and PowerShell modes
+// It returns the results as []QueryResult, which can be processed uniformly
+func (c *Client) executeQuery(ctx context.Context, query string) ([]QueryResult, error) {
+	if c.usePowerShell {
+		response, err := c.psClient.ExecuteQuery(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		return response.Rows, nil
+	}
+
+	// Native mode - use c.db
+	rows, err := c.DBW().QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []QueryResult
+	for rows.Next() {
+		// Create slice of interface{} to hold row values
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+
+		// Convert to QueryResult
+		row := make(QueryResult)
+		for i, col := range columns {
+			val := values[i]
+			// Convert []byte to string for easier handling
+			if b, ok := val.([]byte); ok {
+				row[col] = string(b)
+			} else {
+				row[col] = val
+			}
+		}
+		results = append(results, row)
+	}
+
+	return results, rows.Err()
+}
+
+// executeQueryRow executes a query and returns a single row
+func (c *Client) executeQueryRow(ctx context.Context, query string) (QueryResult, error) {
+	results, err := c.executeQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return results[0], nil
+}
+
+// DB returns the underlying database connection (nil in PowerShell mode)
+// This is used for methods that need direct database access
+func (c *Client) DB() *sql.DB {
+	return c.db
+}
+
+// DBW returns a database wrapper that works with both native and PowerShell modes
+// Use this for query methods to ensure compatibility with PowerShell fallback
+func (c *Client) DBW() *DBWrapper {
+	return NewDBWrapper(c.db, c.psClient, c.usePowerShell)
+}
+
+// buildConnectionStringForStrategy creates the connection string for a specific strategy
+func (c *Client) buildConnectionStringForStrategy(serverName, encrypt string, useServerSPN bool, spnHost string) string {
+	var parts []string
+
+	parts = append(parts, fmt.Sprintf("server=%s", serverName))
+
+	if c.port > 0 {
+		parts = append(parts, fmt.Sprintf("port=%d", c.port))
+	}
+
+	if c.instanceName != "" {
+		parts = append(parts, fmt.Sprintf("instance=%s", c.instanceName))
+	}
+
+	if c.useWindowsAuth {
+		// Use Windows integrated auth
+		parts = append(parts, "trusted_connection=yes")
+
+		// Optionally set ServerSPN using the provided spnHost (could be FQDN or short name)
+		if useServerSPN && spnHost != "" {
+			if c.instanceName != "" && c.instanceName != "MSSQLSERVER" {
+				parts = append(parts, fmt.Sprintf("ServerSPN=MSSQLSvc/%s:%s", spnHost, c.instanceName))
+			} else if c.port > 0 {
+				parts = append(parts, fmt.Sprintf("ServerSPN=MSSQLSvc/%s:%d", spnHost, c.port))
+			}
+		}
+	} else {
+		parts = append(parts, fmt.Sprintf("user id=%s", c.userID))
+		parts = append(parts, fmt.Sprintf("password=%s", c.password))
+	}
+
+	// Handle encryption setting - supports "false", "true", "strict", "disable"
+	parts = append(parts, fmt.Sprintf("encrypt=%s", encrypt))
+	parts = append(parts, "TrustServerCertificate=true")
+	parts = append(parts, "app name=MSSQLHound")
+
+	return strings.Join(parts, ";")
+}
+
+// buildConnectionString creates the connection string for go-mssqldb (uses default options)
 func (c *Client) buildConnectionString() string {
+	encrypt := "true"
+	if !c.encrypt {
+		encrypt = "false"
+	}
+	return c.buildConnectionStringForStrategy(c.hostname, encrypt, true, c.hostname)
+}
+
+// SetVerbose enables or disables verbose logging
+func (c *Client) SetVerbose(verbose bool) {
+	c.verbose = verbose
+}
+
+// logVerbose logs a message only if verbose mode is enabled
+func (c *Client) logVerbose(format string, args ...interface{}) {
+	if c.verbose {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+// EPATestResult holds the results of EPA connection testing
+type EPATestResult struct {
+	UnmodifiedSuccess bool
+	NoSBSuccess       bool
+	NoCBTSuccess      bool
+	ForceEncryption   bool
+	EncryptionFlag    byte
+	EPAStatus         string
+}
+
+// TestEPA performs Extended Protection for Authentication testing
+// This tests three connection scenarios to determine the actual EPA configuration:
+// 1. Unmodified connection - normal connection attempt
+// 2. No SB (Service Binding) connection - without service binding token
+// 3. No CBT (Channel Binding Token) connection - without channel binding token
+func (c *Client) TestEPA(ctx context.Context) (*EPATestResult, error) {
+	result := &EPATestResult{}
+
+	// First, do PRELOGIN to check encryption settings
+	preloginResult, err := c.sendPrelogin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("PRELOGIN failed: %w", err)
+	}
+
+	result.EncryptionFlag = preloginResult.encryptionFlag
+	result.ForceEncryption = preloginResult.forceEncryption
+
+	c.logVerbose("Connected via TCP")
+	c.logVerbose("Sent PRELOGIN packet")
+	c.logVerbose("Received PRELOGIN response")
+	c.logVerbose("Encryption flag in response: 0x%02X (%s)", preloginResult.encryptionFlag, preloginResult.encryptionDesc)
+	c.logVerbose("Force Encryption: %s", boolToYesNo(preloginResult.forceEncryption))
+
+	c.logVerbose("Testing EPA settings for %s", c.serverInstance)
+
+	// Test 1: Unmodified connection (normal)
+	unmodifiedSuccess := c.testConnectionWithEPA(ctx, false, false)
+	result.UnmodifiedSuccess = unmodifiedSuccess
+	c.logVerbose("  Unmodified connection: %s", boolToSuccessFail(unmodifiedSuccess))
+
+	// Test 2: No Service Binding connection
+	noSBSuccess := c.testConnectionWithEPA(ctx, true, false)
+	result.NoSBSuccess = noSBSuccess
+	c.logVerbose("  No SB connection: %s", boolToSuccessFail(noSBSuccess))
+
+	// Test 3: No Channel Binding Token connection
+	noCBTSuccess := c.testConnectionWithEPA(ctx, false, true)
+	result.NoCBTSuccess = noCBTSuccess
+	c.logVerbose("  No CBT connection: %s", boolToSuccessFail(noCBTSuccess))
+
+	// Determine EPA status based on test results
+	result.EPAStatus = c.determineEPAStatus(result)
+	c.logVerbose("  Extended Protection: %s", result.EPAStatus)
+
+	return result, nil
+}
+
+// preloginResult holds the result of a PRELOGIN exchange
+type preloginResult struct {
+	encryptionFlag  byte
+	encryptionDesc  string
+	forceEncryption bool
+}
+
+// sendPrelogin sends a TDS PRELOGIN packet and parses the response
+func (c *Client) sendPrelogin(ctx context.Context) (*preloginResult, error) {
+	// Resolve the actual port if using named instance
+	port := c.port
+	if port == 0 && c.instanceName != "" {
+		// Try to resolve via SQL Browser
+		resolvedPort, err := c.resolveInstancePort(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve instance port: %w", err)
+		}
+		port = resolvedPort
+	}
+	if port == 0 {
+		port = 1433 // Default SQL Server port
+	}
+
+	// Connect via TCP
+	addr := fmt.Sprintf("%s:%d", c.hostname, port)
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("TCP connection failed: %w", err)
+	}
+	defer conn.Close()
+
+	// Set deadline
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	// Build PRELOGIN packet
+	preloginPacket := buildPreloginPacket()
+
+	// Wrap in TDS packet header
+	tdsPacket := buildTDSPacket(0x12, preloginPacket) // 0x12 = PRELOGIN
+
+	// Send PRELOGIN
+	if _, err := conn.Write(tdsPacket); err != nil {
+		return nil, fmt.Errorf("failed to send PRELOGIN: %w", err)
+	}
+
+	// Read response
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PRELOGIN response: %w", err)
+	}
+
+	// Parse response
+	return parsePreloginResponse(response[:n])
+}
+
+// buildPreloginPacket creates a TDS PRELOGIN packet payload
+func buildPreloginPacket() []byte {
+	// PRELOGIN options (simplified):
+	// VERSION: 0x00
+	// ENCRYPTION: 0x01
+	// INSTOPT: 0x02
+	// THREADID: 0x03
+	// MARS: 0x04
+	// TERMINATOR: 0xFF
+
+	// We'll send VERSION and ENCRYPTION options
+	var packet []byte
+
+	// Calculate offsets (header is 5 bytes per option + 1 terminator)
+	// VERSION option header (5 bytes) + ENCRYPTION option header (5 bytes) + TERMINATOR (1 byte) = 11 bytes
+	dataOffset := 11
+
+	// VERSION option header: token=0x00, offset, length=6
+	packet = append(packet, 0x00)                                  // TOKEN_VERSION
+	packet = append(packet, byte(dataOffset>>8), byte(dataOffset)) // Offset (big-endian)
+	packet = append(packet, 0x00, 0x06)                            // Length = 6
+
+	// ENCRYPTION option header: token=0x01, offset, length=1
+	packet = append(packet, 0x01)                                        // TOKEN_ENCRYPTION
+	packet = append(packet, byte((dataOffset+6)>>8), byte(dataOffset+6)) // Offset
+	packet = append(packet, 0x00, 0x01)                                  // Length = 1
+
+	// TERMINATOR
+	packet = append(packet, 0xFF)
+
+	// VERSION data (6 bytes): major, minor, build (2 bytes), sub-build (2 bytes)
+	// Use SQL Server 2019 version format
+	packet = append(packet, 0x0F, 0x00, 0x07, 0xD0, 0x00, 0x00) // 15.0.2000.0
+
+	// ENCRYPTION data (1 byte): 0x00 = ENCRYPT_OFF, 0x01 = ENCRYPT_ON, 0x02 = ENCRYPT_NOT_SUP, 0x03 = ENCRYPT_REQ
+	packet = append(packet, 0x00) // We don't require encryption for this test
+
+	return packet
+}
+
+// buildTDSPacket wraps payload in a TDS packet header
+func buildTDSPacket(packetType byte, payload []byte) []byte {
+	packetLen := len(payload) + 8 // 8-byte TDS header
+
+	header := []byte{
+		packetType,           // Type
+		0x01,                 // Status (EOM)
+		byte(packetLen >> 8), // Length (big-endian)
+		byte(packetLen),
+		0x00, 0x00, // SPID
+		0x00, // PacketID
+		0x00, // Window
+	}
+
+	return append(header, payload...)
+}
+
+// parsePreloginResponse parses a TDS PRELOGIN response
+func parsePreloginResponse(data []byte) (*preloginResult, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("response too short")
+	}
+
+	// Skip TDS header (8 bytes)
+	payload := data[8:]
+
+	result := &preloginResult{}
+
+	// Parse PRELOGIN options
+	offset := 0
+	for offset < len(payload) {
+		if payload[offset] == 0xFF {
+			break // Terminator
+		}
+
+		if offset+5 > len(payload) {
+			break
+		}
+
+		token := payload[offset]
+		dataOffset := int(payload[offset+1])<<8 | int(payload[offset+2])
+		dataLen := int(payload[offset+3])<<8 | int(payload[offset+4])
+
+		// Adjust dataOffset relative to payload start
+		dataOffset -= 8 // Account for TDS header that we stripped
+
+		if token == 0x01 && dataLen >= 1 && dataOffset >= 0 && dataOffset < len(payload) {
+			// ENCRYPTION option
+			result.encryptionFlag = payload[dataOffset]
+			switch result.encryptionFlag {
+			case 0x00:
+				result.encryptionDesc = "ENCRYPT_OFF"
+				result.forceEncryption = false
+			case 0x01:
+				result.encryptionDesc = "ENCRYPT_ON"
+				result.forceEncryption = false
+			case 0x02:
+				result.encryptionDesc = "ENCRYPT_NOT_SUP"
+				result.forceEncryption = false
+			case 0x03:
+				result.encryptionDesc = "ENCRYPT_REQ"
+				result.forceEncryption = true
+			default:
+				result.encryptionDesc = fmt.Sprintf("UNKNOWN (0x%02X)", result.encryptionFlag)
+			}
+		}
+
+		offset += 5
+	}
+
+	return result, nil
+}
+
+// resolveInstancePort resolves the port for a named SQL Server instance using SQL Browser
+func (c *Client) resolveInstancePort(ctx context.Context) (int, error) {
+	addr := fmt.Sprintf("%s:1434", c.hostname) // SQL Browser UDP port
+
+	conn, err := net.DialTimeout("udp", addr, 5*time.Second)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Send instance query: 0x04 + instance name
+	query := append([]byte{0x04}, []byte(c.instanceName)...)
+	if _, err := conn.Write(query); err != nil {
+		return 0, err
+	}
+
+	// Read response
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return 0, err
+	}
+
+	// Parse response - format: 0x05 + length (2 bytes) + data
+	// Data contains key=value pairs separated by semicolons
+	response := string(buf[3:n])
+	parts := strings.Split(response, ";")
+	for i, part := range parts {
+		if strings.ToLower(part) == "tcp" && i+1 < len(parts) {
+			port, err := strconv.Atoi(parts[i+1])
+			if err == nil {
+				return port, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("port not found in SQL Browser response")
+}
+
+// testConnectionWithEPA tests a connection with specific EPA settings
+func (c *Client) testConnectionWithEPA(ctx context.Context, disableSB bool, disableCBT bool) bool {
+	// Build connection string with specific EPA settings
 	var parts []string
 
 	parts = append(parts, fmt.Sprintf("server=%s", c.hostname))
@@ -178,19 +683,95 @@ func (c *Client) buildConnectionString() string {
 	}
 
 	if c.useWindowsAuth {
-		// Use Windows integrated auth
 		parts = append(parts, "trusted_connection=yes")
 	} else {
 		parts = append(parts, fmt.Sprintf("user id=%s", c.userID))
 		parts = append(parts, fmt.Sprintf("password=%s", c.password))
 	}
 
-	// Disable encryption to match PowerShell behavior
-	parts = append(parts, "encrypt=false")
 	parts = append(parts, "TrustServerCertificate=true")
-	parts = append(parts, "app name=MSSQLHound")
+	parts = append(parts, "app name=MSSQLHound-EPATest")
 
-	return strings.Join(parts, ";")
+	// EPA-specific settings via connection string parameters
+	if disableSB {
+		// Disable Service Binding by setting an invalid/empty SPN
+		// This simulates a connection without proper service binding
+		parts = append(parts, "ServerSPN=invalid")
+	}
+
+	if disableCBT {
+		// To test without Channel Binding, we need to use a connection without encryption
+		// When encrypt=disable, no TLS is used, so no CBT is sent
+		parts = append(parts, "encrypt=disable")
+	} else {
+		// Normal encryption setting
+		parts = append(parts, "encrypt=false")
+	}
+
+	connStr := strings.Join(parts, ";")
+
+	connector, err := mssqldb.NewConnector(connStr)
+	if err != nil {
+		return false
+	}
+
+	// Try to connect using the connector
+	db := sql.OpenDB(connector)
+	defer db.Close()
+
+	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	err = db.PingContext(testCtx)
+	return err == nil
+}
+
+// determineEPAStatus determines the EPA status based on test results
+func (c *Client) determineEPAStatus(result *EPATestResult) string {
+	// If all three tests succeed, EPA is Off
+	if result.UnmodifiedSuccess && result.NoSBSuccess && result.NoCBTSuccess {
+		return "Off"
+	}
+
+	// If unmodified works but No SB fails, EPA is using Service Binding
+	// This typically happens when Force Encryption is No
+	if result.UnmodifiedSuccess && !result.NoSBSuccess && result.NoCBTSuccess {
+		return "Allowed" // or Required, using Service Binding
+	}
+
+	// If unmodified works but No CBT fails, EPA is using Channel Binding
+	// This typically happens when Force Encryption is Yes
+	if result.UnmodifiedSuccess && result.NoSBSuccess && !result.NoCBTSuccess {
+		return "Allowed" // or Required, using Channel Binding
+	}
+
+	// If unmodified works but both No SB and No CBT fail
+	if result.UnmodifiedSuccess && !result.NoSBSuccess && !result.NoCBTSuccess {
+		return "Required"
+	}
+
+	// If unmodified connection fails, something else is wrong
+	if !result.UnmodifiedSuccess {
+		return "Unknown (connection failed)"
+	}
+
+	return "Unknown"
+}
+
+// boolToYesNo converts a boolean to "Yes" or "No"
+func boolToYesNo(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
+}
+
+// boolToSuccessFail converts a boolean to "success" or "failure"
+func boolToSuccessFail(b bool) string {
+	if b {
+		return "success"
+	}
+	return "failure"
 }
 
 // Close closes the database connection
@@ -198,6 +779,9 @@ func (c *Client) Close() error {
 	if c.db != nil {
 		return c.db.Close()
 	}
+	// PowerShell client doesn't need explicit cleanup
+	c.psClient = nil
+	c.usePowerShell = false
 	return nil
 }
 
@@ -238,26 +822,31 @@ func (c *Client) CollectServerInfo(ctx context.Context) (*types.ServerInfo, erro
 	}
 
 	// Get service accounts
+	c.logVerbose("Collecting service account information from %s", c.serverInstance)
 	if err := c.collectServiceAccounts(ctx, info); err != nil {
 		fmt.Printf("Warning: failed to collect service accounts: %v\n", err)
 	}
 
 	// Get server-level credentials
+	c.logVerbose("Enumerating credentials...")
 	if err := c.collectCredentials(ctx, info); err != nil {
 		fmt.Printf("Warning: failed to collect credentials: %v\n", err)
 	}
 
 	// Get proxy accounts
+	c.logVerbose("Enumerating SQL Agent proxy accounts...")
 	if err := c.collectProxyAccounts(ctx, info); err != nil {
 		fmt.Printf("Warning: failed to collect proxy accounts: %v\n", err)
 	}
 
 	// Get server principals
+	c.logVerbose("Enumerating server principals...")
 	principals, err := c.collectServerPrincipals(ctx, info)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect server principals: %w", err)
 	}
 	info.ServerPrincipals = principals
+	c.logVerbose("Checking for inherited high-privilege permissions through role memberships")
 
 	// Get credential mappings for logins
 	if err := c.collectLoginCredentialMappings(ctx, principals, info); err != nil {
@@ -279,12 +868,46 @@ func (c *Client) CollectServerInfo(ctx context.Context) (*types.ServerInfo, erro
 	info.Databases = databases
 
 	// Get linked servers
+	c.logVerbose("Enumerating linked servers...")
 	linkedServers, err := c.collectLinkedServers(ctx)
 	if err != nil {
 		// Non-fatal - just log and continue
 		fmt.Printf("Warning: failed to collect linked servers: %v\n", err)
 	}
 	info.LinkedServers = linkedServers
+
+	// Print discovered linked servers with detailed information
+	if len(linkedServers) > 0 {
+		fmt.Printf("Discovered %d linked server(s):\n", len(linkedServers))
+		for _, ls := range linkedServers {
+			fmt.Printf("    %s -> %s\n", info.Hostname, ls.Name)
+			c.logVerbose("        Name: %s", ls.Name)
+			c.logVerbose("        DataSource: %s", ls.DataSource)
+			c.logVerbose("        Provider: %s", ls.Provider)
+			c.logVerbose("        Product: %s", ls.Product)
+			c.logVerbose("        IsRemoteLoginEnabled: %v", ls.IsRemoteLoginEnabled)
+			c.logVerbose("        IsRPCOutEnabled: %v", ls.IsRPCOutEnabled)
+			c.logVerbose("        IsDataAccessEnabled: %v", ls.IsDataAccessEnabled)
+			c.logVerbose("        IsSelfMapping: %v", ls.IsSelfMapping)
+			if ls.LocalLogin != "" {
+				c.logVerbose("        LocalLogin: %s", ls.LocalLogin)
+			}
+			if ls.RemoteLogin != "" {
+				c.logVerbose("        RemoteLogin: %s", ls.RemoteLogin)
+			}
+			if ls.Catalog != "" {
+				c.logVerbose("        Catalog: %s", ls.Catalog)
+			}
+		}
+	} else {
+		c.logVerbose("No linked servers found")
+	}
+
+	c.logVerbose("Processing enabled domain principals with CONNECT SQL permission")
+	c.logVerbose("Creating server principal nodes")
+	c.logVerbose("Creating database principal nodes")
+	c.logVerbose("Creating linked server nodes")
+	c.logVerbose("Creating domain principal nodes")
 
 	return info, nil
 }
@@ -303,7 +926,7 @@ func (c *Client) collectServerProperties(ctx context.Context, info *types.Server
 			@@VERSION AS FullVersion
 	`
 
-	row := c.db.QueryRowContext(ctx, query)
+	row := c.DBW().QueryRowContext(ctx, query)
 
 	var serverName, machineName, productVersion, productLevel, edition, fullVersion sql.NullString
 	var instanceName sql.NullString
@@ -341,7 +964,7 @@ func (c *Client) collectServerProperties(ctx context.Context, info *types.Server
 // collectComputerSID gets the computer account's SID from Active Directory
 // This is used to generate ObjectIdentifiers that match PowerShell's format
 func (c *Client) collectComputerSID(ctx context.Context, info *types.ServerInfo) error {
-	// Try to get the computer SID by querying for logins that match the computer account
+	// Method 1: Try to get the computer SID by querying for logins that match the computer account
 	// The computer account login will have a SID like S-1-5-21-xxx-xxx-xxx-xxx
 	query := `
 		SELECT TOP 1
@@ -353,68 +976,98 @@ func (c *Client) collectComputerSID(ctx context.Context, info *types.ServerInfo)
 	`
 
 	var computerSID sql.NullString
-	err := c.db.QueryRowContext(ctx, query).Scan(&computerSID)
+	err := c.DBW().QueryRowContext(ctx, query).Scan(&computerSID)
 	if err == nil && computerSID.Valid && computerSID.String != "" {
 		// Convert hex SID to string format
 		sidStr := convertHexSIDToString(computerSID.String)
 		if sidStr != "" {
 			info.ComputerSID = sidStr
+			c.logVerbose("Found computer SID from computer account login: %s", sidStr)
 			return nil
 		}
 	}
 
-	// Alternative: Try to extract domain SID from any Windows login
-	// The computer SID is typically the domain SID + RID
+	// Method 2: Try to find any computer account login (ends with $)
 	query = `
 		SELECT TOP 1
 			CONVERT(VARCHAR(85), sid, 1) AS sid,
 			name
 		FROM sys.server_principals
-		WHERE type_desc IN ('WINDOWS_LOGIN', 'WINDOWS_GROUP')
+		WHERE type_desc = 'WINDOWS_LOGIN'
+		AND name LIKE '%$'
 		AND sid IS NOT NULL
 		AND LEN(CONVERT(VARCHAR(85), sid, 1)) > 10
 		ORDER BY principal_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var sid, name sql.NullString
-		if err := rows.Scan(&sid, &name); err != nil {
-			continue
-		}
-
-		if sid.Valid && sid.String != "" {
-			// Convert hex SID to string format
-			sidStr := convertHexSIDToString(sid.String)
-			if sidStr == "" {
-				continue
-			}
-
-			// If it's a computer account (ends with $), use its SID directly
-			if strings.HasSuffix(name.String, "$") {
-				info.ComputerSID = sidStr
-				return nil
-			}
-
-			// Otherwise extract domain SID and we'll need to lookup computer SID separately
-			// For now, just use this domain principal's SID as a reference
-			// The actual computer SID lookup would require LDAP which we'll skip for now
+	var sid, name sql.NullString
+	err = c.DBW().QueryRowContext(ctx, query).Scan(&sid, &name)
+	if err == nil && sid.Valid && sid.String != "" {
+		sidStr := convertHexSIDToString(sid.String)
+		if sidStr != "" && strings.HasPrefix(sidStr, "S-1-5-21-") {
+			// This is a domain computer account - extract domain SID and try to construct our computer SID
 			sidParts := strings.Split(sidStr, "-")
-			if len(sidParts) > 4 {
-				// Domain SID is everything except the last part (RID)
-				info.DomainSID = strings.Join(sidParts[:len(sidParts)-1], "-")
+			if len(sidParts) >= 8 {
+				// Domain SID is S-1-5-21-X-Y-Z (first 7 parts)
+				info.DomainSID = strings.Join(sidParts[:7], "-")
+				c.logVerbose("Found domain SID from computer account: %s", info.DomainSID)
 			}
 		}
 	}
 
-	// If we found a domain SID but no computer SID, we need to return an error
-	// so the caller can fall back to hostname-based identifiers
+	// Method 3: Extract domain SID from any Windows login/group and use LDAP later for computer SID
+	if info.DomainSID == "" {
+		query = `
+			SELECT TOP 1
+				CONVERT(VARCHAR(85), sid, 1) AS sid,
+				name
+			FROM sys.server_principals
+			WHERE type_desc IN ('WINDOWS_LOGIN', 'WINDOWS_GROUP')
+			AND sid IS NOT NULL
+			AND LEN(CONVERT(VARCHAR(85), sid, 1)) > 10
+			ORDER BY principal_id
+		`
+
+		rows, err := c.DBW().QueryContext(ctx, query)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var sid, name sql.NullString
+				if err := rows.Scan(&sid, &name); err != nil {
+					continue
+				}
+
+				if sid.Valid && sid.String != "" {
+					sidStr := convertHexSIDToString(sid.String)
+					if sidStr == "" || !strings.HasPrefix(sidStr, "S-1-5-21-") {
+						continue
+					}
+
+					// If it's a computer account (ends with $), use its SID directly
+					if strings.HasSuffix(name.String, "$") {
+						info.ComputerSID = sidStr
+						c.logVerbose("Found computer SID from alternate computer login: %s", sidStr)
+						return nil
+					}
+
+					// Extract domain SID from this principal
+					sidParts := strings.Split(sidStr, "-")
+					if len(sidParts) >= 8 {
+						info.DomainSID = strings.Join(sidParts[:7], "-")
+						c.logVerbose("Found domain SID from Windows principal %s: %s", name.String, info.DomainSID)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// If we have a domain SID, the collector will try to resolve the computer SID via LDAP
+	// For now, return an error so the caller knows to try LDAP resolution
 	if info.ComputerSID == "" {
+		if info.DomainSID != "" {
+			return fmt.Errorf("could not determine computer SID from SQL Server, will try LDAP (domain SID: %s)", info.DomainSID)
+		}
 		return fmt.Errorf("could not determine computer SID")
 	}
 
@@ -440,7 +1093,7 @@ func (c *Client) collectServerPrincipals(ctx context.Context, serverInfo *types.
 		ORDER BY p.principal_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -482,8 +1135,23 @@ func (c *Client) collectServerPrincipals(ctx context.Context, serverInfo *types.
 		}
 
 		// Determine if this is an AD principal
-		p.IsActiveDirectoryPrincipal = p.TypeDescription == "WINDOWS_LOGIN" ||
-			p.TypeDescription == "WINDOWS_GROUP"
+		// Match PowerShell logic: must be WINDOWS_LOGIN or WINDOWS_GROUP, and name must contain backslash
+		// but NOT be NT SERVICE\*, NT AUTHORITY\*, BUILTIN\*, or MACHINENAME\*
+		isWindowsType := p.TypeDescription == "WINDOWS_LOGIN" || p.TypeDescription == "WINDOWS_GROUP"
+		hasBackslash := strings.Contains(p.Name, "\\")
+		isNTService := strings.HasPrefix(strings.ToUpper(p.Name), "NT SERVICE\\")
+		isNTAuthority := strings.HasPrefix(strings.ToUpper(p.Name), "NT AUTHORITY\\")
+		isBuiltin := strings.HasPrefix(strings.ToUpper(p.Name), "BUILTIN\\")
+		// Check if it's a local machine account (MACHINENAME\*)
+		machinePrefix := strings.ToUpper(serverInfo.Hostname) + "\\"
+		if strings.Contains(serverInfo.Hostname, ".") {
+			// Extract just the machine name from FQDN
+			machinePrefix = strings.ToUpper(strings.Split(serverInfo.Hostname, ".")[0]) + "\\"
+		}
+		isLocalMachine := strings.HasPrefix(strings.ToUpper(p.Name), machinePrefix)
+
+		p.IsActiveDirectoryPrincipal = isWindowsType && hasBackslash &&
+			!isNTService && !isNTAuthority && !isBuiltin && !isLocalMachine
 
 		// Generate object identifier: Name@ServerObjectIdentifier
 		p.ObjectIdentifier = fmt.Sprintf("%s@%s", p.Name, serverInfo.ObjectIdentifier)
@@ -529,7 +1197,7 @@ func (c *Client) collectServerRoleMemberships(ctx context.Context, principals []
 		ORDER BY rm.member_principal_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -612,7 +1280,7 @@ func (c *Client) collectServerPermissions(ctx context.Context, principals []type
 		ORDER BY p.grantee_principal_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -652,6 +1320,42 @@ func (c *Client) collectServerPermissions(ctx context.Context, principals []type
 		}
 	}
 
+	// Add predefined permissions for fixed server roles that aren't handled by createFixedRoleEdges
+	// These are implicit permissions that aren't stored in sys.server_permissions
+	// NOTE: sysadmin and securityadmin permissions are NOT added here because
+	// createFixedRoleEdges already handles edge creation for those roles by name
+	fixedServerRolePermissions := map[string][]string{
+		// sysadmin - handled by createFixedRoleEdges, don't add CONTROL SERVER here
+		// securityadmin - handled by createFixedRoleEdges, don't add ALTER ANY LOGIN here
+		"##MS_LoginManager##":      {"ALTER ANY LOGIN"},
+		"##MS_DatabaseConnector##": {"CONNECT ANY DATABASE"},
+	}
+
+	for i := range principals {
+		if principals[i].IsFixedRole {
+			if perms, ok := fixedServerRolePermissions[principals[i].Name]; ok {
+				for _, permName := range perms {
+					// Check if permission already exists (skip duplicates)
+					exists := false
+					for _, existingPerm := range principals[i].Permissions {
+						if existingPerm.Permission == permName {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						perm := types.Permission{
+							Permission: permName,
+							State:      "GRANT",
+							ClassDesc:  "SERVER",
+						}
+						principals[i].Permissions = append(principals[i].Permissions, perm)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -674,7 +1378,7 @@ func (c *Client) collectDatabases(ctx context.Context, serverInfo *types.ServerI
 		ORDER BY d.database_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -722,16 +1426,22 @@ func (c *Client) collectDatabases(ctx context.Context, serverInfo *types.ServerI
 	}
 
 	// Collect principals for each database
+	// Only keep databases where we successfully collected principals (matching PowerShell behavior)
+	var successfulDatabases []types.Database
 	for i := range databases {
+		c.logVerbose("Processing database: %s", databases[i].Name)
 		principals, err := c.collectDatabasePrincipals(ctx, &databases[i], serverInfo)
 		if err != nil {
 			fmt.Printf("Warning: failed to collect principals for database %s: %v\n", databases[i].Name, err)
+			// PowerShell doesn't add databases where it can't access principals,
+			// so we skip them here to match that behavior
 			continue
 		}
 		databases[i].DatabasePrincipals = principals
+		successfulDatabases = append(successfulDatabases, databases[i])
 	}
 
-	return databases, nil
+	return successfulDatabases, nil
 }
 
 // collectDatabasePrincipals gets all principals in a specific database
@@ -753,7 +1463,7 @@ func (c *Client) collectDatabasePrincipals(ctx context.Context, db *types.Databa
 		ORDER BY p.principal_id
 	`, db.Name)
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +1560,7 @@ func (c *Client) linkDatabaseUsersToServerLogins(ctx context.Context, principals
 		WHERE dp.sid IS NOT NULL
 	`, db.Name)
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -897,7 +1607,7 @@ func (c *Client) collectDatabaseRoleMemberships(ctx context.Context, principals 
 		ORDER BY rm.member_principal_id
 	`, db.Name, db.Name)
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -989,7 +1699,7 @@ func (c *Client) collectDatabasePermissions(ctx context.Context, principals []ty
 		ORDER BY p.grantee_principal_id
 	`, db.Name, db.Name)
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -1027,11 +1737,48 @@ func (c *Client) collectDatabasePermissions(ctx context.Context, principals []ty
 		}
 	}
 
+	// Add predefined permissions for fixed database roles that aren't handled by createFixedRoleEdges
+	// These are implicit permissions that aren't stored in sys.database_permissions
+	// NOTE: db_owner and db_securityadmin permissions are NOT added here because
+	// createFixedRoleEdges already handles edge creation for those roles by name
+	fixedDatabaseRolePermissions := map[string][]string{
+		// db_owner - handled by createFixedRoleEdges, don't add CONTROL here
+		// db_securityadmin - handled by createFixedRoleEdges, don't add ALTER ANY APPLICATION ROLE/ROLE here
+	}
+
+	for i := range principals {
+		if principals[i].IsFixedRole {
+			if perms, ok := fixedDatabaseRolePermissions[principals[i].Name]; ok {
+				for _, permName := range perms {
+					// Check if permission already exists (skip duplicates)
+					exists := false
+					for _, existingPerm := range principals[i].Permissions {
+						if existingPerm.Permission == permName {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						perm := types.Permission{
+							Permission: permName,
+							State:      "GRANT",
+							ClassDesc:  "DATABASE",
+						}
+						principals[i].Permissions = append(principals[i].Permissions, perm)
+					}
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
-// collectLinkedServers gets all linked server configurations
+// collectLinkedServers gets all linked server configurations with login mappings.
+// Each login mapping creates a separate LinkedServer entry (matching PowerShell behavior).
 func (c *Client) collectLinkedServers(ctx context.Context) ([]types.LinkedServer, error) {
+	// Join servers with linked_logins to create one entry per login mapping
+	// This matches the PowerShell behavior where each LocalLogin creates a separate edge
 	query := `
 		SELECT 
 			s.server_id,
@@ -1043,13 +1790,18 @@ func (c *Client) collectLinkedServers(ctx context.Context) ([]types.LinkedServer
 			s.is_linked,
 			s.is_remote_login_enabled,
 			s.is_rpc_out_enabled,
-			s.is_data_access_enabled
+			s.is_data_access_enabled,
+			COALESCE(sp.name, 'All Logins') AS local_login,
+			ll.uses_self_credential,
+			ll.remote_name
 		FROM sys.servers s
+		INNER JOIN sys.linked_logins ll ON s.server_id = ll.server_id
+		LEFT JOIN sys.server_principals sp ON ll.local_principal_id = sp.principal_id
 		WHERE s.is_linked = 1
-		ORDER BY s.server_id
+		ORDER BY s.server_id, ll.local_principal_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,7 +1811,8 @@ func (c *Client) collectLinkedServers(ctx context.Context) ([]types.LinkedServer
 
 	for rows.Next() {
 		var s types.LinkedServer
-		var catalog sql.NullString
+		var catalog, localLogin, remoteName sql.NullString
+		var usesSelf bool
 
 		err := rows.Scan(
 			&s.ServerID,
@@ -1072,75 +1825,38 @@ func (c *Client) collectLinkedServers(ctx context.Context) ([]types.LinkedServer
 			&s.IsRemoteLoginEnabled,
 			&s.IsRPCOutEnabled,
 			&s.IsDataAccessEnabled,
+			&localLogin,
+			&usesSelf,
+			&remoteName,
 		)
 		if err != nil {
 			return nil, err
 		}
 
 		s.Catalog = catalog.String
+		s.LocalLogin = localLogin.String
+		s.IsSelfMapping = usesSelf
+		s.RemoteLogin = remoteName.String
 		servers = append(servers, s)
-	}
-
-	// Get login mappings for each linked server
-	for i := range servers {
-		if err := c.collectLinkedServerLogins(ctx, &servers[i]); err != nil {
-			// Non-fatal
-			fmt.Printf("Warning: failed to get logins for linked server %s: %v\n", servers[i].Name, err)
-		}
 	}
 
 	return servers, nil
 }
 
-// collectLinkedServerLogins gets login mappings for a linked server
-func (c *Client) collectLinkedServerLogins(ctx context.Context, server *types.LinkedServer) error {
-	query := `
-		SELECT
-			ll.local_principal_id,
-			ll.uses_self_credential,
-			ll.remote_name,
-			COALESCE(sp.name, '') AS local_name
-		FROM sys.linked_logins ll
-		LEFT JOIN sys.server_principals sp ON ll.local_principal_id = sp.principal_id
-		WHERE ll.server_id = @serverID
-	`
-
-	rows, err := c.db.QueryContext(ctx, query, sql.Named("serverID", server.ServerID))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var localPrincipalID int
-		var usesSelf bool
-		var remoteName, localName sql.NullString
-
-		if err := rows.Scan(&localPrincipalID, &usesSelf, &remoteName, &localName); err != nil {
-			return err
-		}
-
-		server.LocalLogin = localName.String
-		server.RemoteLogin = remoteName.String
-		server.IsSelfMapping = usesSelf
-	}
-
-	return nil
-}
-
 // collectServiceAccounts gets SQL Server service account information
 func (c *Client) collectServiceAccounts(ctx context.Context, info *types.ServerInfo) error {
 	// Try sys.dm_server_services first (SQL Server 2008 R2+)
+	// Note: Exclude SQL Server Agent to match PowerShell behavior
 	query := `
 		SELECT
 			servicename,
 			service_account,
 			startup_type_desc
 		FROM sys.dm_server_services
-		WHERE servicename LIKE 'SQL Server%'
+		WHERE servicename LIKE 'SQL Server%' AND servicename NOT LIKE 'SQL Server Agent%'
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		// DMV might not exist or user doesn't have permission
 		// Fall back to registry read
@@ -1148,6 +1864,7 @@ func (c *Client) collectServiceAccounts(ctx context.Context, info *types.ServerI
 	}
 	defer rows.Close()
 
+	foundService := false
 	for rows.Next() {
 		var serviceName, serviceAccount, startupType sql.NullString
 
@@ -1156,6 +1873,11 @@ func (c *Client) collectServiceAccounts(ctx context.Context, info *types.ServerI
 		}
 
 		if serviceAccount.Valid && serviceAccount.String != "" {
+			if !foundService {
+				c.logVerbose("Identified service account in sys.dm_server_services")
+				foundService = true
+			}
+
 			sa := types.ServiceAccount{
 				Name:        serviceAccount.String,
 				ServiceName: serviceName.String,
@@ -1167,6 +1889,7 @@ func (c *Client) collectServiceAccounts(ctx context.Context, info *types.ServerI
 				sa.ServiceType = "SQLServerAgent"
 			} else {
 				sa.ServiceType = "SQLServer"
+				c.logVerbose("SQL Server service account: %s", serviceAccount.String)
 			}
 
 			info.ServiceAccounts = append(info.ServiceAccounts, sa)
@@ -1176,6 +1899,13 @@ func (c *Client) collectServiceAccounts(ctx context.Context, info *types.ServerI
 	// If no results, try registry fallback
 	if len(info.ServiceAccounts) == 0 {
 		return c.collectServiceAccountFromRegistry(ctx, info)
+	}
+
+	// Log if adding machine account
+	for _, sa := range info.ServiceAccounts {
+		if strings.HasSuffix(sa.Name, "$") {
+			c.logVerbose("Adding service account: %s", sa.Name)
+		}
 	}
 
 	return nil
@@ -1194,7 +1924,7 @@ func (c *Client) collectServiceAccountFromRegistry(ctx context.Context, info *ty
 	`
 
 	var serviceAccount sql.NullString
-	err := c.db.QueryRowContext(ctx, query).Scan(&serviceAccount)
+	err := c.DBW().QueryRowContext(ctx, query).Scan(&serviceAccount)
 	if err != nil || !serviceAccount.Valid {
 		// Try named instance path
 		query = `
@@ -1208,7 +1938,7 @@ func (c *Client) collectServiceAccountFromRegistry(ctx context.Context, info *ty
 				@ServiceAccount OUTPUT
 			SELECT @ServiceAccount AS ServiceAccount
 		`
-		err = c.db.QueryRowContext(ctx, query).Scan(&serviceAccount)
+		err = c.DBW().QueryRowContext(ctx, query).Scan(&serviceAccount)
 	}
 
 	if err == nil && serviceAccount.Valid && serviceAccount.String != "" {
@@ -1236,7 +1966,7 @@ func (c *Client) collectCredentials(ctx context.Context, info *types.ServerInfo)
 		ORDER BY credential_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		// User might not have permission to view credentials
 		return nil
@@ -1277,7 +2007,7 @@ func (c *Client) collectLoginCredentialMappings(ctx context.Context, principals 
 		JOIN sys.credentials c ON spc.credential_id = c.credential_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		// sys.server_principal_credentials might not exist in older versions
 		return nil
@@ -1326,7 +2056,7 @@ func (c *Client) collectProxyAccounts(ctx context.Context, info *types.ServerInf
 		ORDER BY p.proxy_id
 	`
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		// User might not have access to msdb
 		return nil
@@ -1365,7 +2095,7 @@ func (c *Client) collectProxyAccounts(ctx context.Context, info *types.ServerInf
 		JOIN msdb.dbo.syssubsystems s ON ps.subsystem_id = s.subsystem_id
 	`
 
-	rows, err = c.db.QueryContext(ctx, subsystemQuery)
+	rows, err = c.DBW().QueryContext(ctx, subsystemQuery)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -1389,7 +2119,7 @@ func (c *Client) collectProxyAccounts(ctx context.Context, info *types.ServerInf
 		JOIN sys.server_principals sp ON pl.sid = sp.sid
 	`
 
-	rows, err = c.db.QueryContext(ctx, loginQuery)
+	rows, err = c.DBW().QueryContext(ctx, loginQuery)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -1425,7 +2155,7 @@ func (c *Client) collectDBScopedCredentials(ctx context.Context, db *types.Datab
 		ORDER BY credential_id
 	`, db.Name)
 
-	rows, err := c.db.QueryContext(ctx, query)
+	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		// sys.database_scoped_credentials might not exist (pre-SQL 2016) or user lacks permission
 		return nil
@@ -1463,7 +2193,7 @@ func (c *Client) collectAuthenticationMode(ctx context.Context, info *types.Serv
 	`
 
 	var isMixed int
-	if err := c.db.QueryRowContext(ctx, query).Scan(&isMixed); err == nil {
+	if err := c.DBW().QueryRowContext(ctx, query).Scan(&isMixed); err == nil {
 		info.IsMixedModeAuth = isMixed == 1
 	}
 
@@ -1471,7 +2201,26 @@ func (c *Client) collectAuthenticationMode(ctx context.Context, info *types.Serv
 }
 
 // collectEncryptionSettings gets the force encryption and EPA settings
+// When verbose mode is enabled, it performs actual EPA connection testing
 func (c *Client) collectEncryptionSettings(ctx context.Context, info *types.ServerInfo) error {
+	// If verbose mode is enabled, perform actual EPA testing via connection tests
+	if c.verbose {
+		epaResult, err := c.TestEPA(ctx)
+		if err != nil {
+			c.logVerbose("Warning: EPA testing failed: %v, falling back to registry", err)
+		} else {
+			// Use results from EPA testing
+			if epaResult.ForceEncryption {
+				info.ForceEncryption = "Yes"
+			} else {
+				info.ForceEncryption = "No"
+			}
+			info.ExtendedProtection = epaResult.EPAStatus
+			return nil
+		}
+	}
+
+	// Fall back to registry-based detection (or primary method when not verbose)
 	query := `
 		DECLARE @ForceEncryption INT
 		DECLARE @ExtendedProtection INT
@@ -1495,7 +2244,7 @@ func (c *Client) collectEncryptionSettings(ctx context.Context, info *types.Serv
 
 	var forceEnc, extProt sql.NullInt64
 
-	err := c.db.QueryRowContext(ctx, query).Scan(&forceEnc, &extProt)
+	err := c.DBW().QueryRowContext(ctx, query).Scan(&forceEnc, &extProt)
 	if err != nil {
 		return nil // Non-fatal - user might not have permission
 	}

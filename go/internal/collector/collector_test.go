@@ -97,7 +97,8 @@ func TestEdgeCreation(t *testing.T) {
 
 // createMockServerInfo creates a mock ServerInfo for testing
 func createMockServerInfo() *types.ServerInfo {
-	serverSID := "S-1-5-21-1234567890-1234567890-1234567890-1001"
+	domainSID := "S-1-5-21-1234567890-1234567890-1234567890"
+	serverSID := domainSID + "-1001"
 	serverOID := serverSID + ":1433"
 
 	return &types.ServerInfo{
@@ -113,6 +114,7 @@ func createMockServerInfo() *types.ServerInfo {
 		ForceEncryption:    "No",
 		ExtendedProtection: "Off",
 		ComputerSID:        serverSID,
+		DomainSID:          domainSID,
 		FQDN:               "testserver.domain.com",
 		ServiceAccounts: []types.ServiceAccount{
 			{
@@ -280,13 +282,13 @@ func createMockServerInfo() *types.ServerInfo {
 		},
 		Databases: []types.Database{
 			{
-				ObjectIdentifier:     serverOID + "\\master",
-				DatabaseID:           1,
-				Name:                 "master",
-				OwnerLoginName:       "sa",
+				ObjectIdentifier:      serverOID + "\\master",
+				DatabaseID:            1,
+				Name:                  "master",
+				OwnerLoginName:        "sa",
 				OwnerObjectIdentifier: "sa@" + serverOID,
-				IsTrustworthy:        false,
-				SQLServerName:        "testserver.domain.com:1433",
+				IsTrustworthy:         false,
+				SQLServerName:         "testserver.domain.com:1433",
 				DatabasePrincipals: []types.DatabasePrincipal{
 					{
 						ObjectIdentifier: "dbo@" + serverOID + "\\master",
@@ -314,13 +316,13 @@ func createMockServerInfo() *types.ServerInfo {
 			},
 			// Trustworthy database for ExecuteAsOwner test
 			{
-				ObjectIdentifier:     serverOID + "\\TrustDB",
-				DatabaseID:           5,
-				Name:                 "TrustDB",
-				OwnerLoginName:       "DOMAIN\\testadmin",
+				ObjectIdentifier:      serverOID + "\\TrustDB",
+				DatabaseID:            5,
+				Name:                  "TrustDB",
+				OwnerLoginName:        "DOMAIN\\testadmin",
 				OwnerObjectIdentifier: "DOMAIN\\testadmin@" + serverOID,
-				IsTrustworthy:        true,
-				SQLServerName:        "testserver.domain.com:1433",
+				IsTrustworthy:         true,
+				SQLServerName:         "testserver.domain.com:1433",
 				DatabasePrincipals: []types.DatabasePrincipal{
 					{
 						ObjectIdentifier: "dbo@" + serverOID + "\\TrustDB",
@@ -334,13 +336,13 @@ func createMockServerInfo() *types.ServerInfo {
 			},
 			// Database with DB-scoped credential
 			{
-				ObjectIdentifier:     serverOID + "\\CredDB",
-				DatabaseID:           6,
-				Name:                 "CredDB",
-				OwnerLoginName:       "sa",
+				ObjectIdentifier:      serverOID + "\\CredDB",
+				DatabaseID:            6,
+				Name:                  "CredDB",
+				OwnerLoginName:        "sa",
 				OwnerObjectIdentifier: "sa@" + serverOID,
-				IsTrustworthy:        false,
-				SQLServerName:        "testserver.domain.com:1433",
+				IsTrustworthy:         false,
+				SQLServerName:         "testserver.domain.com:1433",
 				DBScopedCredentials: []types.DBScopedCredential{
 					{
 						CredentialID:       1,
@@ -365,18 +367,18 @@ func createMockServerInfo() *types.ServerInfo {
 			},
 			// Linked server with admin privileges for LinkedAsAdmin test
 			{
-				ServerID:                     2,
-				Name:                         "ADMIN_LINKED_SERVER",
-				Product:                      "SQL Server",
-				Provider:                     "SQLNCLI11",
-				DataSource:                   "adminlinkedserver.domain.com",
-				IsLinkedServer:               true,
-				IsRPCOutEnabled:              true,
-				IsDataAccessEnabled:          true,
-				RemoteLogin:                  "admin_sql_login",
-				RemoteIsSysadmin:             true,
-				RemoteIsMixedMode:            true,
-				ResolvedObjectIdentifier:     "S-1-5-21-9999999999-9999999999-9999999999-1001:1433",
+				ServerID:                 2,
+				Name:                     "ADMIN_LINKED_SERVER",
+				Product:                  "SQL Server",
+				Provider:                 "SQLNCLI11",
+				DataSource:               "adminlinkedserver.domain.com",
+				IsLinkedServer:           true,
+				IsRPCOutEnabled:          true,
+				IsDataAccessEnabled:      true,
+				RemoteLogin:              "admin_sql_login",
+				RemoteIsSysadmin:         true,
+				RemoteIsMixedMode:        true,
+				ResolvedObjectIdentifier: "S-1-5-21-9999999999-9999999999-9999999999-1001:1433",
 			},
 		},
 	}

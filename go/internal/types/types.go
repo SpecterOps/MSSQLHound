@@ -9,40 +9,55 @@ import (
 
 // ServerInfo represents a SQL Server instance and all collected data
 type ServerInfo struct {
-	ObjectIdentifier     string            `json:"objectIdentifier"`
-	Hostname             string            `json:"hostname"`
-	ServerName           string            `json:"serverName"`
-	SQLServerName        string            `json:"sqlServerName"` // Display name for BloodHound
-	InstanceName         string            `json:"instanceName"`
-	Port                 int               `json:"port"`
-	Version              string            `json:"version"`
-	VersionNumber        string            `json:"versionNumber"`
-	ProductLevel         string            `json:"productLevel"`
-	Edition              string            `json:"edition"`
-	IsClustered          bool              `json:"isClustered"`
-	IsMixedModeAuth      bool              `json:"isMixedModeAuth"`
-	ForceEncryption      string            `json:"forceEncryption,omitempty"`
-	ExtendedProtection   string            `json:"extendedProtection,omitempty"`
-	ComputerSID          string            `json:"computerSID"`
-	DomainSID            string            `json:"domainSID"`
-	FQDN                 string            `json:"fqdn"`
-	SPNs                 []string          `json:"spns,omitempty"`
-	ServiceAccounts      []ServiceAccount  `json:"serviceAccounts,omitempty"`
-	Credentials          []Credential      `json:"credentials,omitempty"`
-	ProxyAccounts        []ProxyAccount    `json:"proxyAccounts,omitempty"`
-	ServerPrincipals     []ServerPrincipal `json:"serverPrincipals,omitempty"`
-	Databases            []Database        `json:"databases,omitempty"`
-	LinkedServers        []LinkedServer    `json:"linkedServers,omitempty"`
+	ObjectIdentifier      string                     `json:"objectIdentifier"`
+	Hostname              string                     `json:"hostname"`
+	ServerName            string                     `json:"serverName"`
+	SQLServerName         string                     `json:"sqlServerName"` // Display name for BloodHound
+	InstanceName          string                     `json:"instanceName"`
+	Port                  int                        `json:"port"`
+	Version               string                     `json:"version"`
+	VersionNumber         string                     `json:"versionNumber"`
+	ProductLevel          string                     `json:"productLevel"`
+	Edition               string                     `json:"edition"`
+	IsClustered           bool                       `json:"isClustered"`
+	IsMixedModeAuth       bool                       `json:"isMixedModeAuth"`
+	ForceEncryption       string                     `json:"forceEncryption,omitempty"`
+	ExtendedProtection    string                     `json:"extendedProtection,omitempty"`
+	ComputerSID           string                     `json:"computerSID"`
+	DomainSID             string                     `json:"domainSID"`
+	FQDN                  string                     `json:"fqdn"`
+	SPNs                  []string                   `json:"spns,omitempty"`
+	ServiceAccounts       []ServiceAccount           `json:"serviceAccounts,omitempty"`
+	Credentials           []Credential               `json:"credentials,omitempty"`
+	ProxyAccounts         []ProxyAccount             `json:"proxyAccounts,omitempty"`
+	ServerPrincipals      []ServerPrincipal          `json:"serverPrincipals,omitempty"`
+	Databases             []Database                 `json:"databases,omitempty"`
+	LinkedServers         []LinkedServer             `json:"linkedServers,omitempty"`
+	LocalGroupsWithLogins map[string]*LocalGroupInfo `json:"localGroupsWithLogins,omitempty"` // keyed by principal ObjectIdentifier
+}
+
+// LocalGroupInfo holds information about a local Windows group and its domain members
+type LocalGroupInfo struct {
+	Principal *ServerPrincipal   `json:"principal"`
+	Members   []LocalGroupMember `json:"members,omitempty"`
+}
+
+// LocalGroupMember represents a domain member of a local Windows group
+type LocalGroupMember struct {
+	Domain string `json:"domain"`
+	Name   string `json:"name"`
+	SID    string `json:"sid,omitempty"`
 }
 
 // ServiceAccount represents a SQL Server service account
 type ServiceAccount struct {
-	ObjectIdentifier string `json:"objectIdentifier"`
-	Name             string `json:"name"`
-	ServiceName      string `json:"serviceName"`
-	ServiceType      string `json:"serviceType"`
-	StartupType      string `json:"startupType"`
-	SID              string `json:"sid,omitempty"`
+	ObjectIdentifier     string `json:"objectIdentifier"`
+	Name                 string `json:"name"`
+	ServiceName          string `json:"serviceName"`
+	ServiceType          string `json:"serviceType"`
+	StartupType          string `json:"startupType"`
+	SID                  string `json:"sid,omitempty"`
+	ConvertedFromBuiltIn bool   `json:"convertedFromBuiltIn,omitempty"` // True if converted from LocalSystem, NT AUTHORITY\*, etc.
 }
 
 // ServerPrincipal represents a server-level principal (login or server role)

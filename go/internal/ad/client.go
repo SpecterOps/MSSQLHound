@@ -89,17 +89,71 @@ func (c *Client) Connect() error {
 	}
 
 	// No explicit credentials - try GSSAPI with current user context
-	// Attempt StartTLS to satisfy LDAP signing requirements
-	_ = c.startTLS(conn, dc)
+	// Collect errors from each method for better debugging
+	var errors []string
 
-	bindErr = c.gssapiBind(conn, dc)
-	if bindErr == nil {
-		c.conn = conn
-		c.baseDN = domainToDN(c.domain)
-		return nil
+	// Build server name for TLS
+	serverName := dc
+	if !strings.Contains(serverName, ".") && c.domain != "" {
+		serverName = fmt.Sprintf("%s.%s", dc, c.domain)
 	}
 
-	return fmt.Errorf("failed to bind via GSSAPI: %w", bindErr)
+	// Close the initial port 389 connection
+	conn.Close()
+
+	// Try LDAPS first (port 636) - most reliable with channel binding
+	conn, err = ldap.DialURL(fmt.Sprintf("ldaps://%s:636", dc), ldap.DialWithTLSConfig(&tls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: true,
+	}))
+	if err == nil {
+		conn.SetTimeout(30 * time.Second)
+		bindErr = c.gssapiBind(conn, dc)
+		if bindErr == nil {
+			c.conn = conn
+			c.baseDN = domainToDN(c.domain)
+			return nil
+		}
+		errors = append(errors, fmt.Sprintf("LDAPS:636 GSSAPI: %v", bindErr))
+		conn.Close()
+	} else {
+		errors = append(errors, fmt.Sprintf("LDAPS:636 connect: %v", err))
+	}
+
+	// Try StartTLS on port 389
+	conn, err = ldap.DialURL(fmt.Sprintf("ldap://%s:389", dc))
+	if err == nil {
+		conn.SetTimeout(30 * time.Second)
+		tlsErr := c.startTLS(conn, dc)
+		if tlsErr == nil {
+			bindErr2 := c.gssapiBind(conn, dc)
+			if bindErr2 == nil {
+				c.conn = conn
+				c.baseDN = domainToDN(c.domain)
+				return nil
+			}
+			errors = append(errors, fmt.Sprintf("LDAP:389+StartTLS GSSAPI: %v", bindErr2))
+		} else {
+			errors = append(errors, fmt.Sprintf("LDAP:389 StartTLS: %v", tlsErr))
+		}
+		conn.Close()
+	}
+
+	// Try plain LDAP without TLS (may work if DC doesn't require signing)
+	conn, err = ldap.DialURL(fmt.Sprintf("ldap://%s:389", dc))
+	if err == nil {
+		conn.SetTimeout(30 * time.Second)
+		bindErr3 := c.gssapiBind(conn, dc)
+		if bindErr3 == nil {
+			c.conn = conn
+			c.baseDN = domainToDN(c.domain)
+			return nil
+		}
+		errors = append(errors, fmt.Sprintf("LDAP:389 GSSAPI: %v", bindErr3))
+		conn.Close()
+	}
+
+	return fmt.Errorf("all LDAP connection methods failed: %s", strings.Join(errors, "; "))
 }
 
 // ntlmBind performs NTLM authentication
@@ -229,6 +283,70 @@ func (c *Client) EnumerateMSSQLSPNs() ([]types.SPN, error) {
 	return spns, nil
 }
 
+// LookupMSSQLSPNsForHost finds MSSQL SPNs for a specific hostname
+func (c *Client) LookupMSSQLSPNsForHost(hostname string) ([]types.SPN, error) {
+	if c.conn == nil {
+		if err := c.Connect(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Extract short hostname for matching
+	shortHost := hostname
+	if idx := strings.Index(hostname, "."); idx > 0 {
+		shortHost = hostname[:idx]
+	}
+
+	// Search for SPNs matching this hostname (MSSQLSvc/hostname or MSSQLSvc/hostname.domain)
+	// Use a wildcard search to catch both short and FQDN forms
+	filter := fmt.Sprintf("(|(servicePrincipalName=MSSQLSvc/%s*)(servicePrincipalName=MSSQLSvc/%s*))", shortHost, hostname)
+
+	searchRequest := ldap.NewSearchRequest(
+		c.baseDN,
+		ldap.ScopeWholeSubtree,
+		ldap.NeverDerefAliases,
+		0, 0, false,
+		filter,
+		[]string{"servicePrincipalName", "sAMAccountName", "objectSid", "distinguishedName"},
+		nil,
+	)
+
+	result, err := c.conn.Search(searchRequest)
+	if err != nil {
+		return nil, fmt.Errorf("LDAP search failed: %w", err)
+	}
+
+	var spns []types.SPN
+
+	for _, entry := range result.Entries {
+		accountName := entry.GetAttributeValue("sAMAccountName")
+		sidBytes := entry.GetRawAttributeValue("objectSid")
+		accountSID := decodeSID(sidBytes)
+
+		for _, spn := range entry.GetAttributeValues("servicePrincipalName") {
+			if !strings.HasPrefix(strings.ToUpper(spn), "MSSQLSVC/") {
+				continue
+			}
+
+			// Verify this SPN matches our target hostname
+			parsed := parseSPN(spn)
+			spnHost := strings.ToLower(parsed.Hostname)
+			targetHost := strings.ToLower(hostname)
+			targetShort := strings.ToLower(shortHost)
+
+			// Check if the SPN hostname matches our target
+			if spnHost == targetHost || spnHost == targetShort ||
+				strings.HasPrefix(spnHost, targetShort+".") {
+				parsed.AccountName = accountName
+				parsed.AccountSID = accountSID
+				spns = append(spns, parsed)
+			}
+		}
+	}
+
+	return spns, nil
+}
+
 // EnumerateAllComputers returns all computer objects in the domain
 func (c *Client) EnumerateAllComputers() ([]string, error) {
 	if c.conn == nil {
@@ -288,7 +406,7 @@ func (c *Client) ResolveSID(sid string) (*types.DomainPrincipal, error) {
 		ldap.NeverDerefAliases,
 		1, 0, false,
 		sidFilter,
-		[]string{"sAMAccountName", "distinguishedName", "objectClass", "userAccountControl", "memberOf"},
+		[]string{"sAMAccountName", "distinguishedName", "objectClass", "userAccountControl", "memberOf", "dNSHostName", "userPrincipalName"},
 		nil,
 	)
 
@@ -331,7 +449,29 @@ func (c *Client) ResolveSID(sid string) (*types.DomainPrincipal, error) {
 		principal.Enabled = !strings.Contains(uac, "2")
 	}
 
-	principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+	// Set the Name based on object class to match PowerShell behavior:
+	// - For computers: use DNSHostName (FQDN) if available, otherwise SAMAccountName
+	// - For users: use userPrincipalName if available, otherwise DOMAIN\SAMAccountName
+	// - For groups: use DOMAIN\SAMAccountName
+	dnsHostName := entry.GetAttributeValue("dNSHostName")
+	userPrincipalName := entry.GetAttributeValue("userPrincipalName")
+
+	switch principal.ObjectClass {
+	case "computer":
+		if dnsHostName != "" {
+			principal.Name = dnsHostName
+		} else {
+			principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+		}
+	case "user":
+		if userPrincipalName != "" {
+			principal.Name = userPrincipalName
+		} else {
+			principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+		}
+	default:
+		principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+	}
 	principal.ObjectIdentifier = sid
 
 	// Cache the result
@@ -367,7 +507,7 @@ func (c *Client) ResolveName(name string) (*types.DomainPrincipal, error) {
 		ldap.NeverDerefAliases,
 		1, 0, false,
 		fmt.Sprintf("(sAMAccountName=%s)", ldap.EscapeFilter(samAccountName)),
-		[]string{"sAMAccountName", "distinguishedName", "objectClass", "objectSid", "userAccountControl", "memberOf"},
+		[]string{"sAMAccountName", "distinguishedName", "objectClass", "objectSid", "userAccountControl", "memberOf", "dNSHostName", "userPrincipalName"},
 		nil,
 	)
 
@@ -406,7 +546,26 @@ func (c *Client) ResolveName(name string) (*types.DomainPrincipal, error) {
 		}
 	}
 
-	principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+	// Set the Name based on object class to match PowerShell behavior
+	dnsHostName := entry.GetAttributeValue("dNSHostName")
+	userPrincipalName := entry.GetAttributeValue("userPrincipalName")
+
+	switch principal.ObjectClass {
+	case "computer":
+		if dnsHostName != "" {
+			principal.Name = dnsHostName
+		} else {
+			principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+		}
+	case "user":
+		if userPrincipalName != "" {
+			principal.Name = userPrincipalName
+		} else {
+			principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+		}
+	default:
+		principal.Name = fmt.Sprintf("%s\\%s", c.domain, principal.SAMAccountName)
+	}
 
 	// Cache by SID
 	c.sidCache[sid] = principal
