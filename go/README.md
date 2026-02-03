@@ -326,7 +326,7 @@ Use `--ldap-user` and `--ldap-password` when:
 ```bash
 # Recommended for large domain enumeration
 ./mssqlhound --scan-all-computers \
-  --ldap-user "AD005\svc_mssqlhound" \
+  --ldap-user "DOMAIN\svc_mssqlhound" \
   --ldap-password "SecurePassword123" \
   -w 50
 ```
@@ -371,3 +371,4 @@ MIT License - see LICENSE file.
 
 - Original PowerShell version by Chris Thompson (@_Mayyhem) at SpecterOps
 - Go port by Javier Azofra at Siemens Healthineers
+
