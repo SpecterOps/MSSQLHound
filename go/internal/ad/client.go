@@ -391,29 +391,45 @@ func (c *Client) EnumerateMSSQLSPNs() ([]types.SPN, error) {
 		nil,
 	)
 
-	result, err := c.conn.Search(searchRequest)
-	if err != nil {
-		return nil, fmt.Errorf("LDAP search failed: %w", err)
-	}
-
+	// Use paging to handle large result sets
 	var spns []types.SPN
+	pagingControl := ldap.NewControlPaging(1000)
+	searchRequest.Controls = append(searchRequest.Controls, pagingControl)
 
-	for _, entry := range result.Entries {
-		accountName := entry.GetAttributeValue("sAMAccountName")
-		sidBytes := entry.GetRawAttributeValue("objectSid")
-		accountSID := decodeSID(sidBytes)
-
-		for _, spn := range entry.GetAttributeValues("servicePrincipalName") {
-			if !strings.HasPrefix(strings.ToUpper(spn), "MSSQLSVC/") {
-				continue
-			}
-
-			parsed := parseSPN(spn)
-			parsed.AccountName = accountName
-			parsed.AccountSID = accountSID
-
-			spns = append(spns, parsed)
+	for {
+		result, err := c.conn.Search(searchRequest)
+		if err != nil {
+			return nil, fmt.Errorf("LDAP search failed: %w", err)
 		}
+
+		for _, entry := range result.Entries {
+			accountName := entry.GetAttributeValue("sAMAccountName")
+			sidBytes := entry.GetRawAttributeValue("objectSid")
+			accountSID := decodeSID(sidBytes)
+
+			for _, spn := range entry.GetAttributeValues("servicePrincipalName") {
+				if !strings.HasPrefix(strings.ToUpper(spn), "MSSQLSVC/") {
+					continue
+				}
+
+				parsed := parseSPN(spn)
+				parsed.AccountName = accountName
+				parsed.AccountSID = accountSID
+
+				spns = append(spns, parsed)
+			}
+		}
+
+		// Check if there are more pages
+		pagingResult := ldap.FindControl(result.Controls, ldap.ControlTypePaging)
+		if pagingResult == nil {
+			break
+		}
+		pagingCtrl := pagingResult.(*ldap.ControlPaging)
+		if len(pagingCtrl.Cookie) == 0 {
+			break
+		}
+		pagingControl.SetCookie(pagingCtrl.Cookie)
 	}
 
 	return spns, nil
@@ -501,20 +517,37 @@ func (c *Client) EnumerateAllComputers() ([]string, error) {
 		nil,
 	)
 
-	result, err := c.conn.Search(searchRequest)
-	if err != nil {
-		return nil, fmt.Errorf("LDAP search failed: %w", err)
-	}
-
+	// Use paging to handle large result sets (AD default limit is 1000)
 	var computers []string
-	for _, entry := range result.Entries {
-		hostname := entry.GetAttributeValue("dNSHostName")
-		if hostname == "" {
-			hostname = entry.GetAttributeValue("name")
+	pagingControl := ldap.NewControlPaging(1000)
+	searchRequest.Controls = append(searchRequest.Controls, pagingControl)
+
+	for {
+		result, err := c.conn.Search(searchRequest)
+		if err != nil {
+			return nil, fmt.Errorf("LDAP search failed: %w", err)
 		}
-		if hostname != "" {
-			computers = append(computers, hostname)
+
+		for _, entry := range result.Entries {
+			hostname := entry.GetAttributeValue("dNSHostName")
+			if hostname == "" {
+				hostname = entry.GetAttributeValue("name")
+			}
+			if hostname != "" {
+				computers = append(computers, hostname)
+			}
 		}
+
+		// Check if there are more pages
+		pagingResult := ldap.FindControl(result.Controls, ldap.ControlTypePaging)
+		if pagingResult == nil {
+			break
+		}
+		pagingCtrl := pagingResult.(*ldap.ControlPaging)
+		if len(pagingCtrl.Cookie) == 0 {
+			break
+		}
+		pagingControl.SetCookie(pagingCtrl.Cookie)
 	}
 
 	return computers, nil

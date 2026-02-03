@@ -37,6 +37,7 @@ MSSQLHound collects security-relevant information from Microsoft SQL Server inst
 - **BloodHound Output**: Produces OpenGraph JSON format compatible with BloodHound CE
 - **Streaming Output**: Memory-efficient streaming JSON writer for large environments
 - **Automatic Fallback**: Falls back to PowerShell for servers with SSPI issues
+- **LDAP Paging**: Handles large domains with thousands of computers/SPNs
 
 ## Building
 
@@ -77,6 +78,16 @@ Collect from a single SQL Server:
 ./mssqlhound --server-list-file servers.txt -w 20
 ```
 
+### Full Domain Enumeration
+
+```bash
+# Scan all computers in the domain (not just those with SQL SPNs)
+./mssqlhound --scan-all-computers
+
+# With explicit LDAP credentials (recommended for large domains)
+./mssqlhound --scan-all-computers --ldap-user "DOMAIN\username" --ldap-password "password"
+```
+
 ### Options
 
 | Flag | Description |
@@ -88,6 +99,9 @@ Collect from a single SQL Server:
 | `--dc` | Domain controller to use |
 | `-w, --workers` | Number of concurrent workers (default: 10) |
 | `-o, --output-directory` | Output directory for zip file |
+| `--scan-all-computers` | Scan all domain computers, not just those with SPNs |
+| `--ldap-user` | LDAP username for AD queries (DOMAIN\\user or user@domain) |
+| `--ldap-password` | LDAP password for AD queries |
 | `--skip-linked-servers` | Don't enumerate linked servers |
 | `--collect-from-linked` | Full collection on discovered linked servers |
 | `--skip-ad-nodes` | Skip creating User, Group, Computer nodes |
@@ -105,6 +119,8 @@ Collect from a single SQL Server:
 | **Memory Usage** | Loads all data in memory | Streaming JSON output |
 | **Cross-Platform** | Windows only | Windows, Linux, macOS |
 | **SSPI Fallback** | N/A (native .NET) | Falls back to PowerShell for problematic servers |
+| **LDAP Paging** | Automatic via .NET | Explicit paging implementation |
+| **Duplicate Edges** | May emit duplicates | De-duplicates edges |
 
 ### Edge Generation Differences
 
@@ -126,6 +142,14 @@ Collect from a single SQL Server:
 
 **Why Go skips self-loops**: A `HasSession` edge from a computer to itself (when SQL Server runs as LocalSystem/the computer account) doesn't provide meaningful attack path information.
 
+#### `MSSQL_AddMember` Edges
+
+| Aspect | PowerShell | Go |
+|--------|------------|-----|
+| **Duplicates** | May emit duplicate edges | De-duplicates all edges |
+
+**Why Go has fewer edges**: The PowerShell version may emit the same AddMember edge multiple times in certain scenarios. Go ensures each unique edge is only emitted once.
+
 ### Connection Handling
 
 The Go version includes automatic PowerShell fallback for servers that fail with the native `go-mssqldb` driver:
@@ -137,6 +161,15 @@ Fallback: PowerShell + System.Data.SqlClient (Windows only, more compatible)
 ```
 
 This ensures maximum compatibility while maintaining performance for the majority of servers.
+
+### LDAP Connection Methods
+
+The Go version tries multiple LDAP connection methods in order:
+
+1. **LDAPS (port 636)** - TLS encrypted, most secure
+2. **LDAP + StartTLS (port 389)** - Upgrade to TLS
+3. **Plain LDAP (port 389)** - Unencrypted (may fail if DC requires signing)
+4. **PowerShell/ADSI Fallback** - Windows COM-based fallback
 
 ## Output Format
 
@@ -219,19 +252,116 @@ Checks if the SQL Server version is vulnerable to CVE-2025-49758 and reports the
 - `VULNERABLE` - Server is running an affected version
 - `NOT vulnerable` - Server has been patched
 
-## Known Limitations
+## Known Limitations and Issues
 
 ### Windows Authentication on Non-Windows Platforms
 
 Windows Integrated Authentication (SSPI/Kerberos) is only available when running on Windows. On Linux/macOS, use SQL authentication instead.
 
-### SSPI Compatibility
+### GSSAPI/Kerberos Authentication Issues
 
-Some SQL Server instances with specific SSPI configurations may fail to connect with the native Go driver. The Go version automatically falls back to PowerShell's `System.Data.SqlClient` when this occurs (Windows only).
+The Go LDAP library's GSSAPI implementation may fail in certain environments with errors like:
 
-**Symptom:** Connection fails with "Login failed. The login is from an untrusted domain and cannot be used with Windows authentication"
+```
+LDAP Result Code 49 "Invalid Credentials": 80090346: LdapErr: DSID-0C0906CF, 
+comment: AcceptSecurityContext error, data 80090346
+```
 
-**Automatic Handling:** The Go version detects this error and automatically retries using PowerShell, which handles these edge cases more reliably.
+**Common causes:**
+- Channel binding token (CBT) mismatch between client and server
+- Kerberos ticket issues (expired, clock skew, wrong realm)
+- Domain controller requires specific LDAP signing/sealing options
+
+**Solutions:**
+
+1. **Use explicit LDAP credentials** (recommended for `--scan-all-computers`):
+   ```bash
+   ./mssqlhound --scan-all-computers --ldap-user "DOMAIN\username" --ldap-password "password"
+   ```
+
+2. **Verify Kerberos tickets**:
+   ```bash
+   klist  # Check current tickets
+   klist purge  # Clear and re-acquire tickets
+   ```
+
+3. **Check time synchronization** - Kerberos requires clocks within 5 minutes
+
+### LDAP Size Limits
+
+Active Directory has a default maximum result size of 1000 objects per query. The Go version implements LDAP paging to handle domains with more than 1000 computers or SPNs. If you see "Size Limit Exceeded" errors, ensure you're using the latest version.
+
+### SQL Server SSPI Compatibility
+
+Some SQL Server instances with specific SSPI configurations may fail to connect with the native Go driver.
+
+**Symptom:** 
+```
+Login failed. The login is from an untrusted domain and cannot be used with Windows authentication
+```
+
+**Automatic Handling:** The Go version detects this error and automatically retries using PowerShell's `System.Data.SqlClient`, which handles these edge cases more reliably. This fallback requires PowerShell to be available on the system.
+
+### PowerShell Fallback Limitations
+
+The PowerShell fallback for SQL connections and AD enumeration requires:
+- Windows operating system
+- PowerShell execution not blocked by security policy
+- Access to `System.Data.SqlClient` (.NET Framework)
+
+If PowerShell is blocked (e.g., `Access is denied` error), the fallback will not work. In this case:
+- For SQL connections: Some servers may not be reachable
+- For AD enumeration: Use explicit LDAP credentials instead
+
+### When to Use LDAP Credentials
+
+Use `--ldap-user` and `--ldap-password` when:
+
+1. **Full domain computer enumeration** (`--scan-all-computers`) - GSSAPI often fails with the Go library due to CBT issues
+2. **Cross-domain scenarios** - When enumerating from a machine in a different domain
+3. **Service account execution** - When running as a service account that may have Kerberos delegation issues
+4. **Troubleshooting GSSAPI failures** - As a workaround when implicit authentication fails
+
+**Example:**
+```bash
+# Recommended for large domain enumeration
+./mssqlhound --scan-all-computers \
+  --ldap-user "AD005\svc_mssqlhound" \
+  --ldap-password "SecurePassword123" \
+  -w 50
+```
+
+## Troubleshooting
+
+### Verbose Output
+
+Use `-v` or `--verbose` to see detailed connection attempts and errors:
+
+```bash
+./mssqlhound -s sql.contoso.com -v
+```
+
+### Common Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `untrusted domain` | SSPI negotiation failed | Automatic PowerShell fallback; check domain trust |
+| `Size Limit Exceeded` | Too many LDAP results | Update to latest version (has paging) |
+| `80090346` | GSSAPI/Kerberos failure | Use explicit LDAP credentials |
+| `Strong Auth Required` | DC requires LDAP signing | Will automatically try LDAPS/StartTLS |
+| `Access is denied` (PowerShell) | Execution policy blocked | Use explicit LDAP credentials instead |
+
+### Debug LDAP Connection
+
+The verbose output shows which LDAP connection methods are attempted:
+
+```
+LDAPS:636 GSSAPI: <error>
+LDAP:389+StartTLS GSSAPI: <error>
+LDAP:389 GSSAPI: <error>
+```
+
+This helps identify whether the issue is TLS-related or authentication-related.
 
 ## License
 
