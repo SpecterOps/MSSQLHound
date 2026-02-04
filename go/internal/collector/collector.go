@@ -1219,6 +1219,16 @@ func (c *Collector) updateObjectIdentifiers(serverInfo *types.ServerInfo, oldSer
 		if p.OwningObjectIdentifier != "" {
 			p.OwningObjectIdentifier = strings.Replace(p.OwningObjectIdentifier, "@"+oldServerID, "@"+newServerID, 1)
 		}
+		// Update MemberOf role references: Role@OldServerID -> Role@NewServerID
+		for j := range p.MemberOf {
+			p.MemberOf[j].ObjectIdentifier = strings.Replace(p.MemberOf[j].ObjectIdentifier, "@"+oldServerID, "@"+newServerID, 1)
+		}
+		// Update Permissions target references
+		for j := range p.Permissions {
+			if p.Permissions[j].TargetObjectIdentifier != "" {
+				p.Permissions[j].TargetObjectIdentifier = strings.Replace(p.Permissions[j].TargetObjectIdentifier, "@"+oldServerID, "@"+newServerID, 1)
+			}
+		}
 	}
 
 	// Update databases and database principals
@@ -1244,6 +1254,16 @@ func (c *Collector) updateObjectIdentifiers(serverInfo *types.ServerInfo, oldSer
 			// Update ServerLogin.ObjectIdentifier
 			if p.ServerLogin != nil && p.ServerLogin.ObjectIdentifier != "" {
 				p.ServerLogin.ObjectIdentifier = strings.Replace(p.ServerLogin.ObjectIdentifier, "@"+oldServerID, "@"+newServerID, 1)
+			}
+			// Update MemberOf role references: Role@OldServerID\DBName -> Role@NewServerID\DBName
+			for k := range p.MemberOf {
+				p.MemberOf[k].ObjectIdentifier = strings.Replace(p.MemberOf[k].ObjectIdentifier, "@"+oldServerID+"\\", "@"+newServerID+"\\", 1)
+			}
+			// Update Permissions target references
+			for k := range p.Permissions {
+				if p.Permissions[k].TargetObjectIdentifier != "" {
+					p.Permissions[k].TargetObjectIdentifier = strings.Replace(p.Permissions[k].TargetObjectIdentifier, "@"+oldServerID+"\\", "@"+newServerID+"\\", 1)
+				}
 			}
 		}
 	}
@@ -1588,9 +1608,10 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 // createServerNode creates a BloodHound node for the SQL Server
 func (c *Collector) createServerNode(info *types.ServerInfo) *bloodhound.Node {
 	props := map[string]interface{}{
-		"name":          info.ServerName,
+		"name":          info.SQLServerName, // Use consistent FQDN:Port format
 		"hostname":      info.Hostname,
 		"fqdn":          info.FQDN,
+		"sqlServerName": info.ServerName, // Original SQL Server name (may be short name or include instance)
 		"version":       info.Version,
 		"versionNumber": info.VersionNumber,
 		"edition":       info.Edition,
@@ -1795,12 +1816,12 @@ func (c *Collector) createDatabaseNode(db *types.Database, serverInfo *types.Ser
 // createDatabasePrincipalNode creates a BloodHound node for a database principal
 func (c *Collector) createDatabasePrincipalNode(principal *types.DatabasePrincipal, db *types.Database, serverInfo *types.ServerInfo) *bloodhound.Node {
 	props := map[string]interface{}{
-		"name":         principal.Name,
-		"principalId":  principal.PrincipalID,
-		"createDate":   principal.CreateDate.Format(time.RFC3339),
-		"modifyDate":   principal.ModifyDate.Format(time.RFC3339),
-		"databaseName": principal.DatabaseName,
-		"SQLServer":    principal.SQLServerName,
+		"name":        fmt.Sprintf("%s@%s", principal.Name, db.Name), // Match PowerShell format: Name@DatabaseName
+		"principalId": principal.PrincipalID,
+		"createDate":  principal.CreateDate.Format(time.RFC3339),
+		"modifyDate":  principal.ModifyDate.Format(time.RFC3339),
+		"database":    principal.DatabaseName, // Match PowerShell property name
+		"SQLServer":   principal.SQLServerName,
 	}
 
 	var kinds []string
