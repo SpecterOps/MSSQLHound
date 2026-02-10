@@ -846,6 +846,9 @@ connected:
 	// Resolve service account SIDs via LDAP if they don't have SIDs
 	c.resolveServiceAccountSIDsViaLDAP(serverInfo)
 
+	// Resolve credential identity SIDs via LDAP for credential edges
+	c.resolveCredentialSIDsViaLDAP(serverInfo)
+
 	// Enumerate local Windows groups that have SQL logins and their domain members
 	c.enumerateLocalGroupMembers(serverInfo)
 
@@ -1422,6 +1425,66 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 				sa.Name = principal.Name
 			}
 			fmt.Printf("  Resolved service account SID for %s: %s\n", sa.Name, sa.SID)
+		}
+	}
+}
+
+// resolveCredentialSIDsViaLDAP resolves credential identities to AD SIDs
+// This matches PowerShell's Resolve-DomainPrincipal behavior for credential edges
+func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo) {
+	if c.config.Domain == "" {
+		return
+	}
+
+	// Helper to resolve a credential identity (domain\user or user@domain) to a SID
+	resolveIdentity := func(identity string) string {
+		if !strings.Contains(identity, "\\") && !strings.Contains(identity, "@") {
+			return ""
+		}
+		adClient := ad.NewClient(c.config.Domain, c.config.DomainController, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword)
+		principal, err := adClient.ResolveName(identity)
+		adClient.Close()
+		if err != nil || principal == nil || principal.SID == "" {
+			return ""
+		}
+		return principal.SID
+	}
+
+	// Resolve server-level credentials (mapped via ALTER LOGIN ... WITH CREDENTIAL)
+	for i := range serverInfo.ServerPrincipals {
+		if serverInfo.ServerPrincipals[i].MappedCredential != nil {
+			cred := serverInfo.ServerPrincipals[i].MappedCredential
+			if sid := resolveIdentity(cred.CredentialIdentity); sid != "" {
+				cred.ResolvedSID = sid
+				c.logVerbose("  Resolved credential %s -> %s", cred.CredentialIdentity, sid)
+			}
+		}
+	}
+
+	// Resolve standalone credentials (for HasMappedCred edges)
+	for i := range serverInfo.Credentials {
+		if sid := resolveIdentity(serverInfo.Credentials[i].CredentialIdentity); sid != "" {
+			serverInfo.Credentials[i].ResolvedSID = sid
+			c.logVerbose("  Resolved credential %s -> %s", serverInfo.Credentials[i].CredentialIdentity, sid)
+		}
+	}
+
+	// Resolve proxy account credentials
+	for i := range serverInfo.ProxyAccounts {
+		if sid := resolveIdentity(serverInfo.ProxyAccounts[i].CredentialIdentity); sid != "" {
+			serverInfo.ProxyAccounts[i].ResolvedSID = sid
+			c.logVerbose("  Resolved proxy credential %s -> %s", serverInfo.ProxyAccounts[i].CredentialIdentity, sid)
+		}
+	}
+
+	// Resolve database-scoped credentials
+	for i := range serverInfo.Databases {
+		for j := range serverInfo.Databases[i].DBScopedCredentials {
+			cred := &serverInfo.Databases[i].DBScopedCredentials[j]
+			if sid := resolveIdentity(cred.CredentialIdentity); sid != "" {
+				cred.ResolvedSID = sid
+				c.logVerbose("  Resolved DB scoped credential %s -> %s", cred.CredentialIdentity, sid)
+			}
 		}
 	}
 }
@@ -2376,9 +2439,20 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 			targetID = linked.ResolvedObjectIdentifier
 		}
 
+		// Resolve the source server ObjectIdentifier
+		// PowerShell compares linked.SourceServer to current hostname and resolves chains
+		sourceID := serverInfo.ObjectIdentifier
+		if linked.SourceServer != "" && !strings.EqualFold(linked.SourceServer, serverInfo.Hostname) {
+			// Source is a different server (chained linked server) - resolve its ID
+			resolvedSourceID := c.resolveLinkedServerSourceID(linked.SourceServer, serverInfo)
+			if resolvedSourceID != "" {
+				sourceID = resolvedSourceID
+			}
+		}
+
 		// MSSQL_LinkedTo edge with all properties matching PowerShell
 		edge := c.createEdge(
-			serverInfo.ObjectIdentifier,
+			sourceID,
 			targetID,
 			bloodhound.EdgeKinds.LinkedTo,
 			&bloodhound.EdgeContext{
@@ -2389,20 +2463,24 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 				SQLServerName: serverInfo.SQLServerName,
 			},
 		)
-		// Add linked server specific properties (matching PowerShell)
-		edge.Properties["dataAccess"] = linked.IsDataAccessEnabled
-		edge.Properties["dataSource"] = linked.DataSource
-		edge.Properties["localLogin"] = linked.LocalLogin
-		edge.Properties["product"] = linked.Product
-		edge.Properties["provider"] = linked.Provider
-		edge.Properties["remoteHasControlServer"] = linked.RemoteHasControlServer
-		edge.Properties["remoteHasImpersonateAnyLogin"] = linked.RemoteHasImpersonateAnyLogin
-		edge.Properties["remoteIsMixedMode"] = linked.RemoteIsMixedMode
-		edge.Properties["remoteIsSecurityAdmin"] = linked.RemoteIsSecurityAdmin
-		edge.Properties["remoteIsSysadmin"] = linked.RemoteIsSysadmin
-		edge.Properties["remoteLogin"] = linked.RemoteLogin
-		edge.Properties["rpcOut"] = linked.IsRPCOutEnabled
-		edge.Properties["usesImpersonation"] = linked.UsesImpersonation
+		if edge != nil {
+			// Add linked server specific properties (matching PowerShell)
+			edge.Properties["dataAccess"] = linked.IsDataAccessEnabled
+			edge.Properties["dataSource"] = linked.DataSource
+			edge.Properties["localLogin"] = linked.LocalLogin
+			edge.Properties["path"] = linked.Path
+			edge.Properties["product"] = linked.Product
+			edge.Properties["provider"] = linked.Provider
+			edge.Properties["remoteCurrentLogin"] = linked.RemoteCurrentLogin
+			edge.Properties["remoteHasControlServer"] = linked.RemoteHasControlServer
+			edge.Properties["remoteHasImpersonateAnyLogin"] = linked.RemoteHasImpersonateAnyLogin
+			edge.Properties["remoteIsMixedMode"] = linked.RemoteIsMixedMode
+			edge.Properties["remoteIsSecurityAdmin"] = linked.RemoteIsSecurityAdmin
+			edge.Properties["remoteIsSysadmin"] = linked.RemoteIsSysadmin
+			edge.Properties["remoteLogin"] = linked.RemoteLogin
+			edge.Properties["rpcOut"] = linked.IsRPCOutEnabled
+			edge.Properties["usesImpersonation"] = linked.UsesImpersonation
+		}
 		if err := writer.WriteEdge(edge); err != nil {
 			return err
 		}
@@ -2418,7 +2496,7 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 			linked.RemoteIsMixedMode {
 
 			edge := c.createEdge(
-				serverInfo.ObjectIdentifier,
+				sourceID,
 				targetID,
 				bloodhound.EdgeKinds.LinkedAsAdmin,
 				&bloodhound.EdgeContext{
@@ -2429,20 +2507,24 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 					SQLServerName: serverInfo.SQLServerName,
 				},
 			)
-			// Add linked server specific properties (matching PowerShell)
-			edge.Properties["dataAccess"] = linked.IsDataAccessEnabled
-			edge.Properties["dataSource"] = linked.DataSource
-			edge.Properties["localLogin"] = linked.LocalLogin
-			edge.Properties["product"] = linked.Product
-			edge.Properties["provider"] = linked.Provider
-			edge.Properties["remoteHasControlServer"] = linked.RemoteHasControlServer
-			edge.Properties["remoteHasImpersonateAnyLogin"] = linked.RemoteHasImpersonateAnyLogin
-			edge.Properties["remoteIsMixedMode"] = linked.RemoteIsMixedMode
-			edge.Properties["remoteIsSecurityAdmin"] = linked.RemoteIsSecurityAdmin
-			edge.Properties["remoteIsSysadmin"] = linked.RemoteIsSysadmin
-			edge.Properties["remoteLogin"] = linked.RemoteLogin
-			edge.Properties["rpcOut"] = linked.IsRPCOutEnabled
-			edge.Properties["usesImpersonation"] = linked.UsesImpersonation
+			if edge != nil {
+				// Add linked server specific properties (matching PowerShell)
+				edge.Properties["dataAccess"] = linked.IsDataAccessEnabled
+				edge.Properties["dataSource"] = linked.DataSource
+				edge.Properties["localLogin"] = linked.LocalLogin
+				edge.Properties["path"] = linked.Path
+				edge.Properties["product"] = linked.Product
+				edge.Properties["provider"] = linked.Provider
+				edge.Properties["remoteCurrentLogin"] = linked.RemoteCurrentLogin
+				edge.Properties["remoteHasControlServer"] = linked.RemoteHasControlServer
+				edge.Properties["remoteHasImpersonateAnyLogin"] = linked.RemoteHasImpersonateAnyLogin
+				edge.Properties["remoteIsMixedMode"] = linked.RemoteIsMixedMode
+				edge.Properties["remoteIsSecurityAdmin"] = linked.RemoteIsSecurityAdmin
+				edge.Properties["remoteIsSysadmin"] = linked.RemoteIsSysadmin
+				edge.Properties["remoteLogin"] = linked.RemoteLogin
+				edge.Properties["rpcOut"] = linked.IsRPCOutEnabled
+				edge.Properties["usesImpersonation"] = linked.UsesImpersonation
+			}
 			if err := writer.WriteEdge(edge); err != nil {
 				return err
 			}
@@ -2471,35 +2553,24 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 
 			// Check if database owner has high privileges
 			// (sysadmin, securityadmin, CONTROL SERVER, or IMPERSONATE ANY LOGIN)
+			// Uses nested role/permission checks matching PowerShell's Get-NestedRoleMembership/Get-EffectivePermissions
 			if db.OwnerObjectIdentifier != "" {
 				// Find the owner in server principals
 				var ownerHasSysadmin, ownerHasSecurityadmin, ownerHasControlServer, ownerHasImpersonateAnyLogin bool
+				var ownerLoginName string
 				for _, owner := range serverInfo.ServerPrincipals {
 					if owner.ObjectIdentifier == db.OwnerObjectIdentifier {
-						// Check if owner is a member of sysadmin or securityadmin
-						for _, role := range owner.MemberOf {
-							if role.Name == "sysadmin" {
-								ownerHasSysadmin = true
-							}
-							if role.Name == "securityadmin" {
-								ownerHasSecurityadmin = true
-							}
-						}
-						// Check explicit permissions
-						for _, perm := range owner.Permissions {
-							if perm.Permission == "CONTROL SERVER" && (perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
-								ownerHasControlServer = true
-							}
-							if perm.Permission == "IMPERSONATE ANY LOGIN" && (perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
-								ownerHasImpersonateAnyLogin = true
-							}
-						}
+						ownerLoginName = owner.Name
+						ownerHasSysadmin = c.hasNestedRoleMembership(owner, "sysadmin", serverInfo)
+						ownerHasSecurityadmin = c.hasNestedRoleMembership(owner, "securityadmin", serverInfo)
+						ownerHasControlServer = c.hasEffectivePermission(owner, "CONTROL SERVER", serverInfo)
+						ownerHasImpersonateAnyLogin = c.hasEffectivePermission(owner, "IMPERSONATE ANY LOGIN", serverInfo)
 						break
 					}
 				}
 
 				if ownerHasSysadmin || ownerHasSecurityadmin || ownerHasControlServer || ownerHasImpersonateAnyLogin {
-					// Create ExecuteAsOwner edge
+					// Create ExecuteAsOwner edge with metadata properties matching PowerShell
 					edge := c.createEdge(
 						db.ObjectIdentifier,
 						serverInfo.ObjectIdentifier,
@@ -2513,6 +2584,18 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 							DatabaseName:  db.Name,
 						},
 					)
+					if edge != nil {
+						edge.Properties["database"] = db.Name
+						edge.Properties["databaseIsTrustworthy"] = db.IsTrustworthy
+						edge.Properties["ownerHasControlServer"] = ownerHasControlServer
+						edge.Properties["ownerHasImpersonateAnyLogin"] = ownerHasImpersonateAnyLogin
+						edge.Properties["ownerHasSecurityadmin"] = ownerHasSecurityadmin
+						edge.Properties["ownerHasSysadmin"] = ownerHasSysadmin
+						edge.Properties["ownerLoginName"] = ownerLoginName
+						edge.Properties["ownerObjectIdentifier"] = db.OwnerObjectIdentifier
+						edge.Properties["ownerPrincipalID"] = db.OwnerPrincipalID
+						edge.Properties["SQLServer"] = serverInfo.ObjectIdentifier
+					}
 					if err := writer.WriteEdge(edge); err != nil {
 						return err
 					}
@@ -2660,68 +2743,106 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 		}
 	}
 
-	// Create HasLogin edges for well-known local groups (S-1-5-32-*)
-	// These are BUILTIN groups like BUILTIN\Users, BUILTIN\Administrators, etc.
-	for _, principal := range serverInfo.ServerPrincipals {
-		if principal.SecurityIdentifier == "" {
-			continue
-		}
+	// Create HasLogin edges for local groups that have SQL logins
+	// This processes ALL local groups (not just BUILTIN S-1-5-32-*), matching PowerShell behavior.
+	// LocalGroupsWithLogins contains groups collected via WMI/net localgroup enumeration.
+	if serverInfo.LocalGroupsWithLogins != nil {
+		for _, groupInfo := range serverInfo.LocalGroupsWithLogins {
+			if groupInfo.Principal == nil || groupInfo.Principal.SecurityIdentifier == "" {
+				continue
+			}
 
-		// Only process well-known local group SIDs (S-1-5-32-*)
-		if !strings.HasPrefix(principal.SecurityIdentifier, "S-1-5-32-") {
-			continue
-		}
+			principal := groupInfo.Principal
 
-		// Skip disabled logins
-		if principal.IsDisabled {
-			continue
-		}
+			// Track non-BUILTIN SIDs separately (machine-local groups)
+			if !strings.HasPrefix(principal.SecurityIdentifier, "S-1-5-32-") {
+				principalsWithLogin[principal.SecurityIdentifier] = true
+			}
 
-		// Check if has CONNECT SQL permission
-		hasConnectSQL := false
-		for _, perm := range principal.Permissions {
-			if perm.Permission == "CONNECT SQL" && (perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
-				hasConnectSQL = true
-				break
+			// ObjectID format: {serverFQDN}-{SID} (machine-specific)
+			groupObjectID := serverInfo.Hostname + "-" + principal.SecurityIdentifier
+			principalsWithLogin[groupObjectID] = true
+
+			// MSSQL_HasLogin edge
+			edge := c.createEdge(
+				groupObjectID,
+				principal.ObjectIdentifier,
+				bloodhound.EdgeKinds.HasLogin,
+				&bloodhound.EdgeContext{
+					SourceName:    principal.Name,
+					SourceType:    "Group",
+					TargetName:    principal.Name,
+					TargetType:    bloodhound.NodeKinds.Login,
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
 			}
 		}
-		// Also check sysadmin/securityadmin membership
-		if !hasConnectSQL {
-			for _, membership := range principal.MemberOf {
-				if membership.Name == "sysadmin" || membership.Name == "securityadmin" {
+	} else {
+		// Fallback: process BUILTIN groups from ServerPrincipals if LocalGroupsWithLogins is not populated
+		for _, principal := range serverInfo.ServerPrincipals {
+			if principal.SecurityIdentifier == "" {
+				continue
+			}
+
+			// Only process well-known local group SIDs (S-1-5-32-*)
+			if !strings.HasPrefix(principal.SecurityIdentifier, "S-1-5-32-") {
+				continue
+			}
+
+			// Skip disabled logins
+			if principal.IsDisabled {
+				continue
+			}
+
+			// Check if has CONNECT SQL permission
+			hasConnectSQL := false
+			for _, perm := range principal.Permissions {
+				if perm.Permission == "CONNECT SQL" && (perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
 					hasConnectSQL = true
 					break
 				}
 			}
-		}
-		if !hasConnectSQL {
-			continue
-		}
+			// Also check sysadmin/securityadmin membership
+			if !hasConnectSQL {
+				for _, membership := range principal.MemberOf {
+					if membership.Name == "sysadmin" || membership.Name == "securityadmin" {
+						hasConnectSQL = true
+						break
+					}
+				}
+			}
+			if !hasConnectSQL {
+				continue
+			}
 
-		// ObjectID format: {serverFQDN}-{SID}
-		groupObjectID := serverInfo.Hostname + "-" + principal.SecurityIdentifier
+			// ObjectID format: {serverFQDN}-{SID}
+			groupObjectID := serverInfo.Hostname + "-" + principal.SecurityIdentifier
 
-		// Skip if already processed
-		if principalsWithLogin[groupObjectID] {
-			continue
-		}
-		principalsWithLogin[groupObjectID] = true
+			// Skip if already processed
+			if principalsWithLogin[groupObjectID] {
+				continue
+			}
+			principalsWithLogin[groupObjectID] = true
 
-		// MSSQL_HasLogin edge
-		edge := c.createEdge(
-			groupObjectID,
-			principal.ObjectIdentifier,
-			bloodhound.EdgeKinds.HasLogin,
-			&bloodhound.EdgeContext{
-				SourceName:    principal.Name,
-				SourceType:    "Group",
-				TargetName:    principal.Name,
-				TargetType:    bloodhound.NodeKinds.Login,
-				SQLServerName: serverInfo.SQLServerName,
-			},
-		)
-		if err := writer.WriteEdge(edge); err != nil {
-			return err
+			// MSSQL_HasLogin edge
+			edge := c.createEdge(
+				groupObjectID,
+				principal.ObjectIdentifier,
+				bloodhound.EdgeKinds.HasLogin,
+				&bloodhound.EdgeContext{
+					SourceName:    principal.Name,
+					SourceType:    "Group",
+					TargetName:    principal.Name,
+					TargetType:    bloodhound.NodeKinds.Login,
+					SQLServerName: serverInfo.SQLServerName,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -2730,6 +2851,7 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 	// =========================================================================
 
 	// Track domain principals with admin privileges for GetAdminTGS
+	// Uses nested role/permission checks matching PowerShell's second pass (lines 7676-7712)
 	var domainPrincipalsWithAdmin []string
 	var enabledDomainLoginsWithConnectSQL []types.ServerPrincipal
 
@@ -2743,27 +2865,11 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 			continue
 		}
 
-		// Check if has admin-level access
-		hasAdmin := false
-
-		// Check for sysadmin or securityadmin membership
-		for _, membership := range principal.MemberOf {
-			if membership.Name == "sysadmin" || membership.Name == "securityadmin" {
-				hasAdmin = true
-				break
-			}
-		}
-
-		// Check for CONTROL SERVER or IMPERSONATE ANY LOGIN
-		if !hasAdmin {
-			for _, perm := range principal.Permissions {
-				if (perm.Permission == "CONTROL SERVER" || perm.Permission == "IMPERSONATE ANY LOGIN") &&
-					(perm.State == "GRANT" || perm.State == "GRANT_WITH_GRANT_OPTION") {
-					hasAdmin = true
-					break
-				}
-			}
-		}
+		// Check if has admin-level access (including inherited through nested role membership)
+		hasAdmin := c.hasNestedRoleMembership(principal, "sysadmin", serverInfo) ||
+			c.hasNestedRoleMembership(principal, "securityadmin", serverInfo) ||
+			c.hasEffectivePermission(principal, "CONTROL SERVER", serverInfo) ||
+			c.hasEffectivePermission(principal, "IMPERSONATE ANY LOGIN", serverInfo)
 
 		if hasAdmin {
 			domainPrincipalsWithAdmin = append(domainPrincipalsWithAdmin, principal.ObjectIdentifier)
@@ -2929,12 +3035,17 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 			continue
 		}
 
-		// HasMappedCred: Login -> AD Principal (based on credential identity)
-		// Note: In a real implementation, we'd resolve the credential identity to a SID
-		// For now, we create an edge using the credential identity as the target
+		// Use ResolvedSID if available, fall back to CredentialIdentity
+		// PowerShell uses the resolved SID as the edge target
+		targetID := cred.CredentialIdentity
+		if cred.ResolvedSID != "" {
+			targetID = cred.ResolvedSID
+		}
+
+		// HasMappedCred: Login -> AD Principal (resolved SID or credential identity)
 		edge := c.createEdge(
 			principal.ObjectIdentifier,
-			cred.CredentialIdentity, // This would ideally be the resolved SID
+			targetID,
 			bloodhound.EdgeKinds.HasMappedCred,
 			&bloodhound.EdgeContext{
 				SourceName:    principal.Name,
@@ -2975,10 +3086,16 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 				continue
 			}
 
-			// HasProxyCred: Login -> AD Principal (credential identity)
+			// Use ResolvedSID if available, fall back to CredentialIdentity
+			proxyTargetID := proxy.CredentialIdentity
+			if proxy.ResolvedSID != "" {
+				proxyTargetID = proxy.ResolvedSID
+			}
+
+			// HasProxyCred: Login -> AD Principal (resolved SID or credential identity)
 			edge := c.createEdge(
 				loginObjectID,
-				proxy.CredentialIdentity, // This would ideally be the resolved SID
+				proxyTargetID,
 				bloodhound.EdgeKinds.HasProxyCred,
 				&bloodhound.EdgeContext{
 					SourceName:    loginName,
@@ -3006,10 +3123,16 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 				continue
 			}
 
-			// HasDBScopedCred: Database -> AD Principal (credential identity)
+			// Use ResolvedSID if available, fall back to CredentialIdentity
+			dbCredTargetID := cred.CredentialIdentity
+			if cred.ResolvedSID != "" {
+				dbCredTargetID = cred.ResolvedSID
+			}
+
+			// HasDBScopedCred: Database -> AD Principal (resolved SID or credential identity)
 			edge := c.createEdge(
 				db.ObjectIdentifier,
-				cred.CredentialIdentity, // This would ideally be the resolved SID
+				dbCredTargetID,
 				bloodhound.EdgeKinds.HasDBScopedCred,
 				&bloodhound.EdgeContext{
 					SourceName:    db.Name,
@@ -3029,24 +3152,159 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 	return nil
 }
 
-// hasSecurityadminRole checks if a principal is a member of the securityadmin role (directly or through nesting)
-func (c *Collector) hasSecurityadminRole(principal types.ServerPrincipal) bool {
-	for _, m := range principal.MemberOf {
-		if m.Name == "securityadmin" {
+// hasNestedRoleMembership checks if a server principal is a member of a target role,
+// including through nested role membership chains (DFS traversal).
+// This matches PowerShell's Get-NestedRoleMembership function.
+func (c *Collector) hasNestedRoleMembership(principal types.ServerPrincipal, targetRoleName string, serverInfo *types.ServerInfo) bool {
+	visited := make(map[string]bool)
+	return c.hasNestedRoleMembershipDFS(principal.MemberOf, targetRoleName, serverInfo, visited)
+}
+
+func (c *Collector) hasNestedRoleMembershipDFS(memberOf []types.RoleMembership, targetRoleName string, serverInfo *types.ServerInfo, visited map[string]bool) bool {
+	for _, role := range memberOf {
+		roleName := role.Name
+		if roleName == "" {
+			// Try to extract from ObjectIdentifier (format: "rolename@server")
+			parts := strings.SplitN(role.ObjectIdentifier, "@", 2)
+			if len(parts) > 0 {
+				roleName = parts[0]
+			}
+		}
+
+		if visited[roleName] {
+			continue
+		}
+		visited[roleName] = true
+
+		if roleName == targetRoleName {
 			return true
+		}
+
+		// Look up the role in server principals and recurse
+		for _, sp := range serverInfo.ServerPrincipals {
+			if sp.Name == roleName && sp.TypeDescription == "SERVER_ROLE" {
+				if c.hasNestedRoleMembershipDFS(sp.MemberOf, targetRoleName, serverInfo, visited) {
+					return true
+				}
+				break
+			}
 		}
 	}
 	return false
 }
 
-// hasImpersonateAnyLogin checks if a principal has IMPERSONATE ANY LOGIN permission
-func (c *Collector) hasImpersonateAnyLogin(principal types.ServerPrincipal) bool {
-	for _, p := range principal.Permissions {
-		if p.Permission == "IMPERSONATE ANY LOGIN" && (p.State == "GRANT" || p.State == "GRANT_WITH_GRANT_OPTION") {
+// hasEffectivePermission checks if a server principal has a permission, either directly
+// or inherited through role membership chains (BFS traversal).
+// This matches PowerShell's Get-EffectivePermissions function.
+func (c *Collector) hasEffectivePermission(principal types.ServerPrincipal, targetPermission string, serverInfo *types.ServerInfo) bool {
+	// First check direct permissions (skip DENY)
+	for _, perm := range principal.Permissions {
+		if perm.Permission == targetPermission && perm.State != "DENY" {
 			return true
 		}
 	}
+
+	// BFS through role membership
+	checked := make(map[string]bool)
+	queue := []string{}
+
+	// Seed the queue with direct role memberships
+	for _, role := range principal.MemberOf {
+		roleName := role.Name
+		if roleName == "" {
+			parts := strings.SplitN(role.ObjectIdentifier, "@", 2)
+			if len(parts) > 0 {
+				roleName = parts[0]
+			}
+		}
+		queue = append(queue, roleName)
+	}
+
+	for len(queue) > 0 {
+		currentRoleName := queue[0]
+		queue = queue[1:]
+
+		if checked[currentRoleName] || currentRoleName == "public" {
+			continue
+		}
+		checked[currentRoleName] = true
+
+		// Find the role in server principals
+		for _, sp := range serverInfo.ServerPrincipals {
+			if sp.Name == currentRoleName && sp.TypeDescription == "SERVER_ROLE" {
+				// Check this role's permissions
+				for _, perm := range sp.Permissions {
+					if perm.Permission == targetPermission {
+						return true
+					}
+				}
+				// Add nested roles to queue
+				for _, nestedRole := range sp.MemberOf {
+					nestedName := nestedRole.Name
+					if nestedName == "" {
+						parts := strings.SplitN(nestedRole.ObjectIdentifier, "@", 2)
+						if len(parts) > 0 {
+							nestedName = parts[0]
+						}
+					}
+					queue = append(queue, nestedName)
+				}
+				break
+			}
+		}
+	}
+
 	return false
+}
+
+// hasNestedDBRoleMembership checks if a database principal is a member of a target role,
+// including through nested role membership chains (DFS traversal).
+func (c *Collector) hasNestedDBRoleMembership(principal types.DatabasePrincipal, targetRoleName string, db *types.Database) bool {
+	visited := make(map[string]bool)
+	return c.hasNestedDBRoleMembershipDFS(principal.MemberOf, targetRoleName, db, visited)
+}
+
+func (c *Collector) hasNestedDBRoleMembershipDFS(memberOf []types.RoleMembership, targetRoleName string, db *types.Database, visited map[string]bool) bool {
+	for _, role := range memberOf {
+		roleName := role.Name
+		if roleName == "" {
+			parts := strings.SplitN(role.ObjectIdentifier, "@", 2)
+			if len(parts) > 0 {
+				roleName = parts[0]
+			}
+		}
+
+		key := db.Name + "::" + roleName
+		if visited[key] {
+			continue
+		}
+		visited[key] = true
+
+		if roleName == targetRoleName {
+			return true
+		}
+
+		// Look up the role in database principals and recurse
+		for _, dp := range db.DatabasePrincipals {
+			if dp.Name == roleName && dp.TypeDescription == "DATABASE_ROLE" {
+				if c.hasNestedDBRoleMembershipDFS(dp.MemberOf, targetRoleName, db, visited) {
+					return true
+				}
+				break
+			}
+		}
+	}
+	return false
+}
+
+// hasSecurityadminRole checks if a principal is a member of the securityadmin role (including nested)
+func (c *Collector) hasSecurityadminRole(principal types.ServerPrincipal, serverInfo *types.ServerInfo) bool {
+	return c.hasNestedRoleMembership(principal, "securityadmin", serverInfo)
+}
+
+// hasImpersonateAnyLogin checks if a principal has IMPERSONATE ANY LOGIN permission (including inherited)
+func (c *Collector) hasImpersonateAnyLogin(principal types.ServerPrincipal, serverInfo *types.ServerInfo) bool {
+	return c.hasEffectivePermission(principal, "IMPERSONATE ANY LOGIN", serverInfo)
 }
 
 // shouldCreateChangePasswordEdge determines if a ChangePassword edge should be created for a target SQL login
@@ -3057,7 +3315,7 @@ func (c *Collector) shouldCreateChangePasswordEdge(serverInfo *types.ServerInfo,
 	if IsPatchedForCVE202549758(serverInfo.VersionNumber, serverInfo.Version) {
 		// Patched - check if target has securityadmin or IMPERSONATE ANY LOGIN
 		// If target has either, the patch prevents changing their password without current password
-		if c.hasSecurityadminRole(targetPrincipal) || c.hasImpersonateAnyLogin(targetPrincipal) {
+		if c.hasSecurityadminRole(targetPrincipal, serverInfo) || c.hasImpersonateAnyLogin(targetPrincipal, serverInfo) {
 			c.logVerbose("Skipping ChangePassword edge to %s - server is patched for CVE-2025-49758 and target has securityadmin role or IMPERSONATE ANY LOGIN permission", targetPrincipal.Name)
 			return false
 		}
@@ -3214,6 +3472,33 @@ func (c *Collector) parseDataSource(dataSource string) (hostname, port, instance
 	}
 
 	return
+}
+
+// resolveLinkedServerSourceID resolves the source server ObjectIdentifier for a chained linked server.
+// When a linked server's SourceServer differs from the current server's hostname, this resolves
+// the source to a SID:port format. Falls back to "LinkedServer:hostname" if resolution fails.
+// This matches PowerShell's Resolve-DataSourceToSid behavior for linked server source resolution.
+func (c *Collector) resolveLinkedServerSourceID(sourceServer string, serverInfo *types.ServerInfo) string {
+	hostname, port, instanceName := c.parseDataSource(sourceServer)
+
+	// Extract domain from current server for resolution
+	sourceDomain := ""
+	if strings.Contains(serverInfo.Hostname, ".") {
+		parts := strings.SplitN(serverInfo.Hostname, ".", 2)
+		if len(parts) > 1 {
+			sourceDomain = parts[1]
+		}
+	}
+
+	resolved := c.resolveDataSourceToSID(hostname, port, instanceName, sourceDomain)
+
+	// Check if resolution succeeded (starts with S-1-5- means SID was resolved)
+	if strings.HasPrefix(resolved, "S-1-5-") {
+		return resolved
+	}
+
+	// Fallback to LinkedServer:hostname format (matching PowerShell behavior)
+	return "LinkedServer:" + sourceServer
 }
 
 // resolveDataSourceToSID resolves a data source to SID:port format for linked server edges
@@ -3412,21 +3697,9 @@ func (c *Collector) createFixedRoleEdges(writer *bloodhound.StreamingWriter, ser
 					continue
 				}
 
-				// Check if target has sysadmin or CONTROL SERVER
-				targetHasSysadmin := false
-				for _, m := range targetPrincipal.MemberOf {
-					if m.Name == "sysadmin" {
-						targetHasSysadmin = true
-						break
-					}
-				}
-				targetHasControlServer := false
-				for _, p := range targetPrincipal.Permissions {
-					if p.Permission == "CONTROL SERVER" && (p.State == "GRANT" || p.State == "GRANT_WITH_GRANT_OPTION") {
-						targetHasControlServer = true
-						break
-					}
-				}
+				// Check if target has sysadmin or CONTROL SERVER (including nested)
+				targetHasSysadmin := c.hasNestedRoleMembership(targetPrincipal, "sysadmin", serverInfo)
+				targetHasControlServer := c.hasEffectivePermission(targetPrincipal, "CONTROL SERVER", serverInfo)
 
 				if !targetHasSysadmin && !targetHasControlServer {
 					// Check CVE-2025-49758 patch status to determine if edge should be created
@@ -3451,6 +3724,83 @@ func (c *Collector) createFixedRoleEdges(writer *bloodhound.StreamingWriter, ser
 						return err
 					}
 				}
+			}
+		case "##MS_LoginManager##":
+			// SQL Server 2022+ fixed role: has ALTER ANY LOGIN permission
+			edge := c.createEdge(
+				principal.ObjectIdentifier,
+				serverInfo.ObjectIdentifier,
+				bloodhound.EdgeKinds.AlterAnyLogin,
+				&bloodhound.EdgeContext{
+					SourceName:    principal.Name,
+					SourceType:    bloodhound.NodeKinds.ServerRole,
+					TargetName:    serverInfo.ServerName,
+					TargetType:    bloodhound.NodeKinds.Server,
+					SQLServerName: serverInfo.SQLServerName,
+					IsFixedRole:   true,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
+
+			// Also create ChangePassword edges to SQL logins (same logic as ALTER ANY LOGIN)
+			for _, targetPrincipal := range serverInfo.ServerPrincipals {
+				if targetPrincipal.TypeDescription != "SQL_LOGIN" {
+					continue
+				}
+				if targetPrincipal.Name == "sa" {
+					continue
+				}
+				if targetPrincipal.ObjectIdentifier == principal.ObjectIdentifier {
+					continue
+				}
+
+				// Check if target has sysadmin or CONTROL SERVER (including nested)
+				targetHasSysadmin := c.hasNestedRoleMembership(targetPrincipal, "sysadmin", serverInfo)
+				targetHasControlServer := c.hasEffectivePermission(targetPrincipal, "CONTROL SERVER", serverInfo)
+
+				if !targetHasSysadmin && !targetHasControlServer {
+					if !c.shouldCreateChangePasswordEdge(serverInfo, targetPrincipal) {
+						continue
+					}
+
+					cpEdge := c.createEdge(
+						principal.ObjectIdentifier,
+						targetPrincipal.ObjectIdentifier,
+						bloodhound.EdgeKinds.ChangePassword,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    bloodhound.NodeKinds.ServerRole,
+							TargetName:    targetPrincipal.Name,
+							TargetType:    bloodhound.NodeKinds.Login,
+							SQLServerName: serverInfo.SQLServerName,
+							Permission:    "ALTER ANY LOGIN",
+						},
+					)
+					if err := writer.WriteEdge(cpEdge); err != nil {
+						return err
+					}
+				}
+			}
+
+		case "##MS_DatabaseConnector##":
+			// SQL Server 2022+ fixed role: has CONNECT ANY DATABASE permission
+			edge := c.createEdge(
+				principal.ObjectIdentifier,
+				serverInfo.ObjectIdentifier,
+				bloodhound.EdgeKinds.ConnectAnyDatabase,
+				&bloodhound.EdgeContext{
+					SourceName:    principal.Name,
+					SourceType:    bloodhound.NodeKinds.ServerRole,
+					TargetName:    serverInfo.ServerName,
+					TargetType:    bloodhound.NodeKinds.Server,
+					SQLServerName: serverInfo.SQLServerName,
+					IsFixedRole:   true,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
 			}
 		}
 	}
@@ -3910,6 +4260,26 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 					if err := writer.WriteEdge(edge); err != nil {
 						return err
 					}
+
+					// TAKE OWNERSHIP on SERVER_ROLE also grants ChangeOwner (matches PowerShell)
+					if targetPrincipal != nil && targetPrincipal.TypeDescription == "SERVER_ROLE" {
+						changeOwnerEdge := c.createEdge(
+							principal.ObjectIdentifier,
+							perm.TargetObjectIdentifier,
+							bloodhound.EdgeKinds.ChangeOwner,
+							&bloodhound.EdgeContext{
+								SourceName:    principal.Name,
+								SourceType:    c.getServerPrincipalType(principal.TypeDescription),
+								TargetName:    targetName,
+								TargetType:    bloodhound.NodeKinds.ServerRole,
+								SQLServerName: serverInfo.SQLServerName,
+								Permission:    perm.Permission,
+							},
+						)
+						if err := writer.WriteEdge(changeOwnerEdge); err != nil {
+							return err
+						}
+					}
 				}
 
 			case "IMPERSONATE":
@@ -3920,11 +4290,11 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						targetName = targetPrincipal.Name
 					}
 
-					// ImpersonateLogin edge (specific for login impersonation)
+					// MSSQL_Impersonate edge (matches PowerShell which uses MSSQL_Impersonate at server level)
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.ImpersonateLogin,
+						bloodhound.EdgeKinds.Impersonate,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -4006,23 +4376,9 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						continue
 					}
 
-					// Check if target has sysadmin or CONTROL SERVER
-					// For simplicity, just check direct sysadmin membership
-					targetHasSysadmin := false
-					for _, m := range targetPrincipal.MemberOf {
-						if m.Name == "sysadmin" {
-							targetHasSysadmin = true
-							break
-						}
-					}
-					// Check for CONTROL SERVER permission
-					targetHasControlServer := false
-					for _, p := range targetPrincipal.Permissions {
-						if p.Permission == "CONTROL SERVER" && (p.State == "GRANT" || p.State == "GRANT_WITH_GRANT_OPTION") {
-							targetHasControlServer = true
-							break
-						}
-					}
+					// Check if target has sysadmin or CONTROL SERVER (including nested)
+					targetHasSysadmin := c.hasNestedRoleMembership(targetPrincipal, "sysadmin", serverInfo)
+					targetHasControlServer := c.hasEffectivePermission(targetPrincipal, "CONTROL SERVER", serverInfo)
 
 					if targetHasSysadmin || targetHasControlServer {
 						continue
@@ -4068,6 +4424,47 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 				)
 				if err := writer.WriteEdge(edge); err != nil {
 					return err
+				}
+
+				// Also create AddMember edges to each applicable server role
+				// Matches PowerShell: user-defined roles always, fixed roles only if source is direct member (except sysadmin)
+				for _, targetRole := range serverInfo.ServerPrincipals {
+					if targetRole.TypeDescription != "SERVER_ROLE" {
+						continue
+					}
+
+					canAlterRole := false
+					if !targetRole.IsFixedRole {
+						// User-defined role: anyone with ALTER ANY SERVER ROLE can alter it
+						canAlterRole = true
+					} else if targetRole.Name != "sysadmin" {
+						// Fixed role (except sysadmin): can only add members if source is a direct member
+						for _, membership := range principal.MemberOf {
+							if membership.Name == targetRole.Name {
+								canAlterRole = true
+								break
+							}
+						}
+					}
+
+					if canAlterRole {
+						addMemberEdge := c.createEdge(
+							principal.ObjectIdentifier,
+							targetRole.ObjectIdentifier,
+							bloodhound.EdgeKinds.AddMember,
+							&bloodhound.EdgeContext{
+								SourceName:    principal.Name,
+								SourceType:    c.getServerPrincipalType(principal.TypeDescription),
+								TargetName:    targetRole.Name,
+								TargetType:    bloodhound.NodeKinds.ServerRole,
+								SQLServerName: serverInfo.SQLServerName,
+								Permission:    perm.Permission,
+							},
+						)
+						if err := writer.WriteEdge(addMemberEdge); err != nil {
+							return err
+						}
+					}
 				}
 			}
 		}
@@ -4401,6 +4798,50 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 				if err := writer.WriteEdge(edge); err != nil {
 					return err
 				}
+
+				// Also create AddMember edges to each eligible database role
+				// Matches PowerShell: user-defined roles always, fixed roles only if source is db_owner (except public)
+				for _, targetRole := range db.DatabasePrincipals {
+					if targetRole.TypeDescription != "DATABASE_ROLE" {
+						continue
+					}
+					if targetRole.ObjectIdentifier == principal.ObjectIdentifier {
+						continue // Skip self
+					}
+					if targetRole.Name == "public" {
+						continue // public role membership cannot be changed
+					}
+
+					// Check if source principal is db_owner (member of db_owner role)
+					isDbOwner := false
+					for _, role := range principal.MemberOf {
+						if role.Name == "db_owner" {
+							isDbOwner = true
+							break
+						}
+					}
+
+					// db_owner can alter any role, others can only alter user-defined roles
+					if isDbOwner || !targetRole.IsFixedRole {
+						addMemberEdge := c.createEdge(
+							principal.ObjectIdentifier,
+							targetRole.ObjectIdentifier,
+							bloodhound.EdgeKinds.AddMember,
+							&bloodhound.EdgeContext{
+								SourceName:    principal.Name,
+								SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+								TargetName:    targetRole.Name,
+								TargetType:    bloodhound.NodeKinds.DatabaseRole,
+								SQLServerName: serverInfo.SQLServerName,
+								DatabaseName:  db.Name,
+								Permission:    perm.Permission,
+							},
+						)
+						if err := writer.WriteEdge(addMemberEdge); err != nil {
+							return err
+						}
+					}
+				}
 				break
 			case "ALTER ANY APPLICATION ROLE":
 				// Create edge to the database since this permission affects ANY application role
@@ -4601,16 +5042,14 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 	return nil
 }
 
-// createEdge creates a BloodHound edge with properties
+// createEdge creates a BloodHound edge with properties.
+// Returns nil if the edge is non-traversable and IncludeNontraversableEdges is false,
+// matching PowerShell's Add-Edge behavior which drops non-traversable edges entirely.
 func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.EdgeContext) *bloodhound.Edge {
 	props := bloodhound.GetEdgeProperties(kind, ctx)
 
-	// Handle traversability based on config
-	if !c.config.IncludeNontraversableEdges && !bloodhound.IsTraversableEdge(kind) {
-		props["traversable"] = false
-	}
+	// Apply MakeInterestingEdgesTraversable overrides before filtering
 	if c.config.MakeInterestingEdgesTraversable {
-		// Make certain edges traversable for offensive use
 		switch kind {
 		case bloodhound.EdgeKinds.LinkedTo,
 			bloodhound.EdgeKinds.IsTrustedBy,
@@ -4619,6 +5058,15 @@ func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.
 			bloodhound.EdgeKinds.HasMappedCred,
 			bloodhound.EdgeKinds.HasProxyCred:
 			props["traversable"] = true
+		}
+	}
+
+	// Drop non-traversable edges when IncludeNontraversableEdges is false
+	// This matches PowerShell's Add-Edge behavior which returns early (drops the edge)
+	// when the edge is non-traversable and IncludeNontraversableEdges is disabled
+	if !c.config.IncludeNontraversableEdges {
+		if traversable, ok := props["traversable"].(bool); ok && !traversable {
+			return nil
 		}
 	}
 

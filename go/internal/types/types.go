@@ -153,6 +153,7 @@ type DBScopedCredential struct {
 	CredentialIdentity string    `json:"credentialIdentity"`
 	CreateDate         time.Time `json:"createDate"`
 	ModifyDate         time.Time `json:"modifyDate"`
+	ResolvedSID        string    `json:"resolvedSid,omitempty"` // Resolved AD SID for the credential identity
 }
 
 // LinkedServer represents a linked server configuration
@@ -177,6 +178,9 @@ type LinkedServer struct {
 	RemoteHasImpersonateAnyLogin bool   `json:"remoteHasImpersonateAnyLogin,omitempty"`
 	RemoteIsMixedMode            bool   `json:"remoteIsMixedMode,omitempty"`
 	UsesImpersonation            bool   `json:"usesImpersonation,omitempty"`
+	SourceServer                 string `json:"sourceServer,omitempty"`         // Hostname of the server this linked server was discovered from
+	Path                         string `json:"path,omitempty"`                 // Chain path for nested linked servers
+	RemoteCurrentLogin           string `json:"remoteCurrentLogin,omitempty"`   // Login used on the remote server
 }
 
 // ProxyAccount represents a SQL Agent proxy account
@@ -189,6 +193,7 @@ type ProxyAccount struct {
 	Description        string   `json:"description,omitempty"`
 	Subsystems         []string `json:"subsystems,omitempty"`
 	Logins             []string `json:"logins,omitempty"`
+	ResolvedSID        string   `json:"resolvedSid,omitempty"` // Resolved AD SID for the credential identity
 }
 
 // Credential represents a server-level credential
@@ -198,6 +203,7 @@ type Credential struct {
 	CredentialIdentity string    `json:"credentialIdentity"`
 	CreateDate         time.Time `json:"createDate"`
 	ModifyDate         time.Time `json:"modifyDate"`
+	ResolvedSID        string    `json:"resolvedSid,omitempty"` // Resolved AD SID for the credential identity
 }
 
 // DomainPrincipal represents a resolved Active Directory principal

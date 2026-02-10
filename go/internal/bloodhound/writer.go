@@ -128,8 +128,12 @@ func (w *StreamingWriter) WriteNode(node *Node) error {
 	return nil
 }
 
-// WriteEdge writes a single edge to the output
+// WriteEdge writes a single edge to the output. If edge is nil, it is silently skipped.
 func (w *StreamingWriter) WriteEdge(edge *Edge) error {
+	if edge == nil {
+		return nil
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
