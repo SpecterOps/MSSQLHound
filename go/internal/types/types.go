@@ -178,6 +178,9 @@ type LinkedServer struct {
 	RemoteHasImpersonateAnyLogin bool   `json:"remoteHasImpersonateAnyLogin,omitempty"`
 	RemoteIsMixedMode            bool   `json:"remoteIsMixedMode,omitempty"`
 	UsesImpersonation            bool   `json:"usesImpersonation,omitempty"`
+	SourceServer                 string `json:"sourceServer,omitempty"`         // Hostname of the server this linked server was discovered from
+	Path                         string `json:"path,omitempty"`                 // Chain path for nested linked servers
+	RemoteCurrentLogin           string `json:"remoteCurrentLogin,omitempty"`   // Login used on the remote server
 }
 
 // ProxyAccount represents a SQL Agent proxy account
