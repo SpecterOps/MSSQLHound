@@ -129,6 +129,21 @@ Switch/Flag:
     - On: Try to install the ActiveDirectory module for PowerShell if it is not already installed
     - Off (default): Do not try to install the ActiveDirectory module for PowerShell if it is not already installed.  Rely on DirectoryServices, ADSISearcher, DirectorySearcher, and NTAccount.Translate() for object resolution.
 
+.PARAMETER SkipPrivateAddress
+Switch/Flag:
+    - On: Skip the private IP address check when resolving domains. Use this when the DC has a public IP but you still want to resolve SIDs.
+    - Off (default): Only resolve SIDs for domains that resolve to private IP addresses (RFC 1918).
+
+.PARAMETER ScanAllComputers
+Switch/Flag:
+    - On: In addition to computers with MSSQL SPNs, also attempt MSSQL collection against ALL other domain computers. Useful for finding SQL Server instances without registered SPNs.
+    - Off (default): Only scan computers with MSSQLSvc SPNs registered in Active Directory.
+
+.PARAMETER SkipADNodeCreation
+Switch/Flag:
+    - On: Skip creating User, Group, and Computer nodes (useful when you already have these from BloodHound/SharpHound). Edges to these objects will still be created and matched by ObjectIdentifier/SID.
+    - Off (default): Create all nodes including User, Group, and Computer nodes.
+
 .PARAMETER LinkedServerTimeout
 Give up enumerating linked servers after X seconds
 
@@ -173,6 +188,18 @@ Enumerate SPNS in the Active Directory domain for current logon context, then co
 .EXAMPLE
 .\MSSQLHound.ps1 -IncludeNontraversableEdges
 Enumerate SPNS in the Active Directory domain for current logon context, then collect data from each server with an SPN, including non-traversable edges
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanAllComputers
+Enumerate MSSQL SPNs and also attempt collection against all other domain computers (useful for finding SQL instances without registered SPNs)
+
+.EXAMPLE
+.\MSSQLHound.ps1 -SkipADNodeCreation
+Enumerate SPNs and collect data, but skip creating User, Group, and Computer nodes (useful when you already have these from BloodHound/SharpHound)
+
+.EXAMPLE
+.\MSSQLHound.ps1 -ScanAllComputers -SkipADNodeCreation
+Scan all domain computers for MSSQL instances while skipping AD node creation to avoid conflicts with existing BloodHound data
 
 .LINK
 https://github.com/SpecterOps/MSSQLHound
@@ -259,6 +286,16 @@ param(
 
     [switch]$InstallADModule,#=$true,
 
+    # Skip private IP address validation for domain resolution
+    # Use this when the DC has a public IP but you still want to resolve SIDs
+    [switch]$SkipPrivateAddress,
+
+    # Scan all domain computers for MSSQL instances, not just those with SPNs
+    [switch]$ScanAllComputers,
+
+    # Skip creating AD principal nodes (User, Group, Computer) - useful when using with BloodHound/SharpHound data
+    [switch]$SkipADNodeCreation,
+
     [int]$LinkedServerTimeout = 300, # seconds
 
     # File size limit to stop enumeration (e.g., "1GB", "500MB", "2.5GB")
@@ -281,6 +318,7 @@ $script:ScriptVersion = "1.0"
 $script:ScriptName = "MSSQLHound"
 $script:Domain = $Domain
 $script:DomainController = $DomainController
+$script:SkipPrivateAddress = $SkipPrivateAddress
 
 # Handle version request
 if ($Version) {
@@ -4097,7 +4135,12 @@ function Test-DomainResolution {
                 }
             }
             
-            $isValid = $privateIPs.Count -gt 0
+            # If SkipPrivateAddress is set, consider valid if any IPs resolve (private or public)
+            if ($script:SkipPrivateAddress) {
+                $isValid = ($privateIPs.Count -gt 0) -or ($publicIPs.Count -gt 0)
+            } else {
+                $isValid = $privateIPs.Count -gt 0
+            }
             
             # Cache the result
             $script:DomainResolutionCache[$domainLower] = @{
@@ -4108,7 +4151,12 @@ function Test-DomainResolution {
             }
             
             if ($isValid) {
-                Write-Verbose "Domain '$Domain' resolves to private IP(s): $($privateIPs -join ', ')"
+                if ($privateIPs.Count -gt 0) {
+                    Write-Verbose "Domain '$Domain' resolves to private IP(s): $($privateIPs -join ', ')"
+                }
+                if ($publicIPs.Count -gt 0 -and $script:SkipPrivateAddress) {
+                    Write-Verbose "Domain '$Domain' resolves to public IP(s): $($publicIPs -join ', ') - allowed due to -SkipPrivateAddress"
+                }
             } else {
                 Write-Verbose "Domain '$Domain' resolves to public IP(s): $($publicIPs -join ', ') - skipping"
             }
@@ -5189,6 +5237,85 @@ function Get-MSSQLServersFromSPNs {
     }
     catch {
         Write-Error "Error collecting MSSQL SPNs: $_"
+        return @()
+    }
+}
+
+# Function to collect all domain computers for MSSQL scanning
+function Get-MSSQLServersFromDomainComputers {
+    param (
+        [string]$DomainName = $script:Domain
+    )
+        
+    try {
+        Write-Host "Collecting additional domain computers for MSSQL scanning..." -ForegroundColor Cyan
+        Write-Host "Note: This will also attempt to connect to domain computers without MSSQL SPNs on port 1433" -ForegroundColor Yellow
+        
+        # Search for all computer objects in the domain
+        $searcher = [adsisearcher]"(objectClass=computer)"
+        if ($DomainName) {
+            $searcher.SearchRoot = [adsi]"LDAP://$DomainName"
+        }
+        $searcher.PageSize = 1000
+        $searcher.PropertiesToLoad.AddRange(@('dNSHostName', 'name', 'distinguishedName', 'objectSid', 'operatingSystem'))
+        
+        $results = $searcher.FindAll()
+        
+        Write-Host "`nFound $($results.Count) domain computers" -ForegroundColor Cyan
+        
+        $computerCount = 0
+        foreach ($result in $results) {
+            $computerCount++
+            
+            # Get computer name - prefer dNSHostName, fall back to name
+            $computerName = $null
+            if ($result.Properties['dnshostname'] -and $result.Properties['dnshostname'][0]) {
+                $computerName = $result.Properties['dnshostname'][0]
+            } elseif ($result.Properties['name'] -and $result.Properties['name'][0]) {
+                $computerName = $result.Properties['name'][0]
+                # Append domain if we have it
+                if ($DomainName) {
+                    $computerName = "$computerName.$DomainName"
+                }
+            }
+            
+            if (-not $computerName) {
+                continue
+            }
+            
+            # Get computer SID
+            $computerSid = $null
+            if ($result.Properties['objectsid'] -and $result.Properties['objectsid'][0]) {
+                $computerSid = (New-Object System.Security.Principal.SecurityIdentifier($result.Properties['objectsid'][0], 0)).Value
+            }
+            
+            if (-not $computerSid) {
+                Write-Verbose "Skipping $computerName - could not resolve SID"
+                continue
+            }
+            
+            # Create ObjectIdentifier using default port 1433
+            $objectIdentifier = "${computerSid}:1433"
+            
+            # Create server object if not already present
+            if (-not $script:serversToProcess.ContainsKey($objectIdentifier)) {
+                $script:serversToProcess[$objectIdentifier] = [PSCustomObject]@{
+                    ObjectIdentifier = $objectIdentifier
+                    ServerName = $computerName
+                    Port = 1433
+                    InstanceName = $null
+                    ServiceAccountSIDs = @()
+                    ServicePrincipalNames = @()
+                    ServerFullName = "${computerName}:1433"
+                }
+                Write-Verbose "Added computer: $computerName"
+            }
+        }
+        
+        Write-Host "Total servers to scan (SPNs + additional computers): $($script:serversToProcess.Count)" -ForegroundColor Green
+    }
+    catch {
+        Write-Error "Error collecting domain computers: $_"
         return @()
     }
 }
@@ -6892,6 +7019,29 @@ function Process-ServerInstance {
         catch {
             Write-Host "Failed to connect to $($serverString): $($_.Exception.Message)" -ForegroundColor Red
             $connectionFailed = $true
+        }
+    }
+
+    # If connection failed and server has no MSSQL SPN, skip creating nodes/edges for this server
+    if ($connectionFailed) {
+        # Check if this server was discovered via SPN (has ServicePrincipalNames from stored info)
+        $serverObjectIdentifier = "$serverSid`:$Port"
+        if ($instanceName -and $instanceName -ne "MSSQLSERVER") {
+            $serverObjectIdentifier = "$serverSid`:$instanceName"
+        }
+        
+        $storedServerInfo = $null
+        if ($script:serversToProcess.ContainsKey($serverObjectIdentifier)) {
+            $storedServerInfo = $script:serversToProcess[$serverObjectIdentifier]
+        }
+        
+        $hasSPN = $storedServerInfo -and $storedServerInfo.ServicePrincipalNames -and $storedServerInfo.ServicePrincipalNames.Count -gt 0
+        
+        if (-not $hasSPN) {
+            Write-Host "Skipping node/edge creation for $serverName - connection failed and no MSSQL SPN registered" -ForegroundColor Yellow
+            return $null
+        } else {
+            Write-Host "Connection failed but server has MSSQL SPN - creating nodes/edges from SPN data" -ForegroundColor Yellow
         }
     }
 
@@ -8764,178 +8914,190 @@ ORDER BY p.proxy_id
             }
         }
 
-        # Create Computer node for server
-        $computer = Resolve-DomainPrincipal $serverHostname
-        if ($computer.SID) {
-            Add-Node -Id $computer.ObjectIdentifier `
-            -Kinds @("Computer", "Base") `
-            -Properties @{
-                name = $computer.Name
-                distinguishedName = $computer.DistinguishedName
-                DNSHostName = $computer.DNSHostName
-                domain = $computer.Domain
-                isDomainPrincipal = $computer.IsDomainPrincipal
-                isEnabled = $computer.Enabled
-                SAMAccountName = $computer.SamAccountName
-                SID = $computer.SID
-                userPrincipalName = $computer.UserPrincipalName
+        # Create Computer node for server (skip if SkipADNodeCreation is set)
+        if (-not $SkipADNodeCreation) {
+            $computer = Resolve-DomainPrincipal $serverHostname
+            if ($computer.SID) {
+                Add-Node -Id $computer.ObjectIdentifier `
+                -Kinds @("Computer", "Base") `
+                -Properties @{
+                    name = $computer.Name
+                    distinguishedName = $computer.DistinguishedName
+                    DNSHostName = $computer.DNSHostName
+                    domain = $computer.Domain
+                    isDomainPrincipal = $computer.IsDomainPrincipal
+                    isEnabled = $computer.Enabled
+                    SAMAccountName = $computer.SamAccountName
+                    SID = $computer.SID
+                    userPrincipalName = $computer.UserPrincipalName
+                }
             }
         }
 
-        # Create Base nodes for service accounts
-        foreach ($serviceAccount in $serverInfo.ServiceAccounts) {
-            if ($serviceAccount.ObjectIdentifier) {
-                Add-Node -Id $serviceAccount.ObjectIdentifier `
-                        -Kinds @($serviceAccount.Type, "Base") `
-                        -Properties @{
-                            name = $serviceAccount.Name
-                            distinguishedName = $serviceAccount.DistinguishedName
-                            DNSHostName = $serviceAccount.DNSHostName
-                            domain = $serviceAccount.Domain
-                            isDomainPrincipal = $serviceAccount.IsDomainPrincipal
-                            isEnabled = $serviceAccount.Enabled
-                            SAMAccountName = $serviceAccount.SamAccountName
-                            SID = $serviceAccount.SID
-                            userPrincipalName = $serviceAccount.UserPrincipalName
-                        }
+        # Create Base nodes for service accounts (skip if SkipADNodeCreation is set)
+        if (-not $SkipADNodeCreation) {
+            foreach ($serviceAccount in $serverInfo.ServiceAccounts) {
+                if ($serviceAccount.ObjectIdentifier) {
+                    Add-Node -Id $serviceAccount.ObjectIdentifier `
+                            -Kinds @($serviceAccount.Type, "Base") `
+                            -Properties @{
+                                name = $serviceAccount.Name
+                                distinguishedName = $serviceAccount.DistinguishedName
+                                DNSHostName = $serviceAccount.DNSHostName
+                                domain = $serviceAccount.Domain
+                                isDomainPrincipal = $serviceAccount.IsDomainPrincipal
+                                isEnabled = $serviceAccount.Enabled
+                                SAMAccountName = $serviceAccount.SamAccountName
+                                SID = $serviceAccount.SID
+                                userPrincipalName = $serviceAccount.UserPrincipalName
+                            }
+                }
             }
         }
 
-        # Create Base nodes for credentials
+        # Create Base nodes for credentials (skip if SkipADNodeCreation is set)
         Write-Host "Creating domain principal nodes"
         $createdCredentialBaseNodes = @{}
-        foreach ($credential in $serverInfo.Credentials) {
-            if ($credential.IsDomainPrincipal -and $credential.ResolvedSID -and 
-                -not $createdCredentialBaseNodes.ContainsKey($credential.ResolvedSID)) {
-                              
-                # Determine node type based on credential identity
-                $nodeKind = $credential.ResolvedType
-                
-                Add-Node -Id $credential.ResolvedSID `
-                        -Kinds @($nodeKind, "Base") `
-                        -Properties @{
-                            name = $credential.ResolvedPrincipal.Name
-                            distinguishedName = $credential.ResolvedPrincipal.DistinguishedName
-                            DNSHostName = $credential.ResolvedPrincipal.DNSHostName
-                            domain = $credential.ResolvedPrincipal.Domain
-                            isDomainPrincipal = $credential.ResolvedPrincipal.IsDomainPrincipal
-                            isEnabled = $credential.ResolvedPrincipal.Enabled
-                            SAMAccountName = $credential.ResolvedPrincipal.SamAccountName
-                            SID = $credential.ResolvedPrincipal.SID
-                            userPrincipalName = $credential.ResolvedPrincipal.UserPrincipalName
-                        }
-                
-                $createdCredentialBaseNodes[$credential.ResolvedSID] = $true
-            }
-        }
-
-        # Create Base nodes for database-scoped credentials
-        foreach ($db in $serverInfo.Databases) {
-            if ($db.PSObject.Properties.Name -contains "DatabaseScopedCredentials") {
-                foreach ($credential in $db.DatabaseScopedCredentials) {
-                    if ($credential.IsDomainPrincipal -and $credential.ResolvedSID -and 
-                        -not $createdCredentialBaseNodes.ContainsKey($credential.ResolvedSID)) {
-                        
-                        # Determine node type based on credential identity
-                        $nodeKind = $credential.ResolvedType
-                        
-                        Add-Node -Id $credential.ResolvedSID `
-                                -Kinds @($nodeKind, "Base") `
-                                -Properties @{
-                                    name = $credential.ResolvedPrincipal.Name
-                                    distinguishedName = $credential.ResolvedPrincipal.DistinguishedName
-                                    DNSHostName = $credential.ResolvedPrincipal.DNSHostName
-                                    domain = $credential.ResolvedPrincipal.Domain
-                                    isDomainPrincipal = $credential.ResolvedPrincipal.IsDomainPrincipal
-                                    isEnabled = $credential.ResolvedPrincipal.Enabled
-                                    SAMAccountName = $credential.ResolvedPrincipal.SamAccountName
-                                    SID = $credential.ResolvedPrincipal.SID
-                                    userPrincipalName = $credential.ResolvedPrincipal.UserPrincipalName
-                                }            
-
-                        $createdCredentialBaseNodes[$credential.ResolvedSID] = $true
-                    }
-                }
-            }
-        }
-
-        # Create nodes for accounts with logins
-        foreach ($principal in $serverInfo.ServerPrincipals) {
-            if (($principal.TypeDescription -eq "WINDOWS_LOGIN" -or $principal.TypeDescription -eq "WINDOWS_GROUP") -and 
-                $principal.SecurityIdentifier) {
-                
-                # Check conditions for creating Base node
-                $loginEnabled = $principal.IsDisabled -ne "1"
-                $permissionToConnect = $false
-                
-                foreach ($perm in $principal.Permissions) {
-                    if ($perm.Permission -eq "CONNECT SQL" -and $perm.State -eq "GRANT") {
-                        $permissionToConnect = $true
-                        break
-                    }
-                }
-                
-                if ($permissionToConnect -and $loginEnabled) {
-
-                    $adObject = Resolve-DomainPrincipal $principal.Name.Split('\')[1]
-                    if (-not $adObject.SID) {
-                        $adObject = Resolve-DomainPrincipal $principal.SecurityIdentifier
-                    }
-
-                    # Make sure this is an AD object with a domain SID
-                    if ($adObject.SID -and $adObject.SID -like "S-1-5-21-*") {
-
-                        Add-Node -Id $adObject.SID `
-                        -Kinds @($adObject.Type, "Base") `
-                        -Properties @{
-                            name = $adObject.Name
-                            distinguishedName = $adObject.DistinguishedName
-                            DNSHostName = $adObject.DNSHostName
-                            domain = $adObject.Domain
-                            isDomainPrincipal = $adObject.IsDomainPrincipal
-                            isEnabled = $adObject.Enabled
-                            SAMAccountName = $adObject.SamAccountName
-                            SID = $adObject.SID
-                            userPrincipalName = $adObject.UserPrincipalName
-                        }
-                    }
-                }
-            }
-        }
-
-        # Create nodes for local groups with SQL logins
-        if ($serverInfo.PSObject.Properties.Name -contains "LocalGroupsWithLogins") {
-            foreach ($groupObjId in $serverInfo.LocalGroupsWithLogins.Keys) {
-                $groupInfo = $serverInfo.LocalGroupsWithLogins[$groupObjId]
-                $groupPrincipal = $groupInfo.Principal
-                
-                # Create Group node for local machine SID and well-known local SIDs
-                if ($groupPrincipal.SIDResolved) {
-                    $groupObjectId = "$serverFQDN-$($groupPrincipal.SIDResolved)"
-
-                    Add-Node -Id $groupObjectId `
-                            -Kinds @("Group", "Base") `
-                            -Properties @{
-                                name = $groupPrincipal.Name.Split('\')[-1]
-                            }
-                }
-                
-                # Create Base nodes for domain members (already resolved)
-                foreach ($member in $groupInfo.Members) {
+        if (-not $SkipADNodeCreation) {
+            foreach ($credential in $serverInfo.Credentials) {
+                if ($credential.IsDomainPrincipal -and $credential.ResolvedSID -and 
+                    -not $createdCredentialBaseNodes.ContainsKey($credential.ResolvedSID)) {
+                                  
+                    # Determine node type based on credential identity
+                    $nodeKind = $credential.ResolvedType
                     
-                    Add-Node -Id $member.SID `
-                            -Kinds @($member.Type, "Base") `
+                    Add-Node -Id $credential.ResolvedSID `
+                            -Kinds @($nodeKind, "Base") `
                             -Properties @{
-                                name = $member.Name
-                                distinguishedName = $member.DistinguishedName
-                                DNSHostName = $member.DNSHostName
-                                domain = $member.Domain
-                                isDomainPrincipal = $member.IsDomainPrincipal
-                                isEnabled = $member.Enabled
-                                SAMAccountName = $member.SamAccountName
-                                SID = $member.SID
-                                userPrincipalName = $member.UserPrincipalName
+                                name = $credential.ResolvedPrincipal.Name
+                                distinguishedName = $credential.ResolvedPrincipal.DistinguishedName
+                                DNSHostName = $credential.ResolvedPrincipal.DNSHostName
+                                domain = $credential.ResolvedPrincipal.Domain
+                                isDomainPrincipal = $credential.ResolvedPrincipal.IsDomainPrincipal
+                                isEnabled = $credential.ResolvedPrincipal.Enabled
+                                SAMAccountName = $credential.ResolvedPrincipal.SamAccountName
+                                SID = $credential.ResolvedPrincipal.SID
+                                userPrincipalName = $credential.ResolvedPrincipal.UserPrincipalName
                             }
+                    
+                    $createdCredentialBaseNodes[$credential.ResolvedSID] = $true
+                }
+            }
+        }
+
+        # Create Base nodes for database-scoped credentials (skip if SkipADNodeCreation is set)
+        if (-not $SkipADNodeCreation) {
+            foreach ($db in $serverInfo.Databases) {
+                if ($db.PSObject.Properties.Name -contains "DatabaseScopedCredentials") {
+                    foreach ($credential in $db.DatabaseScopedCredentials) {
+                        if ($credential.IsDomainPrincipal -and $credential.ResolvedSID -and 
+                            -not $createdCredentialBaseNodes.ContainsKey($credential.ResolvedSID)) {
+                            
+                            # Determine node type based on credential identity
+                            $nodeKind = $credential.ResolvedType
+                            
+                            Add-Node -Id $credential.ResolvedSID `
+                                    -Kinds @($nodeKind, "Base") `
+                                    -Properties @{
+                                        name = $credential.ResolvedPrincipal.Name
+                                        distinguishedName = $credential.ResolvedPrincipal.DistinguishedName
+                                        DNSHostName = $credential.ResolvedPrincipal.DNSHostName
+                                        domain = $credential.ResolvedPrincipal.Domain
+                                        isDomainPrincipal = $credential.ResolvedPrincipal.IsDomainPrincipal
+                                        isEnabled = $credential.ResolvedPrincipal.Enabled
+                                        SAMAccountName = $credential.ResolvedPrincipal.SamAccountName
+                                        SID = $credential.ResolvedPrincipal.SID
+                                        userPrincipalName = $credential.ResolvedPrincipal.UserPrincipalName
+                                    }            
+
+                            $createdCredentialBaseNodes[$credential.ResolvedSID] = $true
+                        }
+                    }
+                }
+            }
+        }
+
+        # Create nodes for accounts with logins (skip if SkipADNodeCreation is set)
+        if (-not $SkipADNodeCreation) {
+            foreach ($principal in $serverInfo.ServerPrincipals) {
+                if (($principal.TypeDescription -eq "WINDOWS_LOGIN" -or $principal.TypeDescription -eq "WINDOWS_GROUP") -and 
+                    $principal.SecurityIdentifier) {
+                    
+                    # Check conditions for creating Base node
+                    $loginEnabled = $principal.IsDisabled -ne "1"
+                    $permissionToConnect = $false
+                    
+                    foreach ($perm in $principal.Permissions) {
+                        if ($perm.Permission -eq "CONNECT SQL" -and $perm.State -eq "GRANT") {
+                            $permissionToConnect = $true
+                            break
+                        }
+                    }
+                    
+                    if ($permissionToConnect -and $loginEnabled) {
+
+                        $adObject = Resolve-DomainPrincipal $principal.Name.Split('\')[1]
+                        if (-not $adObject.SID) {
+                            $adObject = Resolve-DomainPrincipal $principal.SecurityIdentifier
+                        }
+
+                        # Make sure this is an AD object with a domain SID
+                        if ($adObject.SID -and $adObject.SID -like "S-1-5-21-*") {
+
+                            Add-Node -Id $adObject.SID `
+                            -Kinds @($adObject.Type, "Base") `
+                            -Properties @{
+                                name = $adObject.Name
+                                distinguishedName = $adObject.DistinguishedName
+                                DNSHostName = $adObject.DNSHostName
+                                domain = $adObject.Domain
+                                isDomainPrincipal = $adObject.IsDomainPrincipal
+                                isEnabled = $adObject.Enabled
+                                SAMAccountName = $adObject.SamAccountName
+                                SID = $adObject.SID
+                                userPrincipalName = $adObject.UserPrincipalName
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # Create nodes for local groups with SQL logins (skip if SkipADNodeCreation is set)
+        if (-not $SkipADNodeCreation) {
+            if ($serverInfo.PSObject.Properties.Name -contains "LocalGroupsWithLogins") {
+                foreach ($groupObjId in $serverInfo.LocalGroupsWithLogins.Keys) {
+                    $groupInfo = $serverInfo.LocalGroupsWithLogins[$groupObjId]
+                    $groupPrincipal = $groupInfo.Principal
+                    
+                    # Create Group node for local machine SID and well-known local SIDs
+                    if ($groupPrincipal.SIDResolved) {
+                        $groupObjectId = "$serverFQDN-$($groupPrincipal.SIDResolved)"
+
+                        Add-Node -Id $groupObjectId `
+                                -Kinds @("Group", "Base") `
+                                -Properties @{
+                                    name = $groupPrincipal.Name.Split('\')[-1]
+                                }
+                    }
+                    
+                    # Create Base nodes for domain members (already resolved)
+                    foreach ($member in $groupInfo.Members) {
+                        
+                        Add-Node -Id $member.SID `
+                                -Kinds @($member.Type, "Base") `
+                                -Properties @{
+                                    name = $member.Name
+                                    distinguishedName = $member.DistinguishedName
+                                    DNSHostName = $member.DNSHostName
+                                    domain = $member.Domain
+                                    isDomainPrincipal = $member.IsDomainPrincipal
+                                    isEnabled = $member.Enabled
+                                    SAMAccountName = $member.SamAccountName
+                                    SID = $member.SID
+                                    userPrincipalName = $member.UserPrincipalName
+                                }
+                    }
                 }
             }
         }
@@ -9938,12 +10100,14 @@ ORDER BY p.proxy_id
                     $groupObjectId = "$serverFQDN-$($groupPrincipal.SecurityIdentifier)"
                     [void]$principalsWithLogin.Add($groupObjectId)
 
-                    # Add node so we don't get Unknown kind
-                    Add-Node -Id $groupObjectId `
-                            -Kinds $("Group", "Base") `
-                            -Properties @{
-                                name = $groupPrincipal.Name.Split('\')[-1]
-                            }
+                    # Add node so we don't get Unknown kind (skip if SkipADNodeCreation is set)
+                    if (-not $SkipADNodeCreation) {
+                        Add-Node -Id $groupObjectId `
+                                -Kinds $("Group", "Base") `
+                                -Properties @{
+                                    name = $groupPrincipal.Name.Split('\')[-1]
+                                }
+                    }
 
                     Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $groupObjectId } -TargetPrincipal $groupPrincipal -SourceType "Group" -TargetType "MSSQL_Login"
 
@@ -9972,12 +10136,14 @@ ORDER BY p.proxy_id
 
                     $authedUsersObjectId = "$script:Domain`-S-1-5-11"
 
-                    # Add node for Authenticated Users so we don't get Unknown kind
-                    Add-Node -Id $authedUsersObjectId `
-                            -Kinds $("Group", "Base") `
-                            -Properties @{
-                                name = "AUTHENTICATED USERS@$($script:Domain)"
-                            }
+                    # Add node for Authenticated Users so we don't get Unknown kind (skip if SkipADNodeCreation is set)
+                    if (-not $SkipADNodeCreation) {
+                        Add-Node -Id $authedUsersObjectId `
+                                -Kinds $("Group", "Base") `
+                                -Properties @{
+                                    name = "AUTHENTICATED USERS@$($script:Domain)"
+                                }
+                    }
                     
                     Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $authedUsersObjectId } -TargetPrincipal $principal -SourceType "Group" -TargetType "MSSQL_Login"
                     Add-Edge -Source $authedUsersObjectId `
@@ -9999,20 +10165,22 @@ ORDER BY p.proxy_id
                         # Don't create edges from non-domain objects like user-defined local groups and users
                         if ($domainPrincipal.SID) {
 
-                            # Add node so we don't get Unknown kind
-                            Add-Node -Id $domainPrincipal.SID `
-                                    -Kinds $($domainPrincipal.Type, "Base") `
-                                    -Properties @{
-                                        name = $domainPrincipal.Name
-                                        distinguishedName = $domainPrincipal.DistinguishedName
-                                        DNSHostName = $domainPrincipal.DNSHostName
-                                        domain = $domainPrincipal.Domain
-                                        isDomainPrincipal = $domainPrincipal.IsDomainPrincipal
-                                        isEnabled = $domainPrincipal.Enabled
-                                        SAMAccountName = $domainPrincipal.SamAccountName
-                                        SID = $domainPrincipal.SID
-                                        userPrincipalName = $domainPrincipal.UserPrincipalName
-                                    }
+                            # Add node so we don't get Unknown kind (skip if SkipADNodeCreation is set)
+                            if (-not $SkipADNodeCreation) {
+                                Add-Node -Id $domainPrincipal.SID `
+                                        -Kinds $($domainPrincipal.Type, "Base") `
+                                        -Properties @{
+                                            name = $domainPrincipal.Name
+                                            distinguishedName = $domainPrincipal.DistinguishedName
+                                            DNSHostName = $domainPrincipal.DNSHostName
+                                            domain = $domainPrincipal.Domain
+                                            isDomainPrincipal = $domainPrincipal.IsDomainPrincipal
+                                            isEnabled = $domainPrincipal.Enabled
+                                            SAMAccountName = $domainPrincipal.SamAccountName
+                                            SID = $domainPrincipal.SID
+                                            userPrincipalName = $domainPrincipal.UserPrincipalName
+                                        }
+                            }
 
                             # Track this principal as having a login
                             [void]$principalsWithLogin.Add($principal.SecurityIdentifier)
@@ -10034,13 +10202,15 @@ ORDER BY p.proxy_id
                         # Track this principal as having a login
                         [void]$principalsWithLogin.Add($groupObjectId)
 
-                        # Add node so we don't get Unknown kind
-                        Add-Node -Id $groupObjectId `
-                                -Kinds $("Group", "Base") `
-                                -Properties @{
-                                    name = $principal.Name
-                                    isActiveDirectoryPrincipal = $principal.IsActiveDirectoryPrincipal
-                                }
+                        # Add node so we don't get Unknown kind (skip if SkipADNodeCreation is set)
+                        if (-not $SkipADNodeCreation) {
+                            Add-Node -Id $groupObjectId `
+                                    -Kinds $("Group", "Base") `
+                                    -Properties @{
+                                        name = $principal.Name
+                                        isActiveDirectoryPrincipal = $principal.IsActiveDirectoryPrincipal
+                                    }
+                        }
 
                         # MSSQL_HasLogin edge
                         Set-EdgeContext -SourcePrincipal @{ ObjectIdentifier = $groupObjectId } -TargetPrincipal $principal -SourceType "Group" -TargetType "MSSQL_Login"
@@ -10146,12 +10316,18 @@ if ($ServerInstance) {
     Write-Host "Added $($listServers.Count) servers from list" -ForegroundColor Green
 
 } else {
-    # Collect MSSQL SPNs from Active Directory if domain is available
+    # Collect servers from Active Directory if domain is available
     try {
+        # Always collect MSSQL SPNs first
         Get-MSSQLServersFromSPNs
+        
+        # If -ScanAllComputers is specified, also add all other domain computers
+        if ($ScanAllComputers) {
+            Get-MSSQLServersFromDomainComputers
+        }
     }
     catch {
-        Write-Warning "Could not collect MSSQL SPNs from Active Directory: $_"
+        Write-Warning "Could not collect servers from Active Directory: $_"
     }
 }
 
