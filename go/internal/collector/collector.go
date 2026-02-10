@@ -846,6 +846,9 @@ connected:
 	// Resolve service account SIDs via LDAP if they don't have SIDs
 	c.resolveServiceAccountSIDsViaLDAP(serverInfo)
 
+	// Resolve credential identity SIDs via LDAP for credential edges
+	c.resolveCredentialSIDsViaLDAP(serverInfo)
+
 	// Enumerate local Windows groups that have SQL logins and their domain members
 	c.enumerateLocalGroupMembers(serverInfo)
 
@@ -1422,6 +1425,66 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 				sa.Name = principal.Name
 			}
 			fmt.Printf("  Resolved service account SID for %s: %s\n", sa.Name, sa.SID)
+		}
+	}
+}
+
+// resolveCredentialSIDsViaLDAP resolves credential identities to AD SIDs
+// This matches PowerShell's Resolve-DomainPrincipal behavior for credential edges
+func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo) {
+	if c.config.Domain == "" {
+		return
+	}
+
+	// Helper to resolve a credential identity (domain\user or user@domain) to a SID
+	resolveIdentity := func(identity string) string {
+		if !strings.Contains(identity, "\\") && !strings.Contains(identity, "@") {
+			return ""
+		}
+		adClient := ad.NewClient(c.config.Domain, c.config.DomainController, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword)
+		principal, err := adClient.ResolveName(identity)
+		adClient.Close()
+		if err != nil || principal == nil || principal.SID == "" {
+			return ""
+		}
+		return principal.SID
+	}
+
+	// Resolve server-level credentials (mapped via ALTER LOGIN ... WITH CREDENTIAL)
+	for i := range serverInfo.ServerPrincipals {
+		if serverInfo.ServerPrincipals[i].MappedCredential != nil {
+			cred := serverInfo.ServerPrincipals[i].MappedCredential
+			if sid := resolveIdentity(cred.CredentialIdentity); sid != "" {
+				cred.ResolvedSID = sid
+				c.logVerbose("  Resolved credential %s -> %s", cred.CredentialIdentity, sid)
+			}
+		}
+	}
+
+	// Resolve standalone credentials (for HasMappedCred edges)
+	for i := range serverInfo.Credentials {
+		if sid := resolveIdentity(serverInfo.Credentials[i].CredentialIdentity); sid != "" {
+			serverInfo.Credentials[i].ResolvedSID = sid
+			c.logVerbose("  Resolved credential %s -> %s", serverInfo.Credentials[i].CredentialIdentity, sid)
+		}
+	}
+
+	// Resolve proxy account credentials
+	for i := range serverInfo.ProxyAccounts {
+		if sid := resolveIdentity(serverInfo.ProxyAccounts[i].CredentialIdentity); sid != "" {
+			serverInfo.ProxyAccounts[i].ResolvedSID = sid
+			c.logVerbose("  Resolved proxy credential %s -> %s", serverInfo.ProxyAccounts[i].CredentialIdentity, sid)
+		}
+	}
+
+	// Resolve database-scoped credentials
+	for i := range serverInfo.Databases {
+		for j := range serverInfo.Databases[i].DBScopedCredentials {
+			cred := &serverInfo.Databases[i].DBScopedCredentials[j]
+			if sid := resolveIdentity(cred.CredentialIdentity); sid != "" {
+				cred.ResolvedSID = sid
+				c.logVerbose("  Resolved DB scoped credential %s -> %s", cred.CredentialIdentity, sid)
+			}
 		}
 	}
 }
@@ -2929,12 +2992,17 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 			continue
 		}
 
-		// HasMappedCred: Login -> AD Principal (based on credential identity)
-		// Note: In a real implementation, we'd resolve the credential identity to a SID
-		// For now, we create an edge using the credential identity as the target
+		// Use ResolvedSID if available, fall back to CredentialIdentity
+		// PowerShell uses the resolved SID as the edge target
+		targetID := cred.CredentialIdentity
+		if cred.ResolvedSID != "" {
+			targetID = cred.ResolvedSID
+		}
+
+		// HasMappedCred: Login -> AD Principal (resolved SID or credential identity)
 		edge := c.createEdge(
 			principal.ObjectIdentifier,
-			cred.CredentialIdentity, // This would ideally be the resolved SID
+			targetID,
 			bloodhound.EdgeKinds.HasMappedCred,
 			&bloodhound.EdgeContext{
 				SourceName:    principal.Name,
@@ -2975,10 +3043,16 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 				continue
 			}
 
-			// HasProxyCred: Login -> AD Principal (credential identity)
+			// Use ResolvedSID if available, fall back to CredentialIdentity
+			proxyTargetID := proxy.CredentialIdentity
+			if proxy.ResolvedSID != "" {
+				proxyTargetID = proxy.ResolvedSID
+			}
+
+			// HasProxyCred: Login -> AD Principal (resolved SID or credential identity)
 			edge := c.createEdge(
 				loginObjectID,
-				proxy.CredentialIdentity, // This would ideally be the resolved SID
+				proxyTargetID,
 				bloodhound.EdgeKinds.HasProxyCred,
 				&bloodhound.EdgeContext{
 					SourceName:    loginName,
@@ -3006,10 +3080,16 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 				continue
 			}
 
-			// HasDBScopedCred: Database -> AD Principal (credential identity)
+			// Use ResolvedSID if available, fall back to CredentialIdentity
+			dbCredTargetID := cred.CredentialIdentity
+			if cred.ResolvedSID != "" {
+				dbCredTargetID = cred.ResolvedSID
+			}
+
+			// HasDBScopedCred: Database -> AD Principal (resolved SID or credential identity)
 			edge := c.createEdge(
 				db.ObjectIdentifier,
-				cred.CredentialIdentity, // This would ideally be the resolved SID
+				dbCredTargetID,
 				bloodhound.EdgeKinds.HasDBScopedCred,
 				&bloodhound.EdgeContext{
 					SourceName:    db.Name,
@@ -3451,6 +3531,94 @@ func (c *Collector) createFixedRoleEdges(writer *bloodhound.StreamingWriter, ser
 						return err
 					}
 				}
+			}
+		case "##MS_LoginManager##":
+			// SQL Server 2022+ fixed role: has ALTER ANY LOGIN permission
+			edge := c.createEdge(
+				principal.ObjectIdentifier,
+				serverInfo.ObjectIdentifier,
+				bloodhound.EdgeKinds.AlterAnyLogin,
+				&bloodhound.EdgeContext{
+					SourceName:    principal.Name,
+					SourceType:    bloodhound.NodeKinds.ServerRole,
+					TargetName:    serverInfo.ServerName,
+					TargetType:    bloodhound.NodeKinds.Server,
+					SQLServerName: serverInfo.SQLServerName,
+					IsFixedRole:   true,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
+			}
+
+			// Also create ChangePassword edges to SQL logins (same logic as ALTER ANY LOGIN)
+			for _, targetPrincipal := range serverInfo.ServerPrincipals {
+				if targetPrincipal.TypeDescription != "SQL_LOGIN" {
+					continue
+				}
+				if targetPrincipal.Name == "sa" {
+					continue
+				}
+				if targetPrincipal.ObjectIdentifier == principal.ObjectIdentifier {
+					continue
+				}
+
+				targetHasSysadmin := false
+				for _, m := range targetPrincipal.MemberOf {
+					if m.Name == "sysadmin" {
+						targetHasSysadmin = true
+						break
+					}
+				}
+				targetHasControlServer := false
+				for _, p := range targetPrincipal.Permissions {
+					if p.Permission == "CONTROL SERVER" && (p.State == "GRANT" || p.State == "GRANT_WITH_GRANT_OPTION") {
+						targetHasControlServer = true
+						break
+					}
+				}
+
+				if !targetHasSysadmin && !targetHasControlServer {
+					if !c.shouldCreateChangePasswordEdge(serverInfo, targetPrincipal) {
+						continue
+					}
+
+					cpEdge := c.createEdge(
+						principal.ObjectIdentifier,
+						targetPrincipal.ObjectIdentifier,
+						bloodhound.EdgeKinds.ChangePassword,
+						&bloodhound.EdgeContext{
+							SourceName:    principal.Name,
+							SourceType:    bloodhound.NodeKinds.ServerRole,
+							TargetName:    targetPrincipal.Name,
+							TargetType:    bloodhound.NodeKinds.Login,
+							SQLServerName: serverInfo.SQLServerName,
+							Permission:    "ALTER ANY LOGIN",
+						},
+					)
+					if err := writer.WriteEdge(cpEdge); err != nil {
+						return err
+					}
+				}
+			}
+
+		case "##MS_DatabaseConnector##":
+			// SQL Server 2022+ fixed role: has CONNECT ANY DATABASE permission
+			edge := c.createEdge(
+				principal.ObjectIdentifier,
+				serverInfo.ObjectIdentifier,
+				bloodhound.EdgeKinds.ConnectAnyDatabase,
+				&bloodhound.EdgeContext{
+					SourceName:    principal.Name,
+					SourceType:    bloodhound.NodeKinds.ServerRole,
+					TargetName:    serverInfo.ServerName,
+					TargetType:    bloodhound.NodeKinds.Server,
+					SQLServerName: serverInfo.SQLServerName,
+					IsFixedRole:   true,
+				},
+			)
+			if err := writer.WriteEdge(edge); err != nil {
+				return err
 			}
 		}
 	}
@@ -3910,6 +4078,26 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 					if err := writer.WriteEdge(edge); err != nil {
 						return err
 					}
+
+					// TAKE OWNERSHIP on SERVER_ROLE also grants ChangeOwner (matches PowerShell)
+					if targetPrincipal != nil && targetPrincipal.TypeDescription == "SERVER_ROLE" {
+						changeOwnerEdge := c.createEdge(
+							principal.ObjectIdentifier,
+							perm.TargetObjectIdentifier,
+							bloodhound.EdgeKinds.ChangeOwner,
+							&bloodhound.EdgeContext{
+								SourceName:    principal.Name,
+								SourceType:    c.getServerPrincipalType(principal.TypeDescription),
+								TargetName:    targetName,
+								TargetType:    bloodhound.NodeKinds.ServerRole,
+								SQLServerName: serverInfo.SQLServerName,
+								Permission:    perm.Permission,
+							},
+						)
+						if err := writer.WriteEdge(changeOwnerEdge); err != nil {
+							return err
+						}
+					}
 				}
 
 			case "IMPERSONATE":
@@ -3920,11 +4108,11 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 						targetName = targetPrincipal.Name
 					}
 
-					// ImpersonateLogin edge (specific for login impersonation)
+					// MSSQL_Impersonate edge (matches PowerShell which uses MSSQL_Impersonate at server level)
 					edge := c.createEdge(
 						principal.ObjectIdentifier,
 						perm.TargetObjectIdentifier,
-						bloodhound.EdgeKinds.ImpersonateLogin,
+						bloodhound.EdgeKinds.Impersonate,
 						&bloodhound.EdgeContext{
 							SourceName:    principal.Name,
 							SourceType:    c.getServerPrincipalType(principal.TypeDescription),
@@ -4068,6 +4256,47 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 				)
 				if err := writer.WriteEdge(edge); err != nil {
 					return err
+				}
+
+				// Also create AddMember edges to each applicable server role
+				// Matches PowerShell: user-defined roles always, fixed roles only if source is direct member (except sysadmin)
+				for _, targetRole := range serverInfo.ServerPrincipals {
+					if targetRole.TypeDescription != "SERVER_ROLE" {
+						continue
+					}
+
+					canAlterRole := false
+					if !targetRole.IsFixedRole {
+						// User-defined role: anyone with ALTER ANY SERVER ROLE can alter it
+						canAlterRole = true
+					} else if targetRole.Name != "sysadmin" {
+						// Fixed role (except sysadmin): can only add members if source is a direct member
+						for _, membership := range principal.MemberOf {
+							if membership.Name == targetRole.Name {
+								canAlterRole = true
+								break
+							}
+						}
+					}
+
+					if canAlterRole {
+						addMemberEdge := c.createEdge(
+							principal.ObjectIdentifier,
+							targetRole.ObjectIdentifier,
+							bloodhound.EdgeKinds.AddMember,
+							&bloodhound.EdgeContext{
+								SourceName:    principal.Name,
+								SourceType:    c.getServerPrincipalType(principal.TypeDescription),
+								TargetName:    targetRole.Name,
+								TargetType:    bloodhound.NodeKinds.ServerRole,
+								SQLServerName: serverInfo.SQLServerName,
+								Permission:    perm.Permission,
+							},
+						)
+						if err := writer.WriteEdge(addMemberEdge); err != nil {
+							return err
+						}
+					}
 				}
 			}
 		}
@@ -4401,6 +4630,50 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 				if err := writer.WriteEdge(edge); err != nil {
 					return err
 				}
+
+				// Also create AddMember edges to each eligible database role
+				// Matches PowerShell: user-defined roles always, fixed roles only if source is db_owner (except public)
+				for _, targetRole := range db.DatabasePrincipals {
+					if targetRole.TypeDescription != "DATABASE_ROLE" {
+						continue
+					}
+					if targetRole.ObjectIdentifier == principal.ObjectIdentifier {
+						continue // Skip self
+					}
+					if targetRole.Name == "public" {
+						continue // public role membership cannot be changed
+					}
+
+					// Check if source principal is db_owner (member of db_owner role)
+					isDbOwner := false
+					for _, role := range principal.MemberOf {
+						if role.Name == "db_owner" {
+							isDbOwner = true
+							break
+						}
+					}
+
+					// db_owner can alter any role, others can only alter user-defined roles
+					if isDbOwner || !targetRole.IsFixedRole {
+						addMemberEdge := c.createEdge(
+							principal.ObjectIdentifier,
+							targetRole.ObjectIdentifier,
+							bloodhound.EdgeKinds.AddMember,
+							&bloodhound.EdgeContext{
+								SourceName:    principal.Name,
+								SourceType:    c.getDatabasePrincipalType(principal.TypeDescription),
+								TargetName:    targetRole.Name,
+								TargetType:    bloodhound.NodeKinds.DatabaseRole,
+								SQLServerName: serverInfo.SQLServerName,
+								DatabaseName:  db.Name,
+								Permission:    perm.Permission,
+							},
+						)
+						if err := writer.WriteEdge(addMemberEdge); err != nil {
+							return err
+						}
+					}
+				}
 				break
 			case "ALTER ANY APPLICATION ROLE":
 				// Create edge to the database since this permission affects ANY application role
@@ -4601,16 +4874,14 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 	return nil
 }
 
-// createEdge creates a BloodHound edge with properties
+// createEdge creates a BloodHound edge with properties.
+// Returns nil if the edge is non-traversable and IncludeNontraversableEdges is false,
+// matching PowerShell's Add-Edge behavior which drops non-traversable edges entirely.
 func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.EdgeContext) *bloodhound.Edge {
 	props := bloodhound.GetEdgeProperties(kind, ctx)
 
-	// Handle traversability based on config
-	if !c.config.IncludeNontraversableEdges && !bloodhound.IsTraversableEdge(kind) {
-		props["traversable"] = false
-	}
+	// Apply MakeInterestingEdgesTraversable overrides before filtering
 	if c.config.MakeInterestingEdgesTraversable {
-		// Make certain edges traversable for offensive use
 		switch kind {
 		case bloodhound.EdgeKinds.LinkedTo,
 			bloodhound.EdgeKinds.IsTrustedBy,
@@ -4619,6 +4890,15 @@ func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.
 			bloodhound.EdgeKinds.HasMappedCred,
 			bloodhound.EdgeKinds.HasProxyCred:
 			props["traversable"] = true
+		}
+	}
+
+	// Drop non-traversable edges when IncludeNontraversableEdges is false
+	// This matches PowerShell's Add-Edge behavior which returns early (drops the edge)
+	// when the edge is non-traversable and IncludeNontraversableEdges is disabled
+	if !c.config.IncludeNontraversableEdges {
+		if traversable, ok := props["traversable"].(bool); ok && !traversable {
+			return nil
 		}
 	}
 

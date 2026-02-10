@@ -153,6 +153,7 @@ type DBScopedCredential struct {
 	CredentialIdentity string    `json:"credentialIdentity"`
 	CreateDate         time.Time `json:"createDate"`
 	ModifyDate         time.Time `json:"modifyDate"`
+	ResolvedSID        string    `json:"resolvedSid,omitempty"` // Resolved AD SID for the credential identity
 }
 
 // LinkedServer represents a linked server configuration
@@ -189,6 +190,7 @@ type ProxyAccount struct {
 	Description        string   `json:"description,omitempty"`
 	Subsystems         []string `json:"subsystems,omitempty"`
 	Logins             []string `json:"logins,omitempty"`
+	ResolvedSID        string   `json:"resolvedSid,omitempty"` // Resolved AD SID for the credential identity
 }
 
 // Credential represents a server-level credential
@@ -198,6 +200,7 @@ type Credential struct {
 	CredentialIdentity string    `json:"credentialIdentity"`
 	CreateDate         time.Time `json:"createDate"`
 	ModifyDate         time.Time `json:"modifyDate"`
+	ResolvedSID        string    `json:"resolvedSid,omitempty"` // Resolved AD SID for the credential identity
 }
 
 // DomainPrincipal represents a resolved Active Directory principal
