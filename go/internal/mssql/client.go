@@ -36,8 +36,11 @@ type epaTLSDialer struct {
 	}
 	epaProvider *epaAuthProvider
 	hostname    string
+	dnsResolver string
 	logf        func(string, ...interface{})
 }
+
+func (d *epaTLSDialer) HostName() string { return d.hostname }
 
 func (d *epaTLSDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	// Establish TCP connection
@@ -46,8 +49,7 @@ func (d *epaTLSDialer) DialContext(ctx context.Context, network, addr string) (n
 	if d.underlying != nil {
 		conn, err = d.underlying.DialContext(ctx, network, addr)
 	} else {
-		var dialer net.Dialer
-		conn, err = dialer.DialContext(ctx, network, addr)
+		conn, err = dialerWithResolver(d.dnsResolver, 10*time.Second).DialContext(ctx, network, addr)
 	}
 	if err != nil {
 		return nil, err
@@ -98,8 +100,11 @@ type epaTDSDialer struct {
 	}
 	epaProvider *epaAuthProvider
 	hostname    string
+	dnsResolver string
 	logf        func(string, ...interface{})
 }
+
+func (d *epaTDSDialer) HostName() string { return d.hostname }
 
 func (d *epaTDSDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	// TCP connect
@@ -108,8 +113,7 @@ func (d *epaTDSDialer) DialContext(ctx context.Context, network, addr string) (n
 	if d.underlying != nil {
 		conn, err = d.underlying.DialContext(ctx, network, addr)
 	} else {
-		var dialer net.Dialer
-		conn, err = dialer.DialContext(ctx, network, addr)
+		conn, err = dialerWithResolver(d.dnsResolver, 10*time.Second).DialContext(ctx, network, addr)
 	}
 	if err != nil {
 		return nil, err
@@ -354,6 +358,7 @@ type Client struct {
 	psClient                 *PowerShellClient // PowerShell client for fallback
 	collectFromLinkedServers bool              // Whether to collect from linked servers
 	epaResult                *EPATestResult    // Pre-computed EPA result (set before Connect)
+	dnsResolver              string            // Custom DNS resolver IP (e.g. domain controller)
 	proxyDialer              interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	}
@@ -476,7 +481,7 @@ func (c *Client) CheckPort(ctx context.Context) error {
 		}
 		conn, err = c.proxyDialer.DialContext(dialCtx, "tcp", dialAddr)
 	} else {
-		var dialer net.Dialer
+		dialer := dialerWithResolver(c.dnsResolver, 2*time.Second)
 		conn, err = dialer.DialContext(dialCtx, "tcp", addr)
 	}
 	if err != nil {
@@ -575,6 +580,7 @@ func (c *Client) connectNative(ctx context.Context) error {
 			underlying:  c.proxyDialer,
 			epaProvider: epaProvider,
 			hostname:    c.hostname,
+			dnsResolver: c.dnsResolver,
 			logf:        c.logDebug,
 		}
 		connStr := fmt.Sprintf("server=%s;port=%d;user id=%s;password=%s;encrypt=disable;TrustServerCertificate=true;app name=MSSQLHound",
@@ -625,6 +631,7 @@ func (c *Client) connectNative(ctx context.Context) error {
 			underlying:  c.proxyDialer,
 			epaProvider: epaProvider,
 			hostname:    c.hostname,
+			dnsResolver: c.dnsResolver,
 			logf:        c.logDebug,
 		}
 		connStr := fmt.Sprintf("server=%s;port=%d;user id=%s;password=%s;encrypt=disable;TrustServerCertificate=true;app name=MSSQLHound",
@@ -723,6 +730,8 @@ func (c *Client) connectNative(ctx context.Context) error {
 		connector := mssqldb.NewConnectorConfig(config)
 		if c.proxyDialer != nil {
 			connector.Dialer = c.proxyDialer
+		} else if c.dnsResolver != "" {
+			connector.Dialer = dialerWithResolver(c.dnsResolver, 10*time.Second)
 		}
 		db := sql.OpenDB(connector)
 
@@ -932,6 +941,11 @@ func (c *Client) SetLDAPCredentials(ldapUser, ldapPassword string) {
 	c.ldapPassword = ldapPassword
 }
 
+// SetDNSResolver sets a custom DNS resolver IP (e.g. domain controller) for hostname lookups.
+func (c *Client) SetDNSResolver(resolver string) {
+	c.dnsResolver = resolver
+}
+
 // SetProxyDialer sets a SOCKS5 proxy dialer for all network operations.
 func (c *Client) SetProxyDialer(d interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
@@ -1037,6 +1051,7 @@ func (c *Client) TestEPA(ctx context.Context) (*EPATestResult, error) {
 			Hostname: c.hostname, Port: port, InstanceName: c.instanceName,
 			Domain: epaDomain, Username: epaUsername, Password: c.ldapPassword,
 			TestMode: mode, Verbose: c.verbose, Debug: c.debug,
+			DNSResolver: c.dnsResolver,
 			ProxyDialer: c.proxyDialer,
 		}
 	}

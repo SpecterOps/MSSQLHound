@@ -871,6 +871,7 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 	client := c.newMSSQLClient(server.ConnectionString, c.config.UserID, c.config.Password)
 	client.SetDomain(c.config.Domain)
 	client.SetLDAPCredentials(c.config.LDAPUser, c.config.LDAPPassword)
+	client.SetDNSResolver(c.getDNSResolver())
 	client.SetVerbose(c.config.Verbose)
 	client.SetDebug(c.config.Debug)
 	client.SetCollectFromLinkedServers(c.config.CollectFromLinkedServers)

@@ -32,6 +32,7 @@ type EPATestConfig struct {
 	DisableMIC         bool // Diagnostic: omit MsvAvFlags and MIC from Type3
 	UseRawTargetInfo   bool // Diagnostic: use server's raw target info (no EPA mods, no MIC)
 	UseClientTimestamp bool // Diagnostic: use time.Now() FILETIME instead of server's MsvAvTimestamp
+	DNSResolver  string // Custom DNS resolver IP (e.g. domain controller)
 	ProxyDialer  interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	}
@@ -124,7 +125,7 @@ func runEPATest(ctx context.Context, config *EPATestConfig) (*epaTestOutcome, by
 		logf("Dialing via proxy to %s (original: %s)", dialAddr, addr)
 		conn, err = config.ProxyDialer.DialContext(ctx, "tcp", dialAddr)
 	} else {
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		dialer := dialerWithResolver(config.DNSResolver, 10*time.Second)
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
@@ -696,7 +697,7 @@ func runEPATestStrict(ctx context.Context, config *EPATestConfig) (*epaTestOutco
 		logf("Dialing via proxy to %s (original: %s)", dialAddr, addr)
 		conn, err = config.ProxyDialer.DialContext(ctx, "tcp", dialAddr)
 	} else {
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		dialer := dialerWithResolver(config.DNSResolver, 10*time.Second)
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
@@ -934,6 +935,43 @@ func readTLSTDSPacket(tlsConn net.Conn) ([]byte, error) {
 	}
 
 	return payload, nil
+}
+
+// customResolver returns a *net.Resolver that uses the given DNS server IP,
+// or nil if dnsResolver is empty (caller should use the default resolver).
+func customResolver(dnsResolver string) *net.Resolver {
+	if dnsResolver == "" {
+		return net.DefaultResolver
+	}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, "udp", net.JoinHostPort(dnsResolver, "53"))
+		},
+	}
+}
+
+// hostDialer wraps *net.Dialer to implement go-mssqldb's HostDialer interface.
+// When go-mssqldb sees a HostDialer, it passes the hostname to DialContext
+// instead of resolving it with net.LookupIP, allowing our custom net.Resolver
+// to handle DNS resolution.
+type hostDialer struct {
+	*net.Dialer
+}
+
+func (d *hostDialer) HostName() string { return "" }
+
+// dialerWithResolver returns a dialer that uses the given DNS resolver IP.
+// If dnsResolver is empty, the returned dialer uses the system default resolver.
+// The returned type implements go-mssqldb's HostDialer interface so that
+// go-mssqldb delegates DNS resolution to the dialer rather than using net.LookupIP.
+func dialerWithResolver(dnsResolver string, timeout time.Duration) *hostDialer {
+	d := &net.Dialer{Timeout: timeout}
+	if dnsResolver != "" {
+		d.Resolver = customResolver(dnsResolver)
+	}
+	return &hostDialer{Dialer: d}
 }
 
 // resolveForProxy resolves a hostname to an IP address for use with SOCKS proxies.

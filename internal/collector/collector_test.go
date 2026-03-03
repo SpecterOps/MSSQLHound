@@ -64,7 +64,7 @@ func TestEdgeCreation(t *testing.T) {
 
 	// Server principal nodes
 	for _, principal := range serverInfo.ServerPrincipals {
-		principalNode := c.createServerPrincipalNode(&principal, serverInfo)
+		principalNode := c.createServerPrincipalNode(&principal, serverInfo, nil)
 		if err := writer.WriteNode(principalNode); err != nil {
 			t.Fatalf("Failed to write server principal node: %v", err)
 		}
@@ -867,7 +867,7 @@ func TestCoerceAndRelayEdge(t *testing.T) {
 	}
 
 	for _, principal := range serverInfo.ServerPrincipals {
-		principalNode := c.createServerPrincipalNode(&principal, serverInfo)
+		principalNode := c.createServerPrincipalNode(&principal, serverInfo, nil)
 		if err := writer.WriteNode(principalNode); err != nil {
 			t.Fatalf("Failed to write server principal node: %v", err)
 		}
