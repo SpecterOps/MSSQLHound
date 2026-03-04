@@ -1384,6 +1384,16 @@ var edgeCompositionGenerators = map[string]func(*EdgeContext) string{
 		return "MATCH (source {objectid: '" + escapeAndUpper(ctx.SourceID) + "'}), \n(server:MSSQL_Server {objectid: '" + escapeAndUpper(ctx.SQLServerID) + "'}), \n(database:MSSQL_Database {objectid: '" + escapeAndUpper(extractDBID(ctx.TargetID)) + "'}),\n(role:MSSQL_DatabaseRole {objectid: '" + escapeAndUpper(ctx.TargetID) + "'})\nMATCH p0 = (source)-[:MSSQL_AddMember]->(role)\nMATCH p1 = (server)-[:MSSQL_Contains]->(database)\nMATCH p2 = (database)-[:MSSQL_Contains]->(source)\nMATCH p3 = (database)-[:MSSQL_Contains]->(role)\nOPTIONAL MATCH p4 = (source)-[:MSSQL_AlterAnyDBRole]->(database)\nOPTIONAL MATCH p5 = (source)-[:MSSQL_Alter|MSSQL_Control]->(role)\nRETURN p0, p1, p2, p3, p4, p5"
 	},
 
+	EdgeKinds.TakeOwnership: func(ctx *EdgeContext) string {
+		if ctx.TargetTypeDescription == "SERVER_ROLE" {
+			return "MATCH \n(source {objectid: '" + escapeAndUpper(ctx.SourceID) + "'}), \n(server:MSSQL_Server {objectid: '" + escapeAndUpper(ctx.SQLServerID) + "'}), \n(role:MSSQL_ServerRole {objectid: '" + escapeAndUpper(ctx.TargetID) + "'})\nMATCH p0 = (source)-[:MSSQL_TakeOwnership]->(role)\nMATCH p1 = (server)-[:MSSQL_Contains]->(source)\nMATCH p2 = (server)-[:MSSQL_Contains]->(role)\nRETURN p0, p1, p2"
+		}
+		if ctx.TargetTypeDescription == "DATABASE_ROLE" {
+			return "MATCH \n(source {objectid: '" + escapeAndUpper(ctx.SourceID) + "'}), \n(server:MSSQL_Server {objectid: '" + escapeAndUpper(ctx.SQLServerID) + "'}), \n(database:MSSQL_Database {objectid: '" + escapeAndUpper(extractDBID(ctx.TargetID)) + "'}),\n(role:MSSQL_DatabaseRole {objectid: '" + escapeAndUpper(ctx.TargetID) + "'})\nMATCH p0 = (source)-[:MSSQL_TakeOwnership]->(role)\nMATCH p1 = (server)-[:MSSQL_Contains]->(database)\nMATCH p2 = (database)-[:MSSQL_Contains]->(source)\nMATCH p3 = (database)-[:MSSQL_Contains]->(role)\nRETURN p0, p1, p2, p3"
+		}
+		return ""
+	},
+
 	EdgeKinds.ChangeOwner: func(ctx *EdgeContext) string {
 		if ctx.TargetTypeDescription == "SERVER_ROLE" {
 			return "MATCH \n(source {objectid: '" + escapeAndUpper(ctx.SourceID) + "'}), \n(server:MSSQL_Server {objectid: '" + escapeAndUpper(ctx.SQLServerID) + "'}), \n(role:MSSQL_ServerRole {objectid: '" + escapeAndUpper(ctx.TargetID) + "'})\nMATCH p0 = (source)-[:MSSQL_ChangeOwner]->(role) \nMATCH p1 = (server)-[:MSSQL_Contains]->(source)\nMATCH p2 = (server)-[:MSSQL_Contains]->(role)\nMATCH p3 = (source)-[:MSSQL_TakeOwnership|MSSQL_Control]->(role) \nRETURN p0, p1, p2, p3"
@@ -1431,14 +1441,6 @@ var edgeCompositionGenerators = map[string]func(*EdgeContext) string{
 
 	EdgeKinds.GetTGS: func(ctx *EdgeContext) string {
 		return "MATCH (serviceAccount {objectid: '" + strings.ToUpper(ctx.SourceID) + "'}) \nMATCH p0 = (serviceAccount)-[:MSSQL_GetTGS]->(login:MSSQL_Login {objectid: '" + escapeAndUpper(ctx.TargetID) + "'})\nMATCH p1 = (server:MSSQL_Server)-[:MSSQL_Contains]->(login) \nMATCH p2 = ()-[:MSSQL_HasLogin]->(login) \nRETURN p0, p1, p2"
-	},
-
-	EdgeKinds.TakeOwnership: func(ctx *EdgeContext) string {
-		return "\nTODO"
-	},
-
-	EdgeKinds.DBTakeOwnership: func(ctx *EdgeContext) string {
-		return "\nTODO"
 	},
 
 	EdgeKinds.CoerceAndRelayTo: func(ctx *EdgeContext) string {

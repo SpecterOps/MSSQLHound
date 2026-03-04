@@ -832,18 +832,6 @@ func (c *Client) executeQuery(ctx context.Context, query string) ([]QueryResult,
 	return results, rows.Err()
 }
 
-// executeQueryRow executes a query and returns a single row
-func (c *Client) executeQueryRow(ctx context.Context, query string) (QueryResult, error) {
-	results, err := c.executeQuery(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	if len(results) == 0 {
-		return nil, sql.ErrNoRows
-	}
-	return results[0], nil
-}
-
 // DB returns the underlying database connection (nil in PowerShell mode)
 // This is used for methods that need direct database access
 func (c *Client) DB() *sql.DB {
@@ -1227,78 +1215,6 @@ func parseLDAPUser(ldapUser, fallbackDomain string) (domain, username string) {
 	return fallbackDomain, ldapUser
 }
 
-// preloginResult holds the result of a PRELOGIN exchange
-type preloginResult struct {
-	encryptionFlag  byte
-	encryptionDesc  string
-	forceEncryption bool
-}
-
-// sendPrelogin sends a TDS PRELOGIN packet and parses the response
-func (c *Client) sendPrelogin(ctx context.Context) (*preloginResult, error) {
-	// Resolve the actual port if using named instance
-	port := c.port
-	if port == 0 && c.instanceName != "" {
-		// Try to resolve via SQL Browser
-		resolvedPort, err := c.resolveInstancePort(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve instance port: %w", err)
-		}
-		port = resolvedPort
-	}
-	if port == 0 {
-		port = 1433 // Default SQL Server port
-	}
-
-	// Connect via TCP
-	addr := fmt.Sprintf("%s:%d", c.hostname, port)
-	var conn net.Conn
-	var err error
-	if c.proxyDialer != nil {
-		// Resolve hostname to IP first — SOCKS proxies often can't resolve
-		// internal DNS names.
-		dialAddr := addr
-		if net.ParseIP(c.hostname) == nil {
-			addrs, resolveErr := net.DefaultResolver.LookupHost(ctx, c.hostname)
-			if resolveErr == nil && len(addrs) > 0 {
-				dialAddr = fmt.Sprintf("%s:%d", addrs[0], port)
-			}
-		}
-		conn, err = c.proxyDialer.DialContext(ctx, "tcp", dialAddr)
-	} else {
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
-		conn, err = dialer.DialContext(ctx, "tcp", addr)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("TCP connection failed: %w", err)
-	}
-	defer conn.Close()
-
-	// Set deadline
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-
-	// Build PRELOGIN packet
-	preloginPacket := buildPreloginPacket()
-
-	// Wrap in TDS packet header
-	tdsPacket := buildTDSPacket(0x12, preloginPacket) // 0x12 = PRELOGIN
-
-	// Send PRELOGIN
-	if _, err := conn.Write(tdsPacket); err != nil {
-		return nil, fmt.Errorf("failed to send PRELOGIN: %w", err)
-	}
-
-	// Read response
-	response := make([]byte, 4096)
-	n, err := conn.Read(response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read PRELOGIN response: %w", err)
-	}
-
-	// Parse response
-	return parsePreloginResponse(response[:n])
-}
-
 // buildPreloginPacket creates a TDS PRELOGIN packet payload
 func buildPreloginPacket() []byte {
 	// PRELOGIN options (simplified):
@@ -1354,62 +1270,6 @@ func buildTDSPacket(packetType byte, payload []byte) []byte {
 	}
 
 	return append(header, payload...)
-}
-
-// parsePreloginResponse parses a TDS PRELOGIN response
-func parsePreloginResponse(data []byte) (*preloginResult, error) {
-	if len(data) < 8 {
-		return nil, fmt.Errorf("response too short")
-	}
-
-	// Skip TDS header (8 bytes)
-	payload := data[8:]
-
-	result := &preloginResult{}
-
-	// Parse PRELOGIN options
-	offset := 0
-	for offset < len(payload) {
-		if payload[offset] == 0xFF {
-			break // Terminator
-		}
-
-		if offset+5 > len(payload) {
-			break
-		}
-
-		token := payload[offset]
-		dataOffset := int(payload[offset+1])<<8 | int(payload[offset+2])
-		dataLen := int(payload[offset+3])<<8 | int(payload[offset+4])
-
-		// Adjust dataOffset relative to payload start
-		dataOffset -= 8 // Account for TDS header that we stripped
-
-		if token == 0x01 && dataLen >= 1 && dataOffset >= 0 && dataOffset < len(payload) {
-			// ENCRYPTION option
-			result.encryptionFlag = payload[dataOffset]
-			switch result.encryptionFlag {
-			case 0x00:
-				result.encryptionDesc = "ENCRYPT_OFF"
-				result.forceEncryption = false
-			case 0x01:
-				result.encryptionDesc = "ENCRYPT_ON"
-				result.forceEncryption = false
-			case 0x02:
-				result.encryptionDesc = "ENCRYPT_NOT_SUP"
-				result.forceEncryption = false
-			case 0x03:
-				result.encryptionDesc = "ENCRYPT_REQ"
-				result.forceEncryption = true
-			default:
-				result.encryptionDesc = fmt.Sprintf("UNKNOWN (0x%02X)", result.encryptionFlag)
-			}
-		}
-
-		offset += 5
-	}
-
-	return result, nil
 }
 
 // resolveInstancePort resolves the port for a named SQL Server instance using SQL Browser
@@ -1539,6 +1399,21 @@ func (c *Client) CollectServerInfo(ctx context.Context) (*types.ServerInfo, erro
 		return nil, fmt.Errorf("failed to collect server principals: %w", err)
 	}
 	info.ServerPrincipals = principals
+
+	// Derive the domain SID from Active Directory principal SIDs.
+	// All domain principals share a common S-1-5-21-X-Y-Z prefix; the RID is the last segment.
+	if info.DomainSID == "" {
+		for _, p := range principals {
+			if p.IsActiveDirectoryPrincipal && strings.HasPrefix(p.SecurityIdentifier, "S-1-5-21-") {
+				if idx := strings.LastIndex(p.SecurityIdentifier, "-"); idx > 0 {
+					info.DomainSID = p.SecurityIdentifier[:idx]
+					c.logVerbose("Derived domain SID from principal %s: %s", p.Name, info.DomainSID)
+					break
+				}
+			}
+		}
+	}
+
 	c.logVerbose("Checking for inherited high-privilege permissions through role memberships")
 
 	// Get credential mappings for logins

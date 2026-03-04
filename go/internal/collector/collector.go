@@ -2354,10 +2354,10 @@ func (c *Collector) createADNodes(serverInfo *types.ServerInfo) error {
 
 	// Create Computer node for the server's host computer (matching PowerShell behavior)
 	if serverInfo.ComputerSID != "" {
-		// Build display name with domain
-		displayName := serverInfo.Hostname
-		if c.config.Domain != "" && !strings.Contains(displayName, "@") {
-			displayName = serverInfo.Hostname + "@" + c.config.Domain
+		// Use FQDN as display name (matching PowerShell behavior which uses DNSHostName)
+		displayName := serverInfo.FQDN
+		if displayName == "" {
+			displayName = serverInfo.Hostname
 		}
 
 		// Build SAMAccountName (hostname$)
