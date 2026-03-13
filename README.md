@@ -77,7 +77,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 ## System Requirements:
   - PowerShell 4.0 or higher
   - Target is running SQL Server 2005 or higher
-  - BloodHound v8.0.0+
+  - BloodHound v8.0.0+ with Postgres backend (to use prebuilt Cypher queries): https://bloodhound.specterops.io/get-started/custom-installation#postgresql
 
 ## Minimum Permissions:
 ### Windows Level:
