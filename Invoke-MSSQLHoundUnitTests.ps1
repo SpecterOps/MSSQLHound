@@ -35,7 +35,10 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$LimitToEdge = "",
-    
+
+    [Parameter(Mandatory=$false)]
+    [string]$InputFile = "",
+
     [switch]$SkipCreateDomainUsers,
     [switch]$SkipDomainObjects,
     [switch]$SkipHTMLReport,
@@ -43,6 +46,12 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$ShowDebugOutput
 )
+
+# If InputFile is specified, default to Test action (unless explicitly overridden)
+if ($InputFile -and $PSBoundParameters.ContainsKey('Action') -eq $false) {
+    $Action = "Test"
+    Write-Host "[INFO] InputFile specified, defaulting to -Action Test" -ForegroundColor Cyan
+}
 
 # Save debug flag at script level
 $script:ShowDebugOutput = $ShowDebugOutput
@@ -417,17 +426,28 @@ function Write-TestLog {
 # Helper function to extract and read MSSQL output from ZIP
 function Get-MSSQLOutputFromZip {
     param(
-        [string]$ZipPattern = "mssql-bloodhound-*.zip"
+        [string]$ZipPattern = "mssql-bloodhound-*.zip",
+        [string]$SpecificFile = ""
     )
-    
-    # Find the most recent ZIP file
-    $zipFiles = Get-ChildItem -Path . -Filter $ZipPattern | Sort-Object LastWriteTime -Descending
-    if (-not $zipFiles) {
-        return $null
+
+    # If a specific file is provided, use it directly
+    if ($SpecificFile) {
+        if (-not (Test-Path $SpecificFile)) {
+            Write-TestLog "Specified file not found: $SpecificFile" -Level Error
+            return $null
+        }
+        $zipFile = Get-Item $SpecificFile
+        Write-TestLog "Using specified ZIP file: $($zipFile.FullName)" -Level Info
     }
-    
-    $zipFile = $zipFiles[0]
-    Write-TestLog "Found ZIP file: $($zipFile.FullName)" -Level Info
+    else {
+        # Find the most recent ZIP file matching the pattern
+        $zipFiles = Get-ChildItem -Path . -Filter $ZipPattern | Sort-Object LastWriteTime -Descending
+        if (-not $zipFiles) {
+            return $null
+        }
+        $zipFile = $zipFiles[0]
+        Write-TestLog "Found ZIP file: $($zipFile.FullName)" -Level Info
+    }
     
     # Create temp directory for extraction
     $tempDir = Join-Path $env:TEMP "MSSQLEnum_$(Get-Date -Format 'yyyyMMddHHmmss')"
@@ -469,10 +489,12 @@ function Get-MSSQLOutputFromZip {
         
         # Clean up temp directory
         Remove-Item $tempDir -Recurse -Force
-        
-        # Clean up ZIP file
-        Remove-Item $zipFile.FullName -Force
-        Write-TestLog "Cleaned up ZIP file: $($zipFile.Name)" -Level Info
+
+        # Clean up ZIP file only if it was auto-detected (not user-specified)
+        if (-not $SpecificFile) {
+            Remove-Item $zipFile.FullName -Force
+            Write-TestLog "Cleaned up ZIP file: $($zipFile.Name)" -Level Info
+        }
         
         return $combinedOutput
     }
@@ -7314,46 +7336,53 @@ function Test-EdgeCreation {
     
     Write-TestLog "Expecting to test $($edgesToTest.Count) positive cases and $($negativeCasesToTest.Count) negative cases" -Level Info
 
-    
-    # Run enumeration
-    Write-TestLog "Running enumeration..." -Level Info
-    Write-TestLog "Script path: $EnumerationScript" -Level Info
+    # Check if we should skip enumeration and load from a file instead
+    if ($InputFile) {
+        Write-TestLog "Skipping enumeration, loading from specified file: $InputFile" -Level Info
 
-    # Verify script exists
-    if (-not (Test-Path $EnumerationScript)) {
-        Write-TestLog "Enumeration script not found at: $EnumerationScript" -Level Error
-        $edges = @()
-        $nodes = @()
-        return
+        # Load output from the specified file
+        $output = Get-MSSQLOutputFromZip -SpecificFile $InputFile
     }
+    else {
+        # Run enumeration
+        Write-TestLog "Running enumeration..." -Level Info
+        Write-TestLog "Script path: $EnumerationScript" -Level Info
 
-    Write-TestLog "Running enumeration with full error capture..." -Level Info
-
-    # Run with full output capture
-    $error.Clear()
-
-    try {
-        
-        # Run the script - it will create mssql.json files for each server and zip them
-        $scriptOutput = & $EnumerationScript `
-        -ServerInstance $ServerInstance `
-        -OutputFormat "BloodHound" `
-        -IncludeNontraversableEdges $true `
-        -UserID "lowpriv" `
-        -Password "password" `
-        2>&1
-        
-        if ($ShowDebugOutput) {
-            # Save all output
-            $scriptOutput | Out-File -FilePath $debugFile -Encoding UTF8
-            Write-TestLog "Script output saved to: $debugFile" -Level Info
+        # Verify script exists
+        if (-not (Test-Path $EnumerationScript)) {
+            Write-TestLog "Enumeration script not found at: $EnumerationScript" -Level Error
+            $edges = @()
+            $nodes = @()
+            return
         }
-        
-        # Wait a moment for file to be written
-        Start-Sleep -Milliseconds 1000
-                
-        # The new script creates a ZIP file with the output
-        $output = Get-MSSQLOutputFromZip
+
+        Write-TestLog "Running enumeration with full error capture..." -Level Info
+
+        # Run with full output capture
+        $error.Clear()
+
+        try {
+
+            # Run the script - it will create mssql.json files for each server and zip them
+            $scriptOutput = & $EnumerationScript `
+            -ServerInstance $ServerInstance `
+            -OutputFormat "BloodHound" `
+            -IncludeNontraversableEdges $true `
+            -UserID "lowpriv" `
+            -Password "password" `
+            2>&1
+
+            if ($ShowDebugOutput) {
+                # Save all output
+                $scriptOutput | Out-File -FilePath $debugFile -Encoding UTF8
+                Write-TestLog "Script output saved to: $debugFile" -Level Info
+            }
+
+            # Wait a moment for file to be written
+            Start-Sleep -Milliseconds 1000
+
+            # The new script creates a ZIP file with the output
+            $output = Get-MSSQLOutputFromZip
 
         if (-not $output) {
             # Fallback to check for direct JSON files
@@ -7375,16 +7404,17 @@ function Test-EdgeCreation {
                 Write-TestLog "No output files found" -Level Error
             }
         }
-    }
-    catch {
-        Write-TestLog "Error running enumeration script: $_" -Level Error
-        $_.Exception | Out-File -FilePath "$debugFile.error" -Encoding UTF8
-    }
+        }
+        catch {
+            Write-TestLog "Error running enumeration script: $_" -Level Error
+            $_.Exception | Out-File -FilePath "$debugFile.error" -Encoding UTF8
+        }
 
-    # Check for any errors
-    if ($error.Count -gt 0) {
-        Write-TestLog "Errors occurred during enumeration:" -Level Error
-        $error | ForEach-Object { Write-TestLog "  $_" -Level Error }
+        # Check for any errors
+        if ($error.Count -gt 0) {
+            Write-TestLog "Errors occurred during enumeration:" -Level Error
+            $error | ForEach-Object { Write-TestLog "  $_" -Level Error }
+        }
     }
 
     # Process output
