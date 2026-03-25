@@ -6,6 +6,9 @@ A Go port of the [MSSQLHound](https://github.com/SpecterOps/MSSQLHound) PowerShe
 
 The original MSSQLHound PowerShell script is an excellent tool for SQL Server security analysis, but has some limitations that motivated this Go port:
 
+### Evasion
+- **Proxying**: PowerShell execution is easily detected. The Go version allows network traffic to be sent into the target environment through a SOCKS proxy to maintain stealth during offensive operations.
+
 ### Performance
 - **Concurrent Processing**: The Go version processes multiple SQL servers simultaneously using worker pools, significantly reducing total enumeration time in large environments
 - **Streaming Output**: Memory-efficient JSON streaming prevents memory exhaustion when collecting from servers with thousands of principals
