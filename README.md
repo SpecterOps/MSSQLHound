@@ -1,7 +1,7 @@
 # MSSQLHound
 <img width="3147" height="711" alt="image" src="https://github.com/user-attachments/assets/476babac-c265-4d2b-bc03-f893fdb7bc1f" />
 
-A PowerShell collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with [OpenGraph](https://specterops.io/opengraph) by Chris Thompson at [SpecterOps](https://x.com/SpecterOps)
+A collector for adding MSSQL attack paths to [BloodHound](https://github.com/SpecterOps/BloodHound) with [OpenGraph](https://specterops.io/opengraph) by Chris Thompson at [SpecterOps](https://x.com/SpecterOps). Available as both a PowerShell script and a cross-platform Go binary (with concurrent collection, SOCKS5 proxy support, and streaming output).
 
 Introductory blog posts:
 - https://specterops.io/blog/2025/08/04/adding-mssql-to-bloodhound-with-opengraph/
@@ -15,10 +15,20 @@ Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), T
   - [System Requirements](#system-requirements)
   - [Minimum Permissions](#minimum-permissions)
   - [Recommended Permissions](#recommended-permissions)
-  - [Usage Info](#usage-info)
-- [Command Line Options](#command-line-options)
+- [Go Version](#go-version)
+  - [Why a Go Port?](#why-a-go-port)
+  - [Building](#building)
+  - [Go Usage](#go-usage)
+  - [Go Command Line Options](#go-command-line-options)
+  - [Key Differences from PowerShell Version](#key-differences-from-powershell-version)
+  - [CVE Detection](#cve-detection)
+  - [Known Limitations and Issues (Go)](#known-limitations-and-issues-go)
+  - [Troubleshooting (Go)](#troubleshooting-go)
+- [PowerShell Usage](#powershell-usage)
+- [PowerShell Command Line Options](#powershell-command-line-options)
 - [Limitations](#limitations)
 - [Future Development](#future-development)
+- [Credits](#credits)
 - [MSSQL Graph Model](#mssql-graph-model)
 - [MSSQL Nodes Reference](#mssql-nodes-reference)
    - [Server Level](#server-level)
@@ -103,8 +113,341 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
        - `msdb.dbo.sysproxysubsystem`
        - `msdb.dbo.syssubsystems`
        - Only used for proxy account collection
-   
-# Usage Info
+
+# Go Version
+
+## Why a Go Port?
+
+The original MSSQLHound PowerShell script is an excellent tool for SQL Server security analysis, but has some limitations that motivated this Go port:
+
+### Evasion
+- **Proxying**: PowerShell execution is easily detected. The Go version allows network traffic to be sent into the target environment through a SOCKS proxy to maintain stealth during offensive operations.
+
+### Performance
+- **Concurrent Processing**: The Go version processes multiple SQL servers simultaneously using worker pools, significantly reducing total enumeration time in large environments
+- **Streaming Output**: Memory-efficient JSON streaming prevents memory exhaustion when collecting from servers with thousands of principals
+- **Compiled Binary**: No PowerShell interpreter overhead, faster startup and execution
+
+### Portability
+- **Cross-Platform**: Runs on Windows, Linux, and macOS (Windows authentication requires Windows)
+- **Single Binary**: No dependencies, easy to deploy and run
+- **No PowerShell Required**: Can run on systems without PowerShell installed
+
+### Compatibility
+- **PowerShell Fallback**: When the native Go SQL driver fails (e.g., certain SSPI configurations), automatically falls back to PowerShell's `System.Data.SqlClient` for maximum compatibility
+- **Full Feature Parity**: Produces identical BloodHound-compatible output
+
+### Maintainability
+- **Strongly Typed**: Go's type system catches errors at compile time
+- **Unit Testable**: Comprehensive test coverage for edge generation logic
+- **Modular Architecture**: Clean separation between collection, graph generation, and output
+
+## Features
+
+- **SQL Server Collection**: Enumerates server principals (logins, server roles), databases, database principals (users, roles), permissions, and role memberships
+- **Linked Server Discovery**: Maps SQL Server linked server relationships
+- **Active Directory Integration**: Resolves Windows logins to domain principals via LDAP
+- **BloodHound Output**: Produces OpenGraph JSON format compatible with BloodHound CE
+- **Streaming Output**: Memory-efficient streaming JSON writer for large environments
+- **Automatic Fallback**: Falls back to PowerShell for servers with SSPI issues
+- **LDAP Paging**: Handles large domains with thousands of computers/SPNs
+
+## Building
+
+```bash
+go build -o mssqlhound.exe ./cmd/mssqlhound
+```
+
+## Go Usage
+
+### Basic Usage
+
+Collect from a single SQL Server:
+```bash
+# Windows integrated authentication
+./mssqlhound -s sql.contoso.com
+
+# SQL authentication
+./mssqlhound -s sql.contoso.com -u sa -p password
+
+# Named instance
+./mssqlhound -s "sql.contoso.com\INSTANCE"
+
+# Custom port
+./mssqlhound -s "sql.contoso.com:1434"
+```
+
+### Multiple Servers
+
+```bash
+# From command line
+./mssqlhound --server-list "server1,server2,server3"
+
+# From file (one server per line)
+./mssqlhound --server-list-file servers.txt
+
+# With concurrent workers (default: 10)
+./mssqlhound --server-list-file servers.txt -w 20
+```
+
+### Full Domain Enumeration
+
+```bash
+# Scan all computers in the domain (not just those with SQL SPNs)
+./mssqlhound --scan-all-computers
+
+# With explicit LDAP credentials (recommended for large domains)
+./mssqlhound --scan-all-computers --ldap-user "DOMAIN\username" --ldap-password "password"
+
+# Specifying domain controller IP (also used as DNS resolver)
+./mssqlhound --scan-all-computers --dc-ip 10.0.0.1 --ldap-user "DOMAIN\username" --ldap-password "password"
+```
+
+### DNS and Domain Controller Configuration
+
+```bash
+# Use a specific DNS resolver for domain lookups
+./mssqlhound --scan-all-computers --dns-resolver 10.0.0.1
+
+# Specify DC IP (automatically used as DNS resolver if --dns-resolver is not set)
+./mssqlhound --scan-all-computers --dc-ip 10.0.0.1
+
+# Use separate DNS resolver and DC
+./mssqlhound --scan-all-computers --dc-ip 10.0.0.1 --dns-resolver 10.0.0.2
+```
+
+### SOCKS5 Proxy Support
+
+All network traffic (SQL connections, LDAP queries, EPA tests) can be tunneled through a SOCKS5 proxy:
+
+```bash
+# Basic SOCKS5 proxy
+./mssqlhound -s sql.contoso.com --proxy 127.0.0.1:1080
+
+# With proxy authentication
+./mssqlhound -s sql.contoso.com --proxy "socks5://user:pass@127.0.0.1:1080"
+
+# Combined with domain enumeration
+./mssqlhound --scan-all-computers --proxy 127.0.0.1:1080 --dc-ip 10.0.0.1
+```
+
+**Note:** SQL Browser (UDP) resolution is not supported through SOCKS5 proxies. Named instances must include explicit ports (e.g., `sql.contoso.com\INSTANCE:1433`).
+
+### Credential Fallback
+
+When `--ldap-user` and `--ldap-password` are not specified, the tool automatically reuses SQL credentials for LDAP authentication if the `--user` value contains a domain delimiter (`\` or `@`):
+
+```bash
+# These domain credentials are used for both SQL and LDAP
+./mssqlhound --scan-all-computers -u "DOMAIN\admin" -p "password"
+```
+
+## Go Command Line Options
+
+| Flag | Description |
+|------|-------------|
+| `-s, --server` | SQL Server instance (host, host:port, or host\instance) |
+| `-u, --user` | SQL login username |
+| `-p, --password` | SQL login password |
+| `-d, --domain` | Domain for name/SID resolution |
+| `--dc-ip` | Domain controller IP address (used as DNS resolver if `--dns-resolver` not specified) |
+| `--dns-resolver` | DNS resolver IP address for domain lookups |
+| `--proxy` | SOCKS5 proxy address for tunneling all traffic (`host:port` or `socks5://[user:pass@]host:port`) |
+| `-w, --workers` | Number of concurrent workers (default: 10) |
+| `-o, --output-directory` | Output directory for zip file |
+| `--scan-all-computers` | Scan all domain computers, not just those with SPNs |
+| `--ldap-user` | LDAP username for AD queries (DOMAIN\\user or user@domain) |
+| `--ldap-password` | LDAP password for AD queries |
+| `--skip-linked-servers` | Don't enumerate linked servers |
+| `--collect-from-linked` | Full collection on discovered linked servers |
+| `--skip-ad-nodes` | Skip creating User, Group, Computer nodes |
+| `--skip-private-address` | Skip servers with private IP addresses |
+| `--include-nontraversable` | Include non-traversable edges |
+| `-v, --verbose` | Enable verbose output |
+
+## Key Differences from PowerShell Version
+
+### Behavioral Differences
+
+| Feature | PowerShell | Go |
+|---------|------------|-----|
+| **Concurrency** | Single-threaded | Multi-threaded with configurable worker pool |
+| **Memory Usage** | Loads all data in memory | Streaming JSON output |
+| **Cross-Platform** | Windows only | Windows, Linux, macOS |
+| **SSPI Fallback** | N/A (native .NET) | Falls back to PowerShell for problematic servers |
+| **LDAP Paging** | Automatic via .NET | Explicit paging implementation |
+| **Duplicate Edges** | May emit duplicates | De-duplicates edges |
+
+### Edge Generation Differences
+
+#### `MSSQL_HasLogin` Edges
+
+| Aspect | PowerShell | Go |
+|--------|------------|-----|
+| **Domain Validation** | Calls `Resolve-DomainPrincipal` to verify the SID exists in Active Directory | Creates edges for all domain SIDs (`S-1-5-21-*`) |
+| **Orphaned Logins** | Skips logins where AD account no longer exists | Includes all logins regardless of AD status |
+| **Edge Count** | Fewer edges (only verified AD accounts) | More edges (all domain-authenticated logins) |
+
+**Why Go includes more edges**: For security analysis, orphaned SQL logins (where the AD account was deleted but the SQL login remains) still represent valid attack paths. An attacker who can restore or impersonate the deleted account's SID could still authenticate to SQL Server. The Go version captures these potential risks.
+
+#### `HasSession` Edges
+
+| Aspect | PowerShell | Go |
+|--------|------------|-----|
+| **Self-referencing** | Creates edge when computer runs SQL as itself (LocalSystem) | Skips self-referencing edges |
+
+**Why Go skips self-loops**: A `HasSession` edge from a computer to itself (when SQL Server runs as LocalSystem/the computer account) doesn't provide meaningful attack path information.
+
+#### `MSSQL_AddMember` Edges
+
+| Aspect | PowerShell | Go |
+|--------|------------|-----|
+| **Duplicates** | May emit duplicate edges | De-duplicates all edges |
+
+**Why Go has fewer edges**: The PowerShell version may emit the same AddMember edge multiple times in certain scenarios. Go ensures each unique edge is only emitted once.
+
+### Connection Handling
+
+The Go version includes automatic PowerShell fallback for servers that fail with the native `go-mssqldb` driver:
+
+```
+Native connection: go-mssqldb (fast, cross-platform)
+        ↓ fails with "untrusted domain" error
+Fallback: PowerShell + System.Data.SqlClient (Windows only, more compatible)
+```
+
+This ensures maximum compatibility while maintaining performance for the majority of servers.
+
+### LDAP Connection Methods
+
+The Go version tries multiple LDAP connection methods in order:
+
+1. **LDAPS (port 636)** - TLS encrypted, most secure
+2. **LDAP + StartTLS (port 389)** - Upgrade to TLS
+3. **Plain LDAP (port 389)** - Unencrypted (may fail if DC requires signing)
+4. **PowerShell/ADSI Fallback** - Windows COM-based fallback
+
+## CVE Detection
+
+The Go version includes detection for SQL Server vulnerabilities:
+
+### CVE-2025-49758
+Checks if the SQL Server version is vulnerable to CVE-2025-49758 and reports the status:
+- `VULNERABLE` - Server is running an affected version
+- `NOT vulnerable` - Server has been patched
+
+## Known Limitations and Issues (Go)
+
+### Windows Authentication on Non-Windows Platforms
+
+Windows Integrated Authentication (SSPI/Kerberos) is only available when running on Windows. On Linux/macOS, use SQL authentication instead.
+
+### GSSAPI/Kerberos Authentication Issues
+
+The Go LDAP library's GSSAPI implementation may fail in certain environments with errors like:
+
+```
+LDAP Result Code 49 "Invalid Credentials": 80090346: LdapErr: DSID-0C0906CF,
+comment: AcceptSecurityContext error, data 80090346
+```
+
+**Common causes:**
+- Channel binding token (CBT) mismatch between client and server
+- Kerberos ticket issues (expired, clock skew, wrong realm)
+- Domain controller requires specific LDAP signing/sealing options
+
+**Solutions:**
+
+1. **Use explicit LDAP credentials** (recommended for `--scan-all-computers`):
+   ```bash
+   ./mssqlhound --scan-all-computers --ldap-user "DOMAIN\username" --ldap-password "password"
+   ```
+
+2. **Verify Kerberos tickets**:
+   ```bash
+   klist  # Check current tickets
+   klist purge  # Clear and re-acquire tickets
+   ```
+
+3. **Check time synchronization** - Kerberos requires clocks within 5 minutes
+
+### LDAP Size Limits
+
+Active Directory has a default maximum result size of 1000 objects per query. The Go version implements LDAP paging to handle domains with more than 1000 computers or SPNs. If you see "Size Limit Exceeded" errors, ensure you're using the latest version.
+
+### SQL Server SSPI Compatibility
+
+Some SQL Server instances with specific SSPI configurations may fail to connect with the native Go driver.
+
+**Symptom:**
+```
+Login failed. The login is from an untrusted domain and cannot be used with Windows authentication
+```
+
+**Automatic Handling:** The Go version detects this error and automatically retries using PowerShell's `System.Data.SqlClient`, which handles these edge cases more reliably. This fallback requires PowerShell to be available on the system.
+
+### PowerShell Fallback Limitations
+
+The PowerShell fallback for SQL connections and AD enumeration requires:
+- Windows operating system
+- PowerShell execution not blocked by security policy
+- Access to `System.Data.SqlClient` (.NET Framework)
+
+If PowerShell is blocked (e.g., `Access is denied` error), the fallback will not work. In this case:
+- For SQL connections: Some servers may not be reachable
+- For AD enumeration: Use explicit LDAP credentials instead
+
+### When to Use LDAP Credentials
+
+Use `--ldap-user` and `--ldap-password` when:
+
+1. **Full domain computer enumeration** (`--scan-all-computers`) - GSSAPI often fails with the Go library due to CBT issues
+2. **Cross-domain scenarios** - When enumerating from a machine in a different domain
+3. **Service account execution** - When running as a service account that may have Kerberos delegation issues
+4. **Troubleshooting GSSAPI failures** - As a workaround when implicit authentication fails
+
+**Example:**
+```bash
+# Recommended for large domain enumeration
+./mssqlhound --scan-all-computers \
+  --ldap-user "DOMAIN\svc_mssqlhound" \
+  --ldap-password "SecurePassword123" \
+  -w 50
+```
+
+## Troubleshooting (Go)
+
+### Verbose Output
+
+Use `-v` or `--verbose` to see detailed connection attempts and errors:
+
+```bash
+./mssqlhound -s sql.contoso.com -v
+```
+
+### Common Error Messages
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `untrusted domain` | SSPI negotiation failed | Automatic PowerShell fallback; check domain trust |
+| `Size Limit Exceeded` | Too many LDAP results | Update to latest version (has paging) |
+| `80090346` | GSSAPI/Kerberos failure | Use explicit LDAP credentials |
+| `Strong Auth Required` | DC requires LDAP signing | Will automatically try LDAPS/StartTLS |
+| `Access is denied` (PowerShell) | Execution policy blocked | Use explicit LDAP credentials instead |
+
+### Debug LDAP Connection
+
+The verbose output shows which LDAP connection methods are attempted:
+
+```
+LDAPS:636 GSSAPI: <error>
+LDAP:389+StartTLS GSSAPI: <error>
+LDAP:389 GSSAPI: <error>
+```
+
+This helps identify whether the issue is TLS-related or authentication-related.
+
+# PowerShell Usage
 Run MSSQLHound from a box where you aren’t highly concerned about resource consumption. While there are guardrails in place to stop the script if resource consumption is too high, it’s probably a good idea to be careful and run it on a workstation instead of directly on a critical database server, just in case.
 
 If you don't already have a specific target or targets in mind, start by running the script with the `-DomainEnumOnly` flag set to see just how many servers you’re dealing with in Active Directory. Then, use the `-ServerInstance` option to run it again for a single server or add all of the servers that look interesting to a file and run it again with the `-ServerListFile` option. 
@@ -186,9 +529,9 @@ Want to be a bit more aggressive with your pathfinding queries? You can make the
 
 I also recommend conducting a collection with the `-IncludeNontraversableEdges` flag enabled at some point if you need to understand what permissions on which objects allow the traversable edges to be created. By default, non-traversable edges are skipped to make querying the data for valid attack paths easier. This is still a work in progress, but look out for the “Composition” item in the edge entity panel for each traversable edges to grab a pastable cypher query to identify the offending permissions.
 
-If the [prebuilt Cypher queries](saved_queries) are returning `failed to translate kinds: unable to map kinds:` errors, upload [seed_data.json](seed_data.json) to populate a single fake instance of each new edge class so they can be queried.
+If the [prebuilt Cypher queries](saved_queries) are returning `failed to translate kinds: unable to map kinds:` errors, upload [seed_data.json](internal/bloodhound/seed_data.json) to populate a single fake instance of each new edge class so they can be queried.
 
-# Command Line Options
+# PowerShell Command Line Options
 For the latest and most reliable information, please execute MSSQLHound with the `-Help` flag.
 
 | Option<br>______________________________________________ | Values<br>_______________________________________________________________________________________________ |
@@ -550,3 +893,8 @@ All edges based on permissions may contain the `With Grant` property, which mean
 | **`MSSQL_ServiceAccountFor`**                   | • No unique edge properties |
 <a id="mssql_takeownership"></a>
 | **`MSSQL_TakeOwnership`**                       | • No unique edge properties |
+
+# Credits
+
+- Original PowerShell version by Chris Thompson (@_Mayyhem) at SpecterOps
+- Go port by Javier Azofra at Siemens Healthineers

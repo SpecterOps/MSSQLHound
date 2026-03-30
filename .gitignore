@@ -1,1 +1,2 @@
-bin/
+.claude/
+mssql-bloodhound-*.zip

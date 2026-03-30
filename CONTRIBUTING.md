@@ -16,25 +16,24 @@ If you're planning a significant change, please open an issue first to discuss t
 
 ```
 MSSQLHound/
-├── go/                        # Go implementation (active development)
-│   ├── cmd/mssqlhound/        # CLI entry point
-│   ├── internal/              # Internal packages
-│   │   ├── ad/                # Active Directory / LDAP integration
-│   │   ├── bloodhound/        # BloodHound output formatting
-│   │   ├── collector/         # Core edge/node collection logic
-│   │   ├── epamatrix/         # EPA matrix testing
-│   │   ├── mssql/             # SQL Server protocol and authentication
-│   │   ├── proxydialer/       # SOCKS5 proxy support
-│   │   ├── types/             # Shared data structures
-│   │   ├── winrmclient/       # WinRM client for EPA testing
-│   │   └── wmi/               # WMI service account collection (Windows)
-│   ├── TESTING.md             # Comprehensive testing guide
-│   └── README.md              # Go-specific documentation
+├── cmd/mssqlhound/            # CLI entry point
+├── internal/                  # Internal packages
+│   ├── ad/                    # Active Directory / LDAP integration
+│   ├── bloodhound/            # BloodHound output formatting
+│   ├── collector/             # Core edge/node collection logic
+│   ├── epamatrix/             # EPA matrix testing
+│   ├── mssql/                 # SQL Server protocol and authentication
+│   ├── proxydialer/           # SOCKS5 proxy support
+│   ├── types/                 # Shared data structures
+│   ├── winrmclient/           # WinRM client for EPA testing
+│   └── wmi/                   # WMI service account collection (Windows)
+├── go.mod                     # Go module definition
+├── go.sum                     # Go dependency checksums
+├── TESTING.md                 # Comprehensive testing guide
 ├── saved_queries/             # Pre-built BloodHound Cypher queries
 ├── util/                      # Utility scripts
 │   └── compare_edges.py       # Edge comparison tool (Python 3, no dependencies)
 ├── powershell_deprecated/     # Original PowerShell implementation (archived)
-├── seed_data.json             # BloodHound seed data for custom node types
 └── MSSQL Design.json          # Graph model definition
 ```
 
@@ -47,7 +46,6 @@ MSSQLHound/
 ## Building
 
 ```bash
-cd go
 go build -o mssqlhound ./cmd/mssqlhound
 ```
 
@@ -60,7 +58,6 @@ The build produces a single standalone binary with no external runtime dependenc
 Unit tests run without any external infrastructure:
 
 ```bash
-cd go
 go test ./...
 ```
 
@@ -76,7 +73,6 @@ go test -v -run MemberOf ./internal/collector/...
 Integration tests require a live SQL Server instance and Active Directory environment. They are gated behind a build tag:
 
 ```bash
-cd go
 MSSQL_SERVER=sql.example.com \
 MSSQL_USER=sa \
 MSSQL_PASSWORD='P@ssw0rd' \
@@ -87,7 +83,7 @@ LDAP_PASSWORD='LdapP@ss' \
 go test -v -tags integration -timeout 30m -run TestIntegrationAll ./internal/collector/...
 ```
 
-See [go/TESTING.md](go/TESTING.md) for the full testing guide, including:
+See [TESTING.md](TESTING.md) for the full testing guide, including:
 
 - All environment variables and their defaults
 - Integration test flow (setup, test, coverage, teardown)
@@ -119,12 +115,12 @@ MSSQLHound follows standard Go conventions:
 
 - Unit test files live alongside the code they test (`*_test.go`, no build tag)
 - Integration tests use the `//go:build integration` build tag
-- Edge tests use the project's builder pattern and assertion helpers -- see [go/TESTING.md](go/TESTING.md) for details
+- Edge tests use the project's builder pattern and assertion helpers -- see [TESTING.md](TESTING.md) for details
 - Platform-specific code uses build-constrained files (e.g., `wmi_windows.go`, `wmi_stub.go`)
 
 ## Adding New Edge Types
 
-If you're adding a new MSSQL edge type, follow the step-by-step guide in [go/TESTING.md](go/TESTING.md#adding-a-new-edge-type-test). The process involves:
+If you're adding a new MSSQL edge type, follow the step-by-step guide in [TESTING.md](TESTING.md#adding-a-new-edge-type-test). The process involves:
 
 1. Defining the edge in the collector
 2. Adding unit test cases using the test data builders

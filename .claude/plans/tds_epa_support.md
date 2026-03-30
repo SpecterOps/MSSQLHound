@@ -6,7 +6,7 @@ When SQL Server has EPA (Extended Protection for Authentication) set to "Require
 
 ## Changes by File (12 files, ~1300 lines added)
 
-### 1. New: `go/internal/mssql/ntlm_auth.go` — Custom NTLMv2 with EPA AV_PAIRs
+### 1. New: `internal/mssql/ntlm_auth.go` — Custom NTLMv2 with EPA AV_PAIRs
 
 Full NTLMv2 implementation with controllable AV_PAIRs:
 - **MsvAvChannelBindings**: 16-byte MD5 of `SEC_CHANNEL_BINDINGS` structure using `tls-unique:` prefix + TLS Finished bytes
@@ -18,7 +18,7 @@ Full NTLMv2 implementation with controllable AV_PAIRs:
 - Key fix: uses user-provided domain (not server's NetBIOS domain) for NTLMv2 hash, matching Windows SSPI/impacket behavior
 - Key fix: real LMv2 response (not zeros), server's negotiate flags echoed in Type3
 
-### 2. New: `go/internal/mssql/epa_auth_provider.go` — go-mssqldb Auth Bridge
+### 2. New: `internal/mssql/epa_auth_provider.go` — go-mssqldb Auth Bridge
 
 Implements `integratedauth.Provider` to plug custom NTLM into go-mssqldb:
 - `SetCBT(cbt)` — called from TLS dialer after handshake completes
@@ -26,7 +26,7 @@ Implements `integratedauth.Provider` to plug custom NTLM into go-mssqldb:
 - `GetIntegratedAuthenticator(config)` — creates `ntlmAuth` instance with stored CBT
 - Registered as `"epa-ntlm"` via `integratedauth.SetIntegratedAuthenticationProvider`
 
-### 3. `go/internal/mssql/tds_transport.go` — TLS-over-TDS Handshake
+### 3. `internal/mssql/tds_transport.go` — TLS-over-TDS Handshake
 
 - `tlsOverTDSConn`: wraps TLS records inside TDS PRELOGIN packets for the TLS handshake phase
 - `switchableConn`: swaps from TDS-wrapped to raw TCP after handshake
@@ -34,7 +34,7 @@ Implements `integratedauth.Provider` to plug custom NTLM into go-mssqldb:
 - `performDirectTLSHandshake()`: raw TLS on socket for TDS 8.0 strict
 - Both capped at TLS 1.2 — SQL Server SChannel does NOT accept `tls-server-end-point` for EPA, only `tls-unique` (which TLS 1.3 removed)
 
-### 4. `go/internal/mssql/epa_tester.go` — EPA Detection Engine
+### 4. `internal/mssql/epa_tester.go` — EPA Detection Engine
 
 Raw TDS+TLS+NTLM login attempts to determine EPA enforcement:
 - `runEPATest()`: standard encryption path (PRELOGIN → TLS-in-TDS → LOGIN7)
@@ -43,7 +43,7 @@ Raw TDS+TLS+NTLM login attempts to determine EPA enforcement:
 - Auto-diagnostics on failure: raw NTLM baseline, client timestamp test, MIC bypass test
 - SOCKS5 proxy support with DNS pre-resolution
 
-### 5. `go/internal/mssql/client.go` — Connection Strategy Overhaul (largest change)
+### 5. `internal/mssql/client.go` — Connection Strategy Overhaul (largest change)
 
 **Two custom dialers solve the TLSUnique problem:**
 
@@ -60,13 +60,13 @@ Raw TDS+TLS+NTLM login attempts to determine EPA enforcement:
 3. Regular strategy loop: FQDN+encrypt, FQDN+strict, FQDN+encrypt+SPN, FQDN+no-encrypt, short+encrypt, short+strict, short+no-encrypt
 4. PowerShell fallback (Windows only, not available through proxy)
 
-### 6. `go/internal/collector/collector.go` — EPA Pre-Check + Proxy Wiring
+### 6. `internal/collector/collector.go` — EPA Pre-Check + Proxy Wiring
 
 - Runs `client.TestEPA(ctx)` **before** `client.Connect(ctx)` so the EPA result is available for dialer selection
 - Factory methods `newADClient()` / `newMSSQLClient()` inject proxy dialer uniformly
 - `ProxyAddr` field in `Config`
 
-### 7. `go/internal/ad/client.go` — LDAP Through Proxy
+### 7. `internal/ad/client.go` — LDAP Through Proxy
 
 - `dialLDAP()` method routes LDAP connections through SOCKS5 proxy
 - DNS resolver rebuilt to route TCP DNS queries through proxy
@@ -82,7 +82,7 @@ Raw TDS+TLS+NTLM login attempts to determine EPA enforcement:
 
 Centralizes SOCKS5 dialer creation, used by mssql, ad, and collector packages.
 
-### 10. New: `go/internal/mssql/ntlm_auth_test.go` — Unit Tests
+### 10. New: `internal/mssql/ntlm_auth_test.go` — Unit Tests
 
 Tests for NTLMv2 hash, NTProofStr, MIC, CBT hash (both binding types), full exchange, UTF-16LE encoding.
 
