@@ -548,7 +548,7 @@ USE [EdgeTest_AlterAnyAppRole];
 GO
 
 -- =====================================================
--- OFFENSIVE: DatabaseUser/DatabaseRole/ApplicationRole -> Database
+-- DatabaseUser/DatabaseRole/ApplicationRole -> Database
 -- =====================================================
 
 -- DatabaseUser with ALTER ANY APPLICATION ROLE
@@ -566,9 +566,8 @@ GRANT ALTER ANY APPLICATION ROLE TO [AlterAnyAppRoleTest_AppRole_HasAlterAnyAppR
 -- Fixed role db_securityadmin has ALTER ANY APPLICATION ROLE by default
 
 -- =====================================================
--- DEFENSIVE: Create target application roles
+-- Create target application roles
 -- =====================================================
--- For defensive perspective, we need actual application roles as targets
 
 -- Create several application roles to serve as targets
 CREATE APPLICATION ROLE [AlterAnyAppRoleTest_TargetAppRole1] WITH PASSWORD = 'TargetP@ss123!';
@@ -598,7 +597,7 @@ USE [EdgeTest_AlterAnyDBRole];
 GO
 
 -- =====================================================
--- OFFENSIVE: DatabaseUser/DatabaseRole/ApplicationRole -> Database
+-- DatabaseUser/DatabaseRole/ApplicationRole -> Database
 -- =====================================================
 
 -- DatabaseUser with ALTER ANY ROLE
@@ -616,9 +615,8 @@ GRANT ALTER ANY ROLE TO [AlterAnyDBRoleTest_AppRole_HasAlterAnyRole];
 -- Fixed role db_securityadmin has ALTER ANY ROLE
 
 -- =====================================================
--- DEFENSIVE: Create target database roles
+-- Create target database roles
 -- =====================================================
--- For defensive perspective, we need actual database roles as targets
 
 -- Create user-defined database roles to serve as targets
 CREATE ROLE [AlterAnyDBRoleTest_TargetRole1];
@@ -640,7 +638,7 @@ GO
 -- combination for MSSQL_AlterAnyLogin edges
 
 -- =====================================================
--- OFFENSIVE: Login/ServerRole -> Server
+-- Login/ServerRole -> Server
 -- =====================================================
 
 -- Login with ALTER ANY LOGIN permission
@@ -655,7 +653,7 @@ GRANT ALTER ANY LOGIN TO [AlterAnyLoginTest_ServerRole_HasAlterAnyLogin];
 -- We'll test the role itself, not members of the role
 
 -- =====================================================
--- DEFENSIVE: Create target SQL logins (not Windows logins)
+-- Create target SQL logins (not Windows logins)
 -- =====================================================
 
 -- Regular SQL logins that can be targeted
@@ -699,7 +697,7 @@ GO
 -- combination for MSSQL_AlterAnyServerRole edges
 
 -- =====================================================
--- OFFENSIVE: Login/ServerRole -> Server
+-- Login/ServerRole -> Server
 -- =====================================================
 
 -- Login with ALTER ANY SERVER ROLE permission
@@ -713,7 +711,7 @@ GRANT ALTER ANY SERVER ROLE TO [AlterAnyServerRoleTest_ServerRole_HasAlterAnySer
 -- Note: sysadmin has ALTER ANY SERVER ROLE by default but edges not drawn (handled by ControlServer)
 
 -- =====================================================
--- DEFENSIVE: Create target server roles and test membership
+-- Create target server roles and test membership
 -- =====================================================
 
 -- Create user-defined server roles as targets
@@ -736,8 +734,7 @@ GO
 -- COMPLETE SETUP FOR MSSQL_ChangeOwner EDGE TESTING
 -- =====================================================
 -- This creates all objects needed to test MSSQL_ChangeOwner edges
--- IMPORTANT: MSSQL_ChangeOwner is created in offensive perspective only (traversable)
--- In defensive perspective, these become MSSQL_TakeOwnership or MSSQL_DBTakeOwnership edges
+-- MSSQL_ChangeOwner edges are traversable
 
 -- Create test database if it doesn't exist
 CREATE DATABASE [EdgeTest_ChangeOwner];
@@ -846,7 +843,7 @@ GO
 -- COMPLETE SETUP FOR MSSQL_ChangePassword EDGE TESTING
 -- =====================================================
 -- This creates all objects needed to test MSSQL_ChangePassword edges
--- MSSQL_ChangePassword is created in offensive perspective (traversable)
+-- MSSQL_ChangePassword edges are traversable
 
 -- Create test database if it doesn't exist
 CREATE DATABASE [EdgeTest_ChangePassword];
@@ -1254,7 +1251,7 @@ GO
 -- Target node type: MSSQL_Server
 
 -- =====================================================
--- OFFENSIVE: Login/ServerRole -> Server
+-- Login/ServerRole -> Server
 -- =====================================================
 
 -- Login with CONTROL SERVER permission

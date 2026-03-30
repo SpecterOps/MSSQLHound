@@ -35,7 +35,7 @@ go/internal/collector/
 ├── edge_unit_test.go              # Per-edge-type unit tests (data builders + test runners)
 ├── edge_test_helpers_test.go      # Shared utilities: pattern matching, assertions, edge runner
 ├── edge_test_data_test.go         # Test case definitions (translated from PS1)
-├── integration_sql_test.go         # Embedded SQL setup/cleanup scripts (build:integration)
+├── integration_sql_test.go        # Embedded SQL setup/cleanup scripts (build:integration)
 ├── integration_setup_test.go      # Integration environment setup/teardown (build:integration)
 ├── integration_report_test.go     # Coverage analysis & HTML reporting (build:integration)
 └── edge_integration_test.go       # Live edge validation (build:integration)
@@ -92,7 +92,6 @@ var addMemberTestCases = []edgeTestCase{
         Description:   "Login with ALTER on role can add members",
         SourcePattern: "AddMemberTest_Login_CanAlterServerRole@*",
         TargetPattern: "AddMemberTest_ServerRole_TargetOf_Login_CanAlterServerRole@*",
-        Perspective:   "offensive",
     },
     {
         EdgeType:    "MSSQL_AddMember",
@@ -107,7 +106,7 @@ var addMemberTestCases = []edgeTestCase{
 func TestAddMemberEdges(t *testing.T) {
     info := buildAddMemberTestData()
     result := runEdgeCreation(t, info, true)
-    runTestCasesForPerspective(t, result.Edges, addMemberTestCases, "offensive")
+    runTestCases(t, result.Edges, addMemberTestCases)
 }
 ```
 
@@ -121,7 +120,6 @@ Each `edgeTestCase` specifies:
 | `Description` | Human-readable explanation |
 | `SourcePattern` | Glob pattern for edge source (`*` and `?` wildcards) |
 | `TargetPattern` | Glob pattern for edge target |
-| `Perspective` | `"offensive"`, `"defensive"`, or `"both"` |
 | `Negative` | If `true`, asserts the edge must **not** exist |
 | `Reason` | Explanation for negative test cases |
 | `EdgeProperties` | Property assertions (e.g. `"traversable": true`) |
@@ -189,7 +187,6 @@ Integration tests run against a live SQL Server and Active Directory environment
 | `MSSQL_DC` | _(auto-discover)_ | Domain controller IP |
 | `LDAP_USER` | | LDAP username for AD object creation |
 | `LDAP_PASSWORD` | | LDAP password |
-| `MSSQL_PERSPECTIVE` | `both` | `offensive`, `defensive`, or `both` |
 | `MSSQL_LIMIT_EDGE` | _(all)_ | Limit to a specific edge type |
 | `MSSQL_SKIP_DOMAIN` | `false` | Skip AD object creation |
 | `MSSQL_ACTION` | `all` | `all`, `setup`, `test`, `teardown`, `coverage` |
@@ -198,12 +195,39 @@ Integration tests run against a live SQL Server and Active Directory environment
 | `MSSQL_ENUM_USER` | `lowpriv` | Low-privilege enumeration user |
 | `MSSQL_ENUM_PASSWORD` | `password` | Enumeration password |
 
+### Environment Setup
+
+Before running integration tests, you need to set up the test environment on your target SQL Server and AD domain. The setup phase creates AD objects (users, groups, computers) via LDAP and executes embedded SQL scripts to build databases, logins, permissions, and role memberships needed by the test suite.
+
+```bash
+# Run setup only — creates AD objects and SQL Server test environment
+MSSQL_SERVER=sql.example.com \
+MSSQL_USER='EXAMPLE\admin' \
+MSSQL_PASSWORD='P@ssw0rd' \
+MSSQL_DOMAIN=example.com \
+MSSQL_DC=10.0.0.1 \
+LDAP_USER='EXAMPLE\admin' \
+LDAP_PASSWORD='LdapP@ss' \
+go test -v -tags integration -timeout 30m -run TestIntegrationSetup ./internal/collector/...
+
+# SQL-only setup (skip AD object creation)
+MSSQL_SKIP_DOMAIN=true \
+MSSQL_SERVER=sql.example.com \
+MSSQL_USER=sa \
+MSSQL_PASSWORD='P@ssw0rd' \
+go test -v -tags integration -timeout 30m -run TestIntegrationSetup ./internal/collector/...
+```
+
+`MSSQL_USER` requires sysadmin privileges on the SQL Server instance. `LDAP_USER` requires write access to create test objects in Active Directory. Both support `DOMAIN\user` format for domain accounts.
+
+Once setup completes, the environment persists until you run the teardown phase, so you can run the test and coverage phases repeatedly without re-running setup.
+
 ### Running Integration Tests
 
 ```bash
 # Full cycle: setup -> test -> coverage -> teardown
 MSSQL_SERVER=sql.example.com \
-MSSQL_USER=sa \
+MSSQL_USER='EXAMPLE\admin' \
 MSSQL_PASSWORD='P@ssw0rd' \
 MSSQL_DOMAIN=example.com \
 MSSQL_DC=10.0.0.1 \
@@ -211,7 +235,7 @@ LDAP_USER='EXAMPLE\admin' \
 LDAP_PASSWORD='LdapP@ss' \
 go test -v -tags integration -timeout 30m -run TestIntegrationAll ./internal/collector/...
 
-# Individual phases
+# Individual phases (set env vars as above)
 go test -v -tags integration -run TestIntegrationSetup ./internal/collector/...
 go test -v -tags integration -run TestIntegrationEdges ./internal/collector/...
 go test -v -tags integration -run TestIntegrationCoverage ./internal/collector/...
@@ -243,7 +267,6 @@ go test -v -tags integration -run TestIntegrationEdges ./internal/collector/...
            Description:   "User with SOME_PERM can do something",
            SourcePattern: "MyNewTest_Login@*",
            TargetPattern: "MyNewTest_Target@*",
-           Perspective:   "offensive",
        },
        {
            EdgeType:    "MSSQL_MyNewEdge",
@@ -252,7 +275,6 @@ go test -v -tags integration -run TestIntegrationEdges ./internal/collector/...
            TargetPattern: "MyNewTest_Target@*",
            Negative:    true,
            Reason:      "Missing required permission",
-           Perspective: "offensive",
        },
    }
    ```
@@ -274,7 +296,7 @@ go test -v -tags integration -run TestIntegrationEdges ./internal/collector/...
    func TestMyNewEdgeEdges(t *testing.T) {
        info := buildMyNewEdgeTestData()
        result := runEdgeCreation(t, info, true)
-       runTestCasesForPerspective(t, result.Edges, myNewEdgeTestCases, "offensive")
+       runTestCases(t, result.Edges, myNewEdgeTestCases)
    }
    ```
 

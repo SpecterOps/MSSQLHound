@@ -23,7 +23,6 @@ type edgeTestCase struct {
 	Description    string                 // Human-readable description of what is being tested
 	SourcePattern  string                 // Wildcard or exact-match pattern for edge start value
 	TargetPattern  string                 // Wildcard or exact-match pattern for edge end value
-	Perspective    string                 // "offensive", "defensive", or "both"
 	Negative       bool                   // If true, this edge must NOT exist
 	Reason         string                 // Explanation for negative tests
 	EdgeProperties map[string]interface{} // Property assertions (e.g. traversable)
@@ -201,18 +200,6 @@ func runSingleTestCase(t *testing.T, edges []bloodhound.Edge, tc edgeTestCase) {
 	}
 }
 
-// testCaseAppliesToPerspective returns true if the test case applies to the given perspective.
-func testCaseAppliesToPerspective(tc edgeTestCase, perspective string) bool {
-	switch tc.Perspective {
-	case "both", "":
-		return true
-	case "offensive":
-		return perspective == "offensive"
-	case "defensive":
-		return perspective == "defensive"
-	}
-	return false
-}
 
 // ---------------------------------------------------------------------------
 // Edge creation test runner
@@ -827,16 +814,13 @@ func roleMembership(name string, serverOID string) types.RoleMembership {
 }
 
 // ---------------------------------------------------------------------------
-// Helper to run test cases for a specific perspective
+// Helper to run test cases
 // ---------------------------------------------------------------------------
 
-// runTestCasesForPerspective runs all applicable test cases for a given perspective.
-func runTestCasesForPerspective(t *testing.T, edges []bloodhound.Edge, testCases []edgeTestCase, perspective string) {
+// runTestCases runs all test cases against the given edges.
+func runTestCases(t *testing.T, edges []bloodhound.Edge, testCases []edgeTestCase) {
 	t.Helper()
 	for _, tc := range testCases {
-		if !testCaseAppliesToPerspective(tc, perspective) {
-			continue
-		}
 		t.Run(tc.Description, func(t *testing.T) {
 			runSingleTestCase(t, edges, tc)
 		})

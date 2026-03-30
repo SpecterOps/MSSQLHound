@@ -86,7 +86,7 @@ func TestIntegrationTeardown(t *testing.T) {
 // Usage:
 //
 //	MSSQL_ZIP=/path/to/output.zip go test -tags integration -v -run TestIntegrationValidateZip
-//	MSSQL_ZIP=/path/to/output.zip MSSQL_PERSPECTIVE=offensive MSSQL_LIMIT_EDGE=MemberOf go test -tags integration -v -run TestIntegrationValidateZip
+//	MSSQL_ZIP=/path/to/output.zip MSSQL_LIMIT_EDGE=MemberOf go test -tags integration -v -run TestIntegrationValidateZip
 func TestIntegrationValidateZip(t *testing.T) {
 	cfg := loadIntegrationConfig()
 	runValidateZip(t, cfg)
@@ -107,12 +107,6 @@ func runValidateZip(t *testing.T, cfg *integrationConfig) {
 
 	t.Logf("Loaded %d edges and %d nodes from %s", len(edges), len(nodes), cfg.ZipFile)
 
-	// Determine perspective
-	perspective := strings.ToLower(cfg.Perspective)
-	if perspective == "" || perspective == "both" {
-		perspective = "offensive" // default to offensive perspective
-	}
-
 	allTestCases := getAllTestCases()
 
 	// Filter by edge type if specified
@@ -131,17 +125,11 @@ func runValidateZip(t *testing.T, cfg *integrationConfig) {
 	}
 
 	var run integrationTestRun
-	run.Perspective = perspective
 	run.Edges = edges
 	run.Nodes = nodes
 
-	passed, failed, skipped := 0, 0, 0
+	passed, failed := 0, 0
 	for _, tc := range allTestCases {
-		if !testCaseAppliesToPerspective(tc, perspective) {
-			skipped++
-			continue
-		}
-
 		t.Run(tc.Description, func(t *testing.T) {
 			result := integrationTestResult{TestCase: tc}
 			ok := runSingleTestCaseWithResult(t, edges, tc)
@@ -156,7 +144,7 @@ func runValidateZip(t *testing.T, cfg *integrationConfig) {
 		})
 	}
 
-	t.Logf("Results: %d passed, %d failed, %d skipped", passed, failed, skipped)
+	t.Logf("Results: %d passed, %d failed", passed, failed)
 
 	// Store for coverage/report if desired
 	storeTestRuns(t, []integrationTestRun{run})
@@ -261,9 +249,8 @@ func parseBloodHoundJSON(data []byte) ([]bloodhound.Edge, []bloodhound.Node, err
 // EDGE TESTING
 // =============================================================================
 
-// integrationTestRun holds results from a single perspective test run.
+// integrationTestRun holds results from a test run.
 type integrationTestRun struct {
-	Perspective string
 	Edges       []bloodhound.Edge
 	Nodes       []bloodhound.Node
 	OutputFile  string
@@ -281,43 +268,17 @@ type integrationTestResult struct {
 func runIntegrationEdgeTests(t *testing.T, cfg *integrationConfig) {
 	t.Helper()
 
-	perspectives := []struct {
-		name           string
-		nontraversable bool
-	}{
-		{"offensive", true},
-		{"defensive", true},
-	}
-
-	// Filter by perspective if specified
-	switch strings.ToLower(cfg.Perspective) {
-	case "offensive":
-		perspectives = perspectives[:1]
-	case "defensive":
-		perspectives = perspectives[1:]
-	}
-
-	var testRuns []integrationTestRun
-
-	for _, p := range perspectives {
-		t.Run(p.name, func(t *testing.T) {
-			run := runEnumerationAndValidate(t, cfg, p.name, p.nontraversable)
-			testRuns = append(testRuns, run)
-		})
-	}
+	run := runEnumerationAndValidate(t, cfg, true)
 
 	// Store test runs for coverage/reporting
-	storeTestRuns(t, testRuns)
+	storeTestRuns(t, []integrationTestRun{run})
 }
 
-// runEnumerationAndValidate runs the collector for a specific perspective
-// and validates edges against test case data.
-func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, perspective string, includeNontraversable bool) integrationTestRun {
+// runEnumerationAndValidate runs the collector and validates edges against test case data.
+func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNontraversable bool) integrationTestRun {
 	t.Helper()
 
-	run := integrationTestRun{
-		Perspective: perspective,
-	}
+	run := integrationTestRun{}
 
 	// Run MSSQLHound enumeration
 	tempDir := t.TempDir()
@@ -336,8 +297,8 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, perspective
 		SkipLinkedServerEnum:      false,
 	}
 
-	t.Logf("Running enumeration as %s (perspective: %s, nontraversable: %v)...",
-		cfg.EnumUserID, perspective, includeNontraversable)
+	t.Logf("Running enumeration as %s (nontraversable: %v)...",
+		cfg.EnumUserID, includeNontraversable)
 
 	collector := New(collectorCfg)
 	if err := collector.Run(); err != nil {
@@ -377,12 +338,8 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, perspective
 		allTestCases = filtered
 	}
 
-	// Run test cases for this perspective
+	// Run test cases
 	for _, tc := range allTestCases {
-		if !testCaseAppliesToPerspective(tc, perspective) {
-			continue
-		}
-
 		t.Run(tc.Description, func(t *testing.T) {
 			result := integrationTestResult{TestCase: tc}
 			passed := runSingleTestCaseWithResult(t, run.Edges, tc)
@@ -568,7 +525,7 @@ func readBloodHoundJSONLines(data []byte) ([]bloodhound.Edge, []bloodhound.Node,
 // COVERAGE ANALYSIS
 // =============================================================================
 
-// runIntegrationCoverage analyzes which edge types were found per perspective.
+// runIntegrationCoverage analyzes which edge types were found in test runs.
 func runIntegrationCoverage(t *testing.T, cfg *integrationConfig) {
 	t.Helper()
 

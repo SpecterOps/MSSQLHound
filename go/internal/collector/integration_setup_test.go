@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -27,7 +28,6 @@ type integrationConfig struct {
 	DCIP           string // Domain controller (optional, auto-discovered)
 	LDAPUser       string // LDAP credentials for AD operations
 	LDAPPassword   string // LDAP password
-	Perspective    string // "offensive", "defensive", or "both" (default: "both")
 	LimitToEdge    string // Limit to specific edge type (optional)
 	SkipDomain     bool   // Skip AD object creation
 	Action         string // "all", "setup", "test", "teardown", "coverage" (default: "all")
@@ -48,7 +48,6 @@ func loadIntegrationConfig() *integrationConfig {
 		DCIP:           os.Getenv("MSSQL_DC"),
 		LDAPUser:       os.Getenv("LDAP_USER"),
 		LDAPPassword:   os.Getenv("LDAP_PASSWORD"),
-		Perspective:    envOrDefault("MSSQL_PERSPECTIVE", "both"),
 		LimitToEdge:    os.Getenv("MSSQL_LIMIT_EDGE"),
 		SkipDomain:     os.Getenv("MSSQL_SKIP_DOMAIN") == "true",
 		Action:         envOrDefault("MSSQL_ACTION", "all"),
@@ -122,8 +121,8 @@ func connectSQL(cfg *integrationConfig) (*sql.DB, error) {
 
 	var connStr string
 	if cfg.UserID != "" {
-		connStr = fmt.Sprintf("sqlserver://%s:%s@%s?database=master&encrypt=disable",
-			cfg.UserID, cfg.Password, serverInstance)
+		connStr = fmt.Sprintf("sqlserver://%s@%s?database=master&encrypt=disable",
+			url.UserPassword(cfg.UserID, cfg.Password).String(), serverInstance)
 	} else {
 		// Windows authentication
 		connStr = fmt.Sprintf("sqlserver://%s?database=master&encrypt=disable&integrated+security=sspi",

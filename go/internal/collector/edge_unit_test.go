@@ -34,7 +34,7 @@ func buildContainsTestData() *types.ServerInfo {
 func TestContainsEdges(t *testing.T) {
 	info := buildContainsTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, containsTestCases, "offensive")
+	runTestCases(t, result.Edges,containsTestCases)
 }
 
 // =============================================================================
@@ -137,7 +137,7 @@ func buildMemberOfTestData() *types.ServerInfo {
 func TestMemberOfEdges(t *testing.T) {
 	info := buildMemberOfTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, memberOfTestCases, "offensive")
+	runTestCases(t, result.Edges,memberOfTestCases)
 }
 
 // =============================================================================
@@ -179,7 +179,7 @@ func buildIsMappedToTestData() *types.ServerInfo {
 func TestIsMappedToEdges(t *testing.T) {
 	info := buildIsMappedToTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, isMappedToTestCases, "offensive")
+	runTestCases(t, result.Edges,isMappedToTestCases)
 }
 
 // =============================================================================
@@ -238,7 +238,7 @@ func buildOwnsTestData() *types.ServerInfo {
 func TestOwnsEdges(t *testing.T) {
 	info := buildOwnsTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, ownsTestCases, "offensive")
+	runTestCases(t, result.Edges,ownsTestCases)
 }
 
 // =============================================================================
@@ -304,7 +304,7 @@ func buildHasLoginTestData() *types.ServerInfo {
 func TestHasLoginEdges(t *testing.T) {
 	info := buildHasLoginTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, hasLoginTestCases, "offensive")
+	runTestCases(t, result.Edges,hasLoginTestCases)
 }
 
 // =============================================================================
@@ -330,7 +330,7 @@ func buildControlServerTestData() *types.ServerInfo {
 func TestControlServerEdges(t *testing.T) {
 	info := buildControlServerTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, controlServerTestCases, "offensive")
+	runTestCases(t, result.Edges,controlServerTestCases)
 }
 
 // =============================================================================
@@ -363,7 +363,7 @@ func buildControlDBTestData() *types.ServerInfo {
 func TestControlDBEdges(t *testing.T) {
 	info := buildControlDBTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, controlDBTestCases, "offensive")
+	runTestCases(t, result.Edges,controlDBTestCases)
 }
 
 // =============================================================================
@@ -419,7 +419,7 @@ func buildConnectTestData() *types.ServerInfo {
 func TestConnectEdges(t *testing.T) {
 	info := buildConnectTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, connectTestCases, "offensive")
+	runTestCases(t, result.Edges,connectTestCases)
 }
 
 // =============================================================================
@@ -444,7 +444,7 @@ func buildConnectAnyDatabaseTestData() *types.ServerInfo {
 func TestConnectAnyDatabaseEdges(t *testing.T) {
 	info := buildConnectAnyDatabaseTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, connectAnyDatabaseTestCases, "offensive")
+	runTestCases(t, result.Edges,connectAnyDatabaseTestCases)
 }
 
 // =============================================================================
@@ -535,7 +535,7 @@ func buildControlTestData() *types.ServerInfo {
 func TestControlEdges(t *testing.T) {
 	info := buildControlTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, controlTestCases, "offensive")
+	runTestCases(t, result.Edges,controlTestCases)
 }
 
 // =============================================================================
@@ -573,7 +573,7 @@ func buildImpersonateAnyLoginTestData() *types.ServerInfo {
 func TestImpersonateAnyLoginEdges(t *testing.T) {
 	info := buildImpersonateAnyLoginTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, impersonateAnyLoginTestCases, "offensive")
+	runTestCases(t, result.Edges,impersonateAnyLoginTestCases)
 }
 
 // =============================================================================
@@ -616,7 +616,7 @@ func buildAlterAnyServerRoleTestData() *types.ServerInfo {
 func TestAlterAnyServerRoleEdges(t *testing.T) {
 	info := buildAlterAnyServerRoleTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, alterAnyServerRoleTestCases, "offensive")
+	runTestCases(t, result.Edges,alterAnyServerRoleTestCases)
 }
 
 // =============================================================================
@@ -643,7 +643,7 @@ func buildGrantAnyPermTestData() *types.ServerInfo {
 func TestGrantAnyPermissionEdges(t *testing.T) {
 	info := buildGrantAnyPermTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, grantAnyPermTestCases, "offensive")
+	runTestCases(t, result.Edges,grantAnyPermTestCases)
 }
 
 // =============================================================================
@@ -679,7 +679,7 @@ func buildGrantAnyDBPermTestData() *types.ServerInfo {
 func TestGrantAnyDBPermissionEdges(t *testing.T) {
 	info := buildGrantAnyDBPermTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, grantAnyDBPermTestCases, "offensive")
+	runTestCases(t, result.Edges,grantAnyDBPermTestCases)
 }
 
 // =============================================================================
@@ -809,7 +809,7 @@ func findDBPrincipal(db *types.Database, name string) *types.DatabasePrincipal {
 func TestAddMemberEdges(t *testing.T) {
 	info := buildAddMemberTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, addMemberTestCases, "offensive")
+	runTestCases(t, result.Edges,addMemberTestCases)
 }
 
 // =============================================================================
@@ -900,7 +900,7 @@ func buildAlterTestData() *types.ServerInfo {
 func TestAlterEdges(t *testing.T) {
 	info := buildAlterTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, alterTestCases, "offensive")
+	runTestCases(t, result.Edges,alterTestCases)
 }
 
 // =============================================================================
@@ -926,7 +926,7 @@ func buildAlterAnyAppRoleTestData() *types.ServerInfo {
 func TestAlterAnyAppRoleEdges(t *testing.T) {
 	info := buildAlterAnyAppRoleTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, alterAnyAppRoleTestCases, "offensive")
+	runTestCases(t, result.Edges,alterAnyAppRoleTestCases)
 }
 
 // =============================================================================
@@ -947,7 +947,7 @@ func buildAlterAnyLoginTestData() *types.ServerInfo {
 func TestAlterAnyLoginEdges(t *testing.T) {
 	info := buildAlterAnyLoginTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, alterAnyLoginTestCases, "offensive")
+	runTestCases(t, result.Edges,alterAnyLoginTestCases)
 }
 
 // =============================================================================
@@ -1011,7 +1011,7 @@ func buildExecuteAsTestData() *types.ServerInfo {
 func TestExecuteAsEdges(t *testing.T) {
 	info := buildExecuteAsTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, executeAsTestCases, "offensive")
+	runTestCases(t, result.Edges,executeAsTestCases)
 }
 
 // =============================================================================
@@ -1092,7 +1092,7 @@ func buildChangeOwnerTestData() *types.ServerInfo {
 func TestChangeOwnerEdges(t *testing.T) {
 	info := buildChangeOwnerTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, changeOwnerTestCases, "offensive")
+	runTestCases(t, result.Edges,changeOwnerTestCases)
 }
 
 // =============================================================================
@@ -1152,7 +1152,7 @@ func buildChangePasswordTestData() *types.ServerInfo {
 func TestChangePasswordEdges(t *testing.T) {
 	info := buildChangePasswordTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, changePasswordTestCases, "offensive")
+	runTestCases(t, result.Edges,changePasswordTestCases)
 }
 
 // =============================================================================
@@ -1187,7 +1187,7 @@ func buildAlterAnyDBRoleTestData() *types.ServerInfo {
 func TestAlterAnyDBRoleEdges(t *testing.T) {
 	info := buildAlterAnyDBRoleTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, alterAnyDBRoleTestCases, "offensive")
+	runTestCases(t, result.Edges,alterAnyDBRoleTestCases)
 }
 
 // =============================================================================
@@ -1244,7 +1244,7 @@ func buildTakeOwnershipTestData() *types.ServerInfo {
 func TestTakeOwnershipEdges(t *testing.T) {
 	info := buildTakeOwnershipTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, takeOwnershipTestCases, "offensive")
+	runTestCases(t, result.Edges,takeOwnershipTestCases)
 }
 
 // =============================================================================
@@ -1344,7 +1344,7 @@ func buildExecuteAsOwnerTestData() *types.ServerInfo {
 func TestExecuteAsOwnerEdges(t *testing.T) {
 	info := buildExecuteAsOwnerTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, executeAsOwnerTestCases, "offensive")
+	runTestCases(t, result.Edges,executeAsOwnerTestCases)
 }
 
 // =============================================================================
@@ -1354,7 +1354,7 @@ func TestExecuteAsOwnerEdges(t *testing.T) {
 func TestExecuteOnHostEdges(t *testing.T) {
 	info := baseServerInfo()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, executeOnHostTestCases, "offensive")
+	runTestCases(t, result.Edges,executeOnHostTestCases)
 }
 
 // =============================================================================
@@ -1396,7 +1396,7 @@ func buildLinkedServerTestData() *types.ServerInfo {
 func TestLinkedAsAdminEdges(t *testing.T) {
 	info := buildLinkedServerTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, linkedAsAdminTestCases, "offensive")
+	runTestCases(t, result.Edges,linkedAsAdminTestCases)
 }
 
 // =============================================================================
@@ -1406,7 +1406,7 @@ func TestLinkedAsAdminEdges(t *testing.T) {
 func TestLinkedToEdges(t *testing.T) {
 	info := buildLinkedServerTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, linkedToTestCases, "offensive")
+	runTestCases(t, result.Edges,linkedToTestCases)
 }
 
 // =============================================================================
@@ -1466,7 +1466,7 @@ func buildHasMappedCredTestData() *types.ServerInfo {
 func TestHasMappedCredEdges(t *testing.T) {
 	info := buildHasMappedCredTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, hasMappedCredTestCases, "offensive")
+	runTestCases(t, result.Edges,hasMappedCredTestCases)
 }
 
 // =============================================================================
@@ -1503,7 +1503,7 @@ func buildHasProxyCredTestData() *types.ServerInfo {
 func TestHasProxyCredEdges(t *testing.T) {
 	info := buildHasProxyCredTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, hasProxyCredTestCases, "offensive")
+	runTestCases(t, result.Edges,hasProxyCredTestCases)
 }
 
 // =============================================================================
@@ -1547,7 +1547,7 @@ func buildImpersonateTestData() *types.ServerInfo {
 func TestImpersonateEdges(t *testing.T) {
 	info := buildImpersonateTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, impersonateTestCases, "offensive")
+	runTestCases(t, result.Edges,impersonateTestCases)
 }
 
 // =============================================================================
@@ -1570,7 +1570,7 @@ func buildHasDBScopedCredTestData() *types.ServerInfo {
 func TestHasDBScopedCredEdges(t *testing.T) {
 	info := buildHasDBScopedCredTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, hasDBScopedCredTestCases, "offensive")
+	runTestCases(t, result.Edges,hasDBScopedCredTestCases)
 }
 
 // =============================================================================
@@ -1626,7 +1626,7 @@ func buildCoerceAndRelayTestData() *types.ServerInfo {
 func TestCoerceAndRelayEdges(t *testing.T) {
 	info := buildCoerceAndRelayTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, coerceAndRelayTestCases, "offensive")
+	runTestCases(t, result.Edges,coerceAndRelayTestCases)
 }
 
 // =============================================================================
@@ -1653,7 +1653,7 @@ func buildGetTGSTestData() *types.ServerInfo {
 func TestGetTGSEdges(t *testing.T) {
 	info := buildGetTGSTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, getTGSTestCases, "offensive")
+	runTestCases(t, result.Edges,getTGSTestCases)
 }
 
 // =============================================================================
@@ -1663,7 +1663,7 @@ func TestGetTGSEdges(t *testing.T) {
 func TestGetAdminTGSEdges(t *testing.T) {
 	info := buildGetTGSTestData() // Re-use GetTGS data since it has domain sysadmin
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, getAdminTGSTestCases, "offensive")
+	runTestCases(t, result.Edges,getAdminTGSTestCases)
 }
 
 // =============================================================================
@@ -1683,7 +1683,7 @@ func buildServiceAccountForTestData() *types.ServerInfo {
 func TestServiceAccountForEdges(t *testing.T) {
 	info := buildServiceAccountForTestData()
 	result := runEdgeCreation(t, info, true)
-	runTestCasesForPerspective(t, result.Edges, serviceAccountForTestCases, "offensive")
+	runTestCases(t, result.Edges,serviceAccountForTestCases)
 }
 
 // =============================================================================

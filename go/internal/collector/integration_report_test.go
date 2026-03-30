@@ -22,35 +22,30 @@ import (
 
 // coverageEntry represents coverage status for a single edge type.
 type coverageEntry struct {
-	EdgeType  string `json:"edgeType"`
-	Offensive bool   `json:"offensive"`
-	Status    string `json:"status"`
+	EdgeType string `json:"edgeType"`
+	Found    bool   `json:"found"`
+	Status   string `json:"status"`
 }
 
-// offensiveOnlyEdges are edges that only exist in offensive perspective.
-var offensiveOnlyEdges = []string{
-	"MSSQL_AddMember",
-	"MSSQL_Alter",
-	"MSSQL_ChangeOwner",
-	"MSSQL_ChangePassword",
-	"MSSQL_Control",
-	"MSSQL_ExecuteAs",
-	"MSSQL_Impersonate",
-}
-
-// bothPerspectivesEdges are edges that exist in both perspectives.
-var bothPerspectivesEdges = []string{
+// knownEdgeTypes lists all edge types that MSSQLHound can produce.
+var knownEdgeTypes = []string{
 	"CoerceAndRelayToMSSQL",
 	"HasSession",
+	"MSSQL_AddMember",
+	"MSSQL_Alter",
 	"MSSQL_AlterAnyAppRole",
 	"MSSQL_AlterAnyDBRole",
 	"MSSQL_AlterAnyLogin",
 	"MSSQL_AlterAnyServerRole",
+	"MSSQL_ChangeOwner",
+	"MSSQL_ChangePassword",
 	"MSSQL_Connect",
 	"MSSQL_ConnectAnyDatabase",
 	"MSSQL_Contains",
+	"MSSQL_Control",
 	"MSSQL_ControlDB",
 	"MSSQL_ControlServer",
+	"MSSQL_ExecuteAs",
 	"MSSQL_ExecuteAsOwner",
 	"MSSQL_ExecuteOnHost",
 	"MSSQL_GetAdminTGS",
@@ -62,6 +57,7 @@ var bothPerspectivesEdges = []string{
 	"MSSQL_HasMappedCred",
 	"MSSQL_HasProxyCred",
 	"MSSQL_HostFor",
+	"MSSQL_Impersonate",
 	"MSSQL_ImpersonateAnyLogin",
 	"MSSQL_IsMappedTo",
 	"MSSQL_IsTrustedBy",
@@ -74,20 +70,10 @@ var bothPerspectivesEdges = []string{
 }
 
 func getAllEdgeTypes() []string {
-	var all []string
-	all = append(all, offensiveOnlyEdges...)
-	all = append(all, bothPerspectivesEdges...)
-	sort.Strings(all)
-	return all
-}
-
-func isOffensiveOnly(edgeType string) bool {
-	for _, e := range offensiveOnlyEdges {
-		if e == edgeType {
-			return true
-		}
-	}
-	return false
+	result := make([]string, len(knownEdgeTypes))
+	copy(result, knownEdgeTypes)
+	sort.Strings(result)
+	return result
 }
 
 // analyzeCoverage analyzes which edge types were found in test runs.
@@ -114,9 +100,9 @@ func analyzeCoverage(runs []integrationTestRun) []coverageEntry {
 		}
 
 		report = append(report, coverageEntry{
-			EdgeType:  edgeType,
-			Offensive: found,
-			Status:    status,
+			EdgeType: edgeType,
+			Found:    found,
+			Status:   status,
 		})
 	}
 
@@ -192,7 +178,6 @@ type testReport struct {
 }
 
 type testRunSummary struct {
-	Perspective string `json:"perspective"`
 	TotalTests  int    `json:"totalTests"`
 	Passed      int    `json:"passed"`
 	Failed      int    `json:"failed"`
@@ -253,7 +238,6 @@ func runIntegrationReport(t *testing.T, cfg *integrationConfig) {
 		}
 
 		report.TestRuns = append(report.TestRuns, testRunSummary{
-			Perspective: run.Perspective,
 			TotalTests:  total,
 			Passed:      passed,
 			Failed:      failed,
@@ -316,7 +300,7 @@ func generateHTMLReport(report testReport, path string) error {
 	tmpl, err := template.New("report").Funcs(template.FuncMap{
 		"statusColor": func(status string) string {
 			switch {
-			case status == "Both" || strings.Contains(status, "Expected") || strings.HasPrefix(status, "Found"):
+			case strings.Contains(status, "Expected") || strings.HasPrefix(status, "Found"):
 				return "#28a745"
 			case status == "MISSING":
 				return "#dc3545"
@@ -427,7 +411,7 @@ var htmlReportTemplate = `<!DOCTYPE html>
 
     {{range .TestRuns}}
     <div class="section">
-        <h2>{{.Perspective}} Perspective</h2>
+        <h2>Test Run</h2>
         <p>{{.TotalTests}} tests | {{.Passed}} passed | {{.Failed}} failed | {{.PassRate}} pass rate | {{.EdgeCount}} edges | {{.NodeCount}} nodes</p>
     </div>
     {{end}}
