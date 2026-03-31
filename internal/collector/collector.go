@@ -71,7 +71,9 @@ type Config struct {
 	ProxyAddr string // SOCKS5 proxy address for tunneling all traffic
 
 	// Logging
-	Logger *slog.Logger
+	Logger       *slog.Logger
+	LogPerTarget bool         // Save per-target log files in a separate zip
+	LogLevel     slog.Leveler // Shared log level for per-target file handlers
 }
 
 // Collector handles the data collection process
@@ -80,7 +82,9 @@ type Collector struct {
 	proxyDialer                proxydialer.ContextDialer
 	tempDir                    string
 	outputFiles                []string
-	outputFilesMu              sync.Mutex // Protects outputFiles
+	outputFilesMu              sync.Mutex   // Protects outputFiles
+	logFiles                   []string     // Per-target log file paths (separate from outputFiles)
+	logFilesMu                 sync.Mutex   // Protects logFiles
 	serversToProcess           []*ServerToProcess
 	linkedServersToProcess     []*ServerToProcess        // Linked servers discovered during processing
 	linkedServersMu            sync.Mutex                // Protects linkedServersToProcess
@@ -196,6 +200,8 @@ func (c *Collector) newMSSQLClient(serverInstance, userID, password string, log 
 
 // Run executes the collection process
 func (c *Collector) Run() error {
+	runStart := time.Now()
+
 	// Create proxy dialer if configured
 	if c.config.ProxyAddr != "" {
 		pd, err := proxydialer.New(c.config.ProxyAddr)
@@ -270,6 +276,17 @@ func (c *Collector) Run() error {
 		c.config.Logger.Info("No data collected - no output file created")
 	}
 
+	// Create separate zip for per-target log files
+	if c.config.LogPerTarget && len(c.logFiles) > 0 {
+		logsZipPath, err := c.createLogsZipFile()
+		if err != nil {
+			return fmt.Errorf("failed to create logs zip file: %w", err)
+		}
+		c.config.Logger.Info("Per-target logs written", "path", logsZipPath)
+	}
+
+	c.config.Logger.Info("Total run duration", "duration", time.Since(runStart).Round(time.Millisecond))
+
 	return nil
 }
 
@@ -320,8 +337,10 @@ func (c *Collector) processServersConcurrently() {
 	// Collect results
 	successCount := 0
 	failCount := 0
+	completed := 0
 	for result := range results {
-		log := c.config.Logger.With("target", result.server.ConnectionString, "progress", fmt.Sprintf("%d/%d", result.index+1, totalServers))
+		completed++
+		log := c.config.Logger.With("target", result.server.ConnectionString, "progress", fmt.Sprintf("%d/%d", completed, totalServers))
 		if result.err != nil {
 			log.Warn("Server processing failed", "error", result.err)
 			failCount++
@@ -356,6 +375,45 @@ func (c *Collector) addOutputFile(path string) {
 	c.outputFilesMu.Lock()
 	defer c.outputFilesMu.Unlock()
 	c.outputFiles = append(c.outputFiles, path)
+}
+
+// addLogFile adds a per-target log file to the list (thread-safe)
+func (c *Collector) addLogFile(path string) {
+	c.logFilesMu.Lock()
+	defer c.logFilesMu.Unlock()
+	c.logFiles = append(c.logFiles, path)
+}
+
+// createTargetLogger creates a logger for a specific server target.
+// When LogPerTarget is enabled, it returns a logger that writes to both stderr
+// and a per-target log file, plus a cleanup function to close the file.
+// When LogPerTarget is disabled, it returns a standard logger with a no-op cleanup.
+func (c *Collector) createTargetLogger(server *ServerToProcess) (*slog.Logger, func()) {
+	baseLog := c.config.Logger.With("target", server.ConnectionString)
+
+	if !c.config.LogPerTarget {
+		return baseLog, func() {}
+	}
+
+	logPath := filepath.Join(c.tempDir, c.generateLogFilename(server))
+	f, err := os.Create(logPath)
+	if err != nil {
+		c.config.Logger.Warn("Failed to create per-target log file, falling back to stderr only",
+			"target", server.ConnectionString, "path", logPath, "error", err)
+		return baseLog, func() {}
+	}
+
+	fileHandler := logging.NewHandler(f, &logging.Options{
+		Level:   c.config.LogLevel,
+		NoColor: true,
+	})
+
+	multi := logging.NewMultiHandler(c.config.Logger.Handler(), fileHandler)
+	multiLog := slog.New(multi).With("target", server.ConnectionString)
+
+	c.addLogFile(logPath)
+
+	return multiLog, func() { f.Close() }
 }
 
 // setupTempDir creates the temporary directory for output files
@@ -534,7 +592,11 @@ func (c *Collector) buildServerList() error {
 			c.config.Domain = domain
 			c.config.Logger.With("target", domain).Info("No servers specified, enumerating MSSQL SPNs from Active Directory")
 			if err := c.enumerateServersFromAD(); err != nil {
-				c.config.Logger.Warn("SPN enumeration failed. Hint: use --server/--server-list/--server-list-file to specify servers manually, --ldap-user/--ldap-password for explicit credentials, or use PowerShell version for SPN enumeration", "error", err)
+				hint := "Hint: use --server/--server-list/--server-list-file to specify servers manually, or --ldap-user/--ldap-password for LDAP credentials"
+				if runtime.GOOS != "windows" && c.config.LDAPUser == "" {
+					hint = "On Linux/macOS, explicit LDAP credentials are required for SPN enumeration. Use --ldap-user and --ldap-password, or specify servers manually with --server/--server-list/--server-list-file"
+				}
+				c.config.Logger.Warn(hint, "error", err)
 			}
 		} else {
 			c.config.Logger.Warn("No servers specified and could not detect domain. Use --domain to specify a domain or --server to specify a server.")
@@ -871,10 +933,16 @@ func (c *Collector) parseSPN(spnStr, accountName, accountSID string) *types.SPN 
 
 // processServer collects data from a single SQL Server
 func (c *Collector) processServer(server *ServerToProcess) error {
+	targetStart := time.Now()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	log := c.config.Logger.With("target", server.ConnectionString)
+	log, logCleanup := c.createTargetLogger(server)
+	defer func() {
+		log.Info("Target completed", "duration", time.Since(targetStart).Round(time.Millisecond))
+		logCleanup()
+	}()
 
 	// Check if we have SPN data for this server (keyed by ObjectIdentifier)
 	c.serverSPNDataMu.RLock()
@@ -894,11 +962,11 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 	if err := client.CheckPort(ctx); err != nil {
 		log.Warn("Port not reachable, skipping", "error", err)
 		if spnInfo != nil {
-			return c.processServerFromSPNData(server, spnInfo, nil, err)
+			return c.processServerFromSPNData(server, spnInfo, nil, err, log)
 		}
 		spnInfo = c.lookupSPNsForServer(server)
 		if spnInfo != nil {
-			return c.processServerFromSPNData(server, spnInfo, nil, err)
+			return c.processServerFromSPNData(server, spnInfo, nil, err, log)
 		}
 		return fmt.Errorf("port not reachable: %w", err)
 	}
@@ -928,12 +996,12 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 		// Skip authentication - go straight to partial output handling
 		if spnInfo != nil {
 			log.Info("EPA prereq failed but server has SPN - creating nodes/edges from SPN data")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"))
+			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"), log)
 		}
 		spnInfo = c.lookupSPNsForServer(server)
 		if spnInfo != nil {
 			log.Info("EPA prereq failed - looked up SPN from AD, creating partial output")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"))
+			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"), log)
 		}
 		return fmt.Errorf("EPA prereq check failed and no SPN data available for %s", server.ConnectionString)
 	}
@@ -945,16 +1013,16 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 		log.Info("EPA unmodified connection failed, skipping authentication attempts")
 		if spnInfo != nil {
 			log.Info("Server has SPN - creating nodes/edges from SPN/EPA data")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA unmodified connection failed"))
+			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA unmodified connection failed"), log)
 		}
 		spnInfo = c.lookupSPNsForServer(server)
 		if spnInfo != nil {
 			log.Info("Looked up SPN from AD, creating partial output")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA unmodified connection failed"))
+			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA unmodified connection failed"), log)
 		}
 		// No SPN data but EPA data is available
 		log.Info("No SPN data but EPA data available, creating partial output")
-		return c.processServerFromSPNData(server, nil, epaResult, fmt.Errorf("EPA unmodified connection failed"))
+		return c.processServerFromSPNData(server, nil, epaResult, fmt.Errorf("EPA unmodified connection failed"), log)
 	}
 
 	if err := client.Connect(ctx); err != nil {
@@ -1029,20 +1097,20 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 		// Connection failed - check if we have SPN data to create partial output
 		if spnInfo != nil {
 			log.Info("Connection failed but server has SPN - creating nodes/edges from SPN data")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, err)
+			return c.processServerFromSPNData(server, spnInfo, epaResult, err, log)
 		}
 
 		// No SPN data available - try to look up SPNs from AD for this server
 		spnInfo = c.lookupSPNsForServer(server)
 		if spnInfo != nil {
 			log.Info("Connection failed - looked up SPN from AD, creating partial output")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, err)
+			return c.processServerFromSPNData(server, spnInfo, epaResult, err, log)
 		}
 
 		// No SPN data - check if we have EPA data to create a minimal node
 		if epaResult != nil {
 			log.Info("Connection failed - no SPN data but EPA data available, creating partial output")
-			return c.processServerFromSPNData(server, nil, epaResult, err)
+			return c.processServerFromSPNData(server, nil, epaResult, err, log)
 		}
 
 		// No SPN data and no EPA data - skip this server
@@ -1060,20 +1128,20 @@ connected:
 		// Collection failed after connection - try partial output if we have SPN data
 		if spnInfo != nil {
 			log.Info("Collection failed but server has SPN - creating nodes/edges from SPN data")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, err)
+			return c.processServerFromSPNData(server, spnInfo, epaResult, err, log)
 		}
 
 		// Try AD lookup for SPN data
 		spnInfo = c.lookupSPNsForServer(server)
 		if spnInfo != nil {
 			log.Info("Collection failed - looked up SPN from AD, creating partial output")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, err)
+			return c.processServerFromSPNData(server, spnInfo, epaResult, err, log)
 		}
 
 		// No SPN data - check if we have EPA data to create a minimal node
 		if epaResult != nil {
 			log.Info("Collection failed - no SPN data but EPA data available, creating partial output")
-			return c.processServerFromSPNData(server, nil, epaResult, err)
+			return c.processServerFromSPNData(server, nil, epaResult, err, log)
 		}
 
 		return fmt.Errorf("collection failed: %w", err)
@@ -1135,8 +1203,7 @@ connected:
 
 // processServerFromSPNData creates partial output when connection fails but SPN and/or EPA data exists.
 // spnInfo may be nil if only EPA data is available; epaResult may be nil if only SPN data is available.
-func (c *Collector) processServerFromSPNData(server *ServerToProcess, spnInfo *ServerSPNInfo, epaResult *mssql.EPATestResult, connErr error) error {
-	log := c.config.Logger.With("target", server.ConnectionString)
+func (c *Collector) processServerFromSPNData(server *ServerToProcess, spnInfo *ServerSPNInfo, epaResult *mssql.EPATestResult, connErr error, log *slog.Logger) error {
 
 	// Try to resolve the FQDN
 	fqdn := server.Hostname
@@ -1443,47 +1510,40 @@ func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log 
 		machineName = strings.Split(machineName, ".")[0]
 	}
 
-	log.Log(context.Background(), logging.LevelVerbose, "Attempting to resolve computer SID", "machine", machineName, "domain", domain)
-
-	// Method 1: Try Windows API (LookupAccountName) - most reliable on Windows
-	log.Log(context.Background(), logging.LevelVerbose, "Method 1: Windows API LookupAccountName")
-	sid, err := ad.ResolveComputerSIDWindows(machineName, domain)
-	if err == nil && sid != "" {
-		c.applyComputerSID(serverInfo, sid, log)
-		log.Log(context.Background(), logging.LevelVerbose, "Resolved computer SID via Windows API", "sid", sid)
-		return
-	}
-	log.Log(context.Background(), logging.LevelVerbose, "Windows API method failed", "error", err)
-
-	// Method 2: If we have a domain SID from SQL Server, try Windows API with that context
-	if serverInfo.DomainSID != "" {
-		log.Log(context.Background(), logging.LevelVerbose, "Method 2: Windows API with domain SID context")
-		sid, err := ad.ResolveComputerSIDByDomainSID(machineName, serverInfo.DomainSID, domain)
+	// Method 1 & 2: Try Windows APIs (only available on Windows)
+	if runtime.GOOS == "windows" {
+		log.Log(context.Background(), logging.LevelVerbose, "Attempting to resolve computer SID", "machine", machineName, "domain", domain, "method", "WindowsAPI")
+		sid, err := ad.ResolveComputerSIDWindows(machineName, domain)
 		if err == nil && sid != "" {
-			c.applyComputerSID(serverInfo, sid, log)
-			log.Log(context.Background(), logging.LevelVerbose, "Resolved computer SID via Windows API (domain context)", "sid", sid)
+			c.applyComputerSID(serverInfo, sid, "WindowsAPI", log)
 			return
 		}
-		log.Log(context.Background(), logging.LevelVerbose, "Windows API with domain context failed", "error", err)
+		log.Log(context.Background(), logging.LevelVerbose, "Windows API LookupAccountName failed", "error", err)
+
+		if serverInfo.DomainSID != "" {
+			sid, err := ad.ResolveComputerSIDByDomainSID(machineName, serverInfo.DomainSID, domain)
+			if err == nil && sid != "" {
+				c.applyComputerSID(serverInfo, sid, "WindowsAPI", log)
+				return
+			}
+			log.Log(context.Background(), logging.LevelVerbose, "Windows API with domain SID context failed", "error", err)
+		}
 	}
 
-	// Method 3: Try LDAP
+	// Try LDAP
 	if domain == "" {
-		log.Log(context.Background(), logging.LevelVerbose, "Cannot try LDAP: no domain specified (use -d flag)")
-		log.Info("Could not resolve computer SID (no domain specified)")
+		log.Log(context.Background(), logging.LevelVerbose, "Cannot resolve computer SID: no domain specified (use -d flag)")
 		return
 	}
 
-	log.Log(context.Background(), logging.LevelVerbose, "Method 3: LDAP query")
-
-	// Create AD client
+	log.Log(context.Background(), logging.LevelVerbose, "Attempting to resolve computer SID", "machine", machineName, "domain", domain, "method", "LDAP")
 	adClient := c.newADClient(domain)
 	if adClient == nil {
 		return
 	}
 	defer adClient.Close()
 
-	sid, err = adClient.ResolveComputerSID(machineName)
+	sid, err := adClient.ResolveComputerSID(machineName)
 	if err != nil {
 		if isLDAPAuthError(err) {
 			c.setLDAPAuthFailed()
@@ -1492,18 +1552,17 @@ func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log 
 		return
 	}
 
-	c.applyComputerSID(serverInfo, sid, log)
-	log.Log(context.Background(), logging.LevelVerbose, "Resolved computer SID via LDAP", "sid", sid)
+	c.applyComputerSID(serverInfo, sid, "LDAP", log)
 }
 
 // applyComputerSID applies the resolved computer SID to the server info and updates all references
-func (c *Collector) applyComputerSID(serverInfo *types.ServerInfo, sid string, log *slog.Logger) {
+func (c *Collector) applyComputerSID(serverInfo *types.ServerInfo, sid string, method string, log *slog.Logger) {
 	// Store the old ObjectIdentifier to update references
 	oldObjectIdentifier := serverInfo.ObjectIdentifier
 
 	serverInfo.ComputerSID = sid
 	serverInfo.ObjectIdentifier = fmt.Sprintf("%s:%d", sid, serverInfo.Port)
-	log.Info("Resolved computer SID", "computer", serverInfo.Hostname, "sid", sid)
+	log.Info("Resolved computer SID", "computer", serverInfo.Hostname, "sid", sid, "method", method)
 
 	// Update all ObjectIdentifiers that reference the old server identifier
 	c.updateObjectIdentifiers(serverInfo, oldObjectIdentifier)
@@ -1657,17 +1716,14 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 		isComputerAccount := strings.HasSuffix(sa.Name, "$")
 
 		// If we don't have a SID yet, try to resolve it
-		if sa.SID == "" {
-			// Method 1: Try Windows API first (most reliable on Windows)
-			log.Log(context.Background(), logging.LevelVerbose, "Resolving service account via Windows API", "account", sa.Name)
+		if sa.SID == "" && runtime.GOOS == "windows" {
 			sid, err := ad.ResolveAccountSIDWindows(sa.Name)
 			if err == nil && sid != "" && strings.HasPrefix(sid, "S-1-5-21-") {
 				sa.SID = sid
 				sa.ObjectIdentifier = sid
-				log.Log(context.Background(), logging.LevelVerbose, "Resolved service account SID via Windows API", "sid", sid)
-				log.Info("Resolved service account SID", "account", sa.Name, "sid", sa.SID)
+				log.Info("Resolved service account SID", "account", sa.Name, "sid", sa.SID, "method", "WindowsAPI")
 			} else {
-				log.Log(context.Background(), logging.LevelVerbose, "Windows API failed", "error", err)
+				log.Log(context.Background(), logging.LevelVerbose, "Windows API SID resolution failed", "account", sa.Name, "error", err)
 			}
 		}
 
@@ -1740,7 +1796,7 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 			if principal.ObjectClass == "computer" {
 				sa.Name = principal.Name
 			}
-			log.Info("Resolved service account SID", "account", sa.Name, "sid", sa.SID)
+			log.Info("Resolved service account SID", "account", sa.Name, "sid", sa.SID, "method", "LDAP")
 		}
 	}
 }
@@ -1782,7 +1838,7 @@ func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, l
 			if principal := resolveIdentity(cred.CredentialIdentity); principal != nil {
 				cred.ResolvedSID = principal.SID
 				cred.ResolvedPrincipal = principal
-				log.Log(context.Background(), logging.LevelVerbose, "Resolved credential", "identity", cred.CredentialIdentity, "sid", principal.SID)
+				log.Log(context.Background(), logging.LevelVerbose, "Resolved credential", "identity", cred.CredentialIdentity, "sid", principal.SID, "method", "LDAP")
 			}
 		}
 	}
@@ -1792,7 +1848,7 @@ func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, l
 		if principal := resolveIdentity(serverInfo.Credentials[i].CredentialIdentity); principal != nil {
 			serverInfo.Credentials[i].ResolvedSID = principal.SID
 			serverInfo.Credentials[i].ResolvedPrincipal = principal
-			log.Log(context.Background(), logging.LevelVerbose, "Resolved credential", "identity", serverInfo.Credentials[i].CredentialIdentity, "sid", principal.SID)
+			log.Log(context.Background(), logging.LevelVerbose, "Resolved credential", "identity", serverInfo.Credentials[i].CredentialIdentity, "sid", principal.SID, "method", "LDAP")
 		}
 	}
 
@@ -1801,7 +1857,7 @@ func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, l
 		if principal := resolveIdentity(serverInfo.ProxyAccounts[i].CredentialIdentity); principal != nil {
 			serverInfo.ProxyAccounts[i].ResolvedSID = principal.SID
 			serverInfo.ProxyAccounts[i].ResolvedPrincipal = principal
-			log.Log(context.Background(), logging.LevelVerbose, "Resolved proxy credential", "identity", serverInfo.ProxyAccounts[i].CredentialIdentity, "sid", principal.SID)
+			log.Log(context.Background(), logging.LevelVerbose, "Resolved proxy credential", "identity", serverInfo.ProxyAccounts[i].CredentialIdentity, "sid", principal.SID, "method", "LDAP")
 		}
 	}
 
@@ -1812,7 +1868,7 @@ func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, l
 			if principal := resolveIdentity(cred.CredentialIdentity); principal != nil {
 				cred.ResolvedSID = principal.SID
 				cred.ResolvedPrincipal = principal
-				log.Log(context.Background(), logging.LevelVerbose, "Resolved DB scoped credential", "identity", cred.CredentialIdentity, "sid", principal.SID)
+				log.Log(context.Background(), logging.LevelVerbose, "Resolved DB scoped credential", "identity", cred.CredentialIdentity, "sid", principal.SID, "method", "LDAP")
 			}
 		}
 	}
@@ -6050,6 +6106,34 @@ func (c *Collector) createZipFile() (string, error) {
 	return zipPath, nil
 }
 
+// createLogsZipFile creates a separate zip file containing per-target log files.
+func (c *Collector) createLogsZipFile() (string, error) {
+	timestamp := time.Now().Format("20060102-150405")
+	zipDir := c.config.ZipDir
+	if zipDir == "" {
+		zipDir = "."
+	}
+
+	zipPath := filepath.Join(zipDir, fmt.Sprintf("mssql-logs-%s.zip", timestamp))
+
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		return "", err
+	}
+	defer zipFile.Close()
+
+	zipWriter := zip.NewWriter(zipFile)
+	defer zipWriter.Close()
+
+	for _, filePath := range c.logFiles {
+		if err := addFileToZip(zipWriter, filePath); err != nil {
+			return "", fmt.Errorf("failed to add %s to logs zip: %w", filePath, err)
+		}
+	}
+
+	return zipPath, nil
+}
+
 // addFileToZip adds a file to a zip archive
 func addFileToZip(zipWriter *zip.Writer, filePath string) error {
 	file, err := os.Open(filePath)
@@ -6114,6 +6198,11 @@ func (c *Collector) generateFilename(server *ServerToProcess) string {
 	cleanedName = replacer.Replace(cleanedName)
 
 	return fmt.Sprintf("mssql-%s.json", cleanedName)
+}
+
+// generateLogFilename creates a log filename for a server, matching the JSON naming convention.
+func (c *Collector) generateLogFilename(server *ServerToProcess) string {
+	return strings.TrimSuffix(c.generateFilename(server), ".json") + ".log"
 }
 
 // sanitizeFilename makes a string safe for use as a filename

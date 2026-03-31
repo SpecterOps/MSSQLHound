@@ -94,7 +94,7 @@ func resolveServerInstance(instance, dcIP string) string {
 		return instance
 	}
 
-	// Try resolving with the custom DNS resolver
+	// Try resolving with the DNS resolver
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {

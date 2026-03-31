@@ -70,13 +70,13 @@ func runTestEPAMatrix(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--user and --password are required (DOMAIN\\user format)")
 	}
 
-	// Configure custom DNS resolver (same logic as root command)
+	// Configure DNS resolver (same logic as root command)
 	resolver := dnsResolver
 	if resolver == "" && dcIP != "" {
 		resolver = dcIP
 	}
 	if resolver != "" {
-		logger.Info("Using custom DNS resolver", "resolver", resolver)
+		logger.Info("Using DNS resolver", "resolver", resolver)
 		var dnsDialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 		if proxyAddr != "" {
 			pd, err := proxydialer.New(proxyAddr)

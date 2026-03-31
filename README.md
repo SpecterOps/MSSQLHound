@@ -15,6 +15,12 @@ Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), T
   - [System Requirements](#system-requirements)
   - [Minimum Permissions](#minimum-permissions)
   - [Recommended Permissions](#recommended-permissions)
+- [OPSEC](#opsec)
+  - [Network Connections](#network-connections)
+  - [Authentication Events](#authentication-events)
+  - [Subprocesses Executed](#subprocesses-executed)
+  - [SQL Queries Executed on Targets](#sql-queries-executed-on-targets)
+  - [Files Created](#files-created)
 - [Go Version](#go-version)
   - [Why a Go Port?](#why-a-go-port)
   - [Building](#building)
@@ -113,6 +119,172 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
        - `msdb.dbo.sysproxysubsystem`
        - `msdb.dbo.syssubsystems`
        - Only used for proxy account collection
+
+# OPSEC
+
+This section documents every network connection, authentication event, subprocess, query, and file artifact produced by MSSQLHound so operators can make informed decisions about detection risk.
+
+## Network Connections
+
+All TCP connections support SOCKS5 proxy tunneling (`--proxy`). TLS connections use `InsecureSkipVerify=true` and cap at TLS 1.2.
+
+| Protocol | Port | Transport | Target | Purpose | Conditions |
+|----------|------|-----------|--------|---------|------------|
+| TDS (SQL Server) | 1433/tcp (default, configurable) | TCP with optional TLS | Each SQL Server being enumerated | SQL authentication and query execution | Always (core functionality) |
+| SQL Browser | 1434/udp | UDP | SQL Server host | Named instance port resolution | Only for named instances without an explicit port. **Not proxied through SOCKS5.** |
+| LDAPS | 636/tcp | TLS | Domain controller | SPN enumeration, principal/SID resolution, computer enumeration | First LDAP method attempted |
+| LDAP + StartTLS | 389/tcp | TCP upgraded to TLS | Domain controller | Same as LDAPS | Fallback if LDAPS fails |
+| Plain LDAP | 389/tcp | TCP (unencrypted) | Domain controller | Same as LDAPS | Final LDAP fallback |
+| DNS | 53/udp | UDP | `--dns-resolver` or `--dc-ip` | SRV records (`_ldap._tcp.<domain>`), A records, reverse DNS (PTR) | When domain resolution is needed |
+| WinRM | 5985/tcp (HTTP) or 5986/tcp (HTTPS) | HTTP/HTTPS | SQL Server host | Remote PowerShell for EPA configuration | **Only `test-epa-matrix` subcommand** |
+| WMI/DCOM | 135/tcp + dynamic RPC | TCP | SQL Server host | Enumerate local group members (`Win32_GroupUser`) | **Windows only.** Fails gracefully on other platforms. |
+
+### TDS Encryption Modes
+
+| Mode | Description |
+|------|-------------|
+| TDS 8.0 (strict) | Full TLS before any TDS traffic. Uses ALPN `tds/8.0`. |
+| TLS-in-TDS | TLS negotiated inside the TDS PRELOGIN handshake. |
+| Force Encryption | Server-mandated encryption after PRELOGIN exchange. |
+
+### LDAP Queries Issued
+
+| Filter | Purpose |
+|--------|---------|
+| `(servicePrincipalName=MSSQLSvc/*)` | Find all MSSQL SPNs in the domain |
+| `(servicePrincipalName=MSSQLSvc/<host>*)` (short + FQDN) | Look up SPNs for a specific server |
+| `(&(objectCategory=computer)(objectClass=computer))` | Enumerate all domain computers (`--scan-all-computers`) |
+| `(objectSid=<sid>)` | Resolve a SID to an AD principal |
+| `(sAMAccountName=<name>)` | Resolve an account name to an AD principal |
+| `(&(objectClass=computer)(sAMAccountName=<name>$))` | Resolve a computer account by name |
+
+All LDAP searches use subtree scope with 1000-result paging.
+
+## Authentication Events
+
+Each authentication below generates log entries on the target system.
+
+| Event | Target | Method | Details | Conditions |
+|-------|--------|--------|---------|------------|
+| SQL Server login | SQL Server | SQL auth (username/password in TDS LOGIN7) | Logged as a login event in SQL Server audit logs | When `-u`/`-p` supplied |
+| SQL Server login | SQL Server | Windows auth (NTLM SSPI in TDS LOGIN7: Negotiate → Challenge → Authenticate) | Includes Channel Binding Token (CBT) when TLS is active. Logged as a login event in SQL Server audit logs. | When using domain credentials |
+| LDAP bind | Domain controller | GSSAPI/SSPI (Kerberos) | Uses current user's Windows security context | Windows only, when no explicit LDAP credentials |
+| LDAP bind | Domain controller | NTLM or Simple bind (UPN, DN, or DOMAIN\user) | Logged as an authentication event on the DC | When `--ldap-user`/`--ldap-password` supplied or SQL credentials reused |
+| WinRM login | SQL Server host | NTLM or Basic auth | Logged as a Windows authentication event | **Only `test-epa-matrix` subcommand** |
+| WMI/DCOM login | SQL Server host | Current user's Windows credentials | Logged as a DCOM authentication event | **Windows only**, during local group enumeration |
+
+## Subprocesses Executed
+
+MSSQLHound spawns local `powershell.exe` processes as fallbacks when native Go clients fail. All subprocesses run on the **operator's machine**, not on targets (except WinRM remote execution).
+
+| Executable | Arguments | Purpose | Conditions |
+|------------|-----------|---------|------------|
+| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | SQL query execution via `System.Data.SqlClient` | Windows only. Fallback when Go TDS driver fails with "untrusted domain" error. **Not used when `--proxy` is set.** |
+| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | SPN enumeration via `[adsisearcher]` (ADSI) | Windows only. Fallback when Go LDAP client fails. |
+| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | Domain computer enumeration via `[adsisearcher]` (ADSI) | Windows only. Fallback when Go LDAP client fails. |
+| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | SPN lookup by hostname via `[adsisearcher]` (ADSI) | Windows only. Fallback when Go LDAP client fails. |
+| `powershell.exe` | `-NoProfile -NonInteractive -EncodedCommand <base64>` | Remote PowerShell via WinRM: EPA registry configuration and SQL service restart on target host | **Only `test-epa-matrix` subcommand.** Executes on the remote target via WinRM. |
+
+## SQL Queries Executed on Targets
+
+All queries are **read-only**. No data is written to any target server.
+
+### Server Metadata
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT SERVERPROPERTY('ServerName'), SERVERPROPERTY('MachineName'), SERVERPROPERTY('InstanceName'), SERVERPROPERTY('ProductVersion'), SERVERPROPERTY('Edition'), ...` | Server name, version, edition |
+| `SELECT @@VERSION` | Full version string |
+| `SERVERPROPERTY('IsIntegratedSecurityOnly')` | Authentication mode (Windows-only vs mixed) |
+
+### Server Principals and Permissions
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT ... FROM sys.server_principals` | Enumerate logins and server roles |
+| `SELECT ... FROM sys.server_role_members JOIN sys.server_principals` | Map server role membership |
+| `SELECT ... FROM sys.server_permissions` | Enumerate server-level permissions (GRANT, DENY) |
+
+### Databases
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT ... FROM sys.databases` | List databases with owner SID, trustworthy flag, state |
+
+### Database Principals and Permissions (per database)
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT ... FROM [db].sys.database_principals` | Enumerate users and roles per database |
+| `SELECT ... FROM [db].sys.database_role_members` | Map database role membership |
+| `SELECT ... FROM [db].sys.database_permissions` | Enumerate database-level permissions |
+
+### Service Accounts
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT ... FROM sys.dm_server_services` | Discover SQL Server service accounts (SQL 2008 R2+) |
+| `EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'SYSTEM\CurrentControlSet\Services\...', N'ObjectName'` | Fallback: read service account from registry |
+
+### Encryption and EPA Settings
+
+| Query | Purpose |
+|-------|---------|
+| `EXEC master.dbo.xp_instance_regread ... 'SuperSocketNetLib', 'ForceEncryption'` | Check Force Encryption setting |
+| `EXEC master.dbo.xp_instance_regread ... 'SuperSocketNetLib', 'ExtendedProtection'` | Check Extended Protection (EPA) setting |
+
+### Credentials and Proxies
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT ... FROM sys.credentials` | Enumerate server-level credentials |
+| `SELECT ... FROM [db].sys.database_scoped_credentials` | Enumerate database-scoped credentials |
+| `SELECT ... FROM sys.server_principal_credentials` | Map login-to-credential relationships |
+| `SELECT ... FROM msdb.dbo.sysproxies` | Enumerate SQL Agent proxy accounts |
+| `SELECT ... FROM msdb.dbo.sysproxylogin` | Map proxy-to-login authorization |
+| `SELECT ... FROM msdb.dbo.sysproxysubsystem` | Map proxy-to-subsystem relationships |
+
+### Linked Servers
+
+| Query | Purpose |
+|-------|---------|
+| `SELECT ... FROM sys.servers JOIN sys.linked_logins` | Enumerate linked servers and login mappings |
+| `SELECT ... FROM OPENQUERY([LinkedServer], '...')` | Recursive linked server traversal (up to 10 levels deep) |
+
+## Files Created
+
+**No files are written to any target server.** All artifacts are created on the operator's machine.
+
+### Directory Structure
+
+```
+{system temp or --temp-dir}/
+  mssql-bloodhound-YYYYMMDD-HHMMSS/
+    mssql-{hostname}.json                    Per-server BloodHound data (default port/instance)
+    mssql-{hostname}_{port}.json             Non-default port
+    mssql-{hostname}_{port}_{instance}.json  Named instance
+    mssql-{hostname}.log                     Per-server log (only if per-target logging enabled)
+    computers.json                           AD computer nodes (unless --skip-ad-nodes)
+    users.json                               AD user nodes (unless --skip-ad-nodes)
+    groups.json                              AD group nodes (unless --skip-ad-nodes)
+
+{current directory or --zip-dir}/
+  mssql-bloodhound-YYYYMMDD-HHMMSS.zip      Final output (contains all JSON files above)
+  mssql-logs-YYYYMMDD-HHMMSS.zip            Log archive (only if per-target logging enabled)
+```
+
+### Naming Conventions
+
+| Component | Rule |
+|-----------|------|
+| Default port (1433) | Omitted from filename |
+| Default instance (`MSSQLSERVER`) | Omitted from filename |
+| Separator | Underscore (`_`) between hostname, port, instance |
+| Special characters | `\ / : * ? " < > \|` replaced with `_` |
+
+### Cleanup
+
+The temporary directory is removed after the zip file is created. The only persistent artifacts are the zip file(s) in `--zip-dir` (default: current directory).
 
 # Go Version
 
@@ -897,4 +1069,4 @@ All edges based on permissions may contain the `With Grant` property, which mean
 # Credits
 
 - Original PowerShell version by Chris Thompson (@_Mayyhem) at SpecterOps
-- Go port by Javier Azofra at Siemens Healthineers
+- Go port by Javier Azofra at Siemens Healthineers and Chris Thompson

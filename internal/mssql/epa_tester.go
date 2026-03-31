@@ -34,7 +34,7 @@ type EPATestConfig struct {
 	DisableMIC         bool // Diagnostic: omit MsvAvFlags and MIC from Type3
 	UseRawTargetInfo   bool // Diagnostic: use server's raw target info (no EPA mods, no MIC)
 	UseClientTimestamp bool // Diagnostic: use time.Now() FILETIME instead of server's MsvAvTimestamp
-	DNSResolver  string // Custom DNS resolver IP (e.g. domain controller)
+	DNSResolver  string // DNS resolver IP (e.g. domain controller)
 	ProxyDialer  interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	}
@@ -927,24 +927,24 @@ func readTLSTDSPacket(tlsConn net.Conn) ([]byte, error) {
 	return payload, nil
 }
 
-// customResolver returns a *net.Resolver that uses the given DNS server IP,
+// dnsResolver returns a *net.Resolver that uses the given DNS server IP,
 // or nil if dnsResolver is empty (caller should use the default resolver).
-func customResolver(dnsResolver string) *net.Resolver {
-	if dnsResolver == "" {
+func dnsResolverFor(dns string) *net.Resolver {
+	if dns == "" {
 		return net.DefaultResolver
 	}
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, "udp", net.JoinHostPort(dnsResolver, "53"))
+			return d.DialContext(ctx, "udp", net.JoinHostPort(dns, "53"))
 		},
 	}
 }
 
 // hostDialer wraps *net.Dialer to implement go-mssqldb's HostDialer interface.
 // When go-mssqldb sees a HostDialer, it passes the hostname to DialContext
-// instead of resolving it with net.LookupIP, allowing our custom net.Resolver
+// instead of resolving it with net.LookupIP, allowing our net.Resolver
 // to handle DNS resolution.
 type hostDialer struct {
 	*net.Dialer
@@ -959,7 +959,7 @@ func (d *hostDialer) HostName() string { return "" }
 func dialerWithResolver(dnsResolver string, timeout time.Duration) *hostDialer {
 	d := &net.Dialer{Timeout: timeout}
 	if dnsResolver != "" {
-		d.Resolver = customResolver(dnsResolver)
+		d.Resolver = dnsResolverFor(dnsResolver)
 	}
 	return &hostDialer{Dialer: d}
 }

@@ -39,6 +39,8 @@ var (
 	zipDir         string
 	fileSizeLimit  string
 
+	logPerTarget                    bool
+
 	domainEnumOnly                  bool
 	skipLinkedServerEnum            bool
 	collectFromLinkedServers        bool
@@ -103,6 +105,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().StringVar(&tempDir, "temp-dir", "", "Temporary directory for output files")
 	rootCmd.Flags().StringVar(&zipDir, "zip-dir", ".", "Directory for final zip file")
 	rootCmd.Flags().StringVar(&fileSizeLimit, "file-size-limit", "1GB", "Stop enumeration after files exceed this size")
+	rootCmd.Flags().BoolVar(&logPerTarget, "log-per-target", false, "Save per-target log files in a separate zip")
 	rootCmd.Flags().BoolVar(&domainEnumOnly, "domain-enum-only", false, "Only enumerate SPNs, skip MSSQL collection")
 	rootCmd.Flags().BoolVar(&skipLinkedServerEnum, "skip-linked-servers", false, "Don't enumerate linked servers")
 	rootCmd.Flags().BoolVar(&collectFromLinkedServers, "collect-from-linked", false, "Perform full collection on discovered linked servers")
@@ -128,7 +131,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 func run(cmd *cobra.Command, args []string) error {
 	logger.Info("MSSQLHound starting", "version", version)
 
-	// Configure custom DNS resolver if specified
+	// Configure DNS resolver if specified
 	// If --dc-ip is specified but --dns-resolver is not, use dc-ip as the resolver
 	resolver := dnsResolver
 	if resolver == "" && dcIP != "" {
@@ -136,7 +139,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if resolver != "" {
-		logger.Info("Using custom DNS resolver", "resolver", resolver)
+		logger.Info("Using DNS resolver", "resolver", resolver)
 		var dnsDialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 		if proxyAddr != "" {
 			pd, err := proxydialer.New(proxyAddr)
@@ -204,6 +207,8 @@ func run(cmd *cobra.Command, args []string) error {
 		Workers:                         workers,
 		ProxyAddr:                       proxyAddr,
 		Logger:                          logger,
+		LogPerTarget:                    logPerTarget,
+		LogLevel:                        &logLevel,
 	}
 
 	if proxyAddr != "" {

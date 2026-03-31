@@ -192,13 +192,13 @@ func (d *epaTDSDialer) DialContext(ctx context.Context, network, addr string) (n
 // LOGIN7, so this wrapper detects LOGIN7 writes and switches subsequent I/O to
 // raw TCP — matching the EPA tester's behavior in runEPATest.
 type preloginFakerConn struct {
-	net.Conn              // TLS connection (used during LOGIN7 phase)
-	rawConn    net.Conn   // raw TCP connection (used after LOGIN7 for ENCRYPT_OFF)
-	state      int        // 0: intercept prelogin, 1: TLS pass-through, 2: raw TCP pass-through
-	fakeResp   []byte     // fake PRELOGIN response TDS packet
-	fakeOffset int        // bytes consumed from fakeResp
+	net.Conn            // TLS connection (used during LOGIN7 phase)
+	rawConn    net.Conn // raw TCP connection (used after LOGIN7 for ENCRYPT_OFF)
+	state      int      // 0: intercept prelogin, 1: TLS pass-through, 2: raw TCP pass-through
+	fakeResp   []byte   // fake PRELOGIN response TDS packet
+	fakeOffset int      // bytes consumed from fakeResp
 	logger     *slog.Logger
-	encryptOff bool       // true when server uses ENCRYPT_OFF (drops TLS after LOGIN7)
+	encryptOff bool // true when server uses ENCRYPT_OFF (drops TLS after LOGIN7)
 }
 
 func (c *preloginFakerConn) Write(b []byte) (int, error) {
@@ -361,7 +361,7 @@ type Client struct {
 	psClient                 *PowerShellClient // PowerShell client for fallback
 	collectFromLinkedServers bool              // Whether to collect from linked servers
 	epaResult                *EPATestResult    // Pre-computed EPA result (set before Connect)
-	dnsResolver              string            // Custom DNS resolver IP (e.g. domain controller)
+	dnsResolver              string            // DNS resolver IP (e.g. domain controller)
 	logger                   *slog.Logger
 	proxyDialer              interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
@@ -933,7 +933,7 @@ func (c *Client) SetLDAPCredentials(ldapUser, ldapPassword string) {
 	c.ldapPassword = ldapPassword
 }
 
-// SetDNSResolver sets a custom DNS resolver IP (e.g. domain controller) for hostname lookups.
+// SetDNSResolver sets the DNS resolver IP (e.g. domain controller) for hostname lookups.
 func (c *Client) SetDNSResolver(resolver string) {
 	c.dnsResolver = resolver
 }
@@ -1051,7 +1051,7 @@ func (c *Client) TestEPA(ctx context.Context) (*EPATestResult, error) {
 	}
 
 	// Step 1: Detect encryption mode and run prerequisite check
-	c.logVerbose("  Running prerequisite check with normal login...")
+	c.logVerbose("Running prerequisite check with normal login...")
 	prereqResult, encFlag, err := runEPATest(ctx, baseConfig(EPATestNormal))
 	if err != nil {
 		// The normal TDS 7.x PRELOGIN failed. This may indicate the server

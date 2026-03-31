@@ -87,13 +87,7 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 
 	// Timestamp in UTC
 	ts := r.Time.UTC().Format(time.RFC3339)
-	if h.color {
-		buf = append(buf, timestampColor...)
-	}
 	buf = append(buf, ts...)
-	if h.color {
-		buf = append(buf, resetCode...)
-	}
 	buf = append(buf, ' ')
 
 	// Target (from pre-attached attrs or record attrs)
@@ -217,7 +211,6 @@ func levelName(l slog.Level) string {
 var (
 	resetCode      = []byte("\033[0m")
 	dimCode        = []byte("\033[2m")
-	timestampColor = []byte("\033[94m") // light blue
 
 	colorError   = []byte("\033[31m") // red
 	colorWarning = []byte("\033[33m") // yellow
@@ -240,14 +233,49 @@ func levelColor(l slog.Level) []byte {
 	}
 }
 
-// Target color palette — avoids red, yellow, magenta, gray (used by levels).
+// Target color palette (256-color) — avoids exact level colors: 31 (red), 33 (yellow), 35 (magenta), 90 (gray).
 var targetPalette = [][]byte{
-	[]byte("\033[34m"), // blue
-	[]byte("\033[36m"), // cyan
-	[]byte("\033[92m"), // bright green
-	[]byte("\033[94m"), // bright blue
-	[]byte("\033[96m"), // bright cyan
-	[]byte("\033[97m"), // bright white
+	// Reds / oranges (not \033[31m)
+	[]byte("\033[38;5;124m"), // dark red
+	[]byte("\033[38;5;131m"), // indian red
+	[]byte("\033[38;5;167m"), // salmon
+	[]byte("\033[38;5;173m"), // dark salmon
+	[]byte("\033[38;5;203m"), // light coral
+	[]byte("\033[38;5;208m"), // dark orange
+	[]byte("\033[38;5;209m"), // light salmon
+	// Yellows / golds (not \033[33m)
+	[]byte("\033[38;5;136m"), // dark goldenrod
+	[]byte("\033[38;5;143m"), // dark khaki
+	[]byte("\033[38;5;179m"), // goldenrod
+	[]byte("\033[38;5;186m"), // khaki
+	[]byte("\033[38;5;222m"), // light goldenrod
+	// Greens
+	[]byte("\033[38;5;37m"),  // teal
+	[]byte("\033[38;5;49m"),  // spring green
+	[]byte("\033[38;5;77m"),  // pale green
+	[]byte("\033[38;5;84m"),  // sea green
+	[]byte("\033[38;5;114m"), // dark sea green
+	[]byte("\033[38;5;120m"), // light green
+	[]byte("\033[38;5;150m"), // dark olive green
+	// Blues / cyans
+	[]byte("\033[38;5;27m"),  // blue
+	[]byte("\033[38;5;33m"),  // dodger blue
+	[]byte("\033[38;5;39m"),  // deep sky blue
+	[]byte("\033[38;5;51m"),  // cyan
+	[]byte("\033[38;5;69m"),  // cornflower blue
+	[]byte("\033[38;5;75m"),  // steel blue
+	[]byte("\033[38;5;80m"),  // medium turquoise
+	[]byte("\033[38;5;111m"), // sky blue
+	[]byte("\033[38;5;117m"), // light blue
+	// Purples / pinks
+	[]byte("\033[38;5;63m"),  // slate blue
+	[]byte("\033[38;5;105m"), // medium purple
+	[]byte("\033[38;5;135m"), // medium orchid
+	[]byte("\033[38;5;141m"), // medium purple
+	[]byte("\033[38;5;147m"), // light slate blue
+	[]byte("\033[38;5;176m"), // plum
+	[]byte("\033[38;5;183m"), // orchid
+	[]byte("\033[38;5;189m"), // lavender
 }
 
 func targetColor(target string) []byte {

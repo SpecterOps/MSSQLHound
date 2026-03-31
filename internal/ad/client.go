@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ type Client struct {
 	skipPrivateCheck bool
 	ldapUser         string
 	ldapPassword     string
-	dnsResolver      string // Custom DNS resolver IP
+	dnsResolver      string // DNS resolver IP
 	resolver         *net.Resolver
 	proxyDialer      interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
@@ -47,7 +48,7 @@ func NewClient(domain, domainController string, skipPrivateCheck bool, ldapUser,
 		domainCache:      make(map[string]bool),
 	}
 
-	// Create custom resolver if DNS resolver is specified
+	// Create resolver if DNS resolver is specified
 	if dnsResolver != "" {
 		client.resolver = &net.Resolver{
 			PreferGo: true,
@@ -213,6 +214,11 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 
 // connectWithCurrentUser tries GSSAPI authentication with the current user's credentials
 func (c *Client) connectWithCurrentUser(dc, serverName string) error {
+	// On non-Windows platforms, GSSAPI/SSPI is not available — fail fast with a clear message
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("LDAP authentication requires explicit credentials on %s (GSSAPI/Kerberos SSPI is only available on Windows). Use --ldap-user and --ldap-password to provide credentials", runtime.GOOS)
+	}
+
 	var errors []string
 
 	// Try LDAPS first (port 636) - most reliable with channel binding
@@ -420,7 +426,7 @@ func (c *Client) SetProxyDialer(d interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }) {
 	c.proxyDialer = d
-	// Rebuild DNS resolver to route through proxy if custom DNS resolver is set
+	// Rebuild DNS resolver to route through proxy if DNS resolver is set
 	if c.dnsResolver != "" && d != nil {
 		c.resolver = &net.Resolver{
 			PreferGo: true,
