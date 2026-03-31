@@ -46,7 +46,7 @@ jobs:
             --network adnet --ip 10.2.10.100 \
             -e REALM='MAYYHEM.COM' \
             -e DOMAIN='MAYYHEM' \
-            -e ADMIN_PASS='password' \
+            -e ADMIN_PASS='P@ssw0rd' \
             -e DNS_FORWARDER='8.8.8.8' \
             -p 389:389/tcp -p 389:389/udp \
             -p 636:636/tcp \
@@ -73,11 +73,11 @@ jobs:
       - name: Create AD accounts and keytab
         run: |
           # Create domainadmin
-          docker exec dc samba-tool user create domainadmin 'password' --use-username-as-cn
+          docker exec dc samba-tool user create domainadmin 'P@ssw0rd' --use-username-as-cn
           docker exec dc samba-tool group addmembers "Domain Admins" domainadmin
 
           # Create SQL Server service account
-          docker exec dc samba-tool user create sqlsvc 'password' --use-username-as-cn
+          docker exec dc samba-tool user create sqlsvc 'P@ssw0rd' --use-username-as-cn
           HOSTNAME=$(hostname)
           docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com sqlsvc
           docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com:1433 sqlsvc
@@ -124,7 +124,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mssql-server
 
-          sudo MSSQL_SA_PASSWORD='password' MSSQL_PID='Developer' \
+          sudo MSSQL_SA_PASSWORD='P@ssw0rd' MSSQL_PID='Developer' \
             /opt/mssql/bin/mssql-conf setup accept-eula
 
       - name: Configure SQL Server for AD auth
@@ -147,25 +147,25 @@ jobs:
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
 
-          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'password' -C -Q "
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'P@ssw0rd' -C -Q "
             CREATE LOGIN [MAYYHEM\domainadmin] FROM WINDOWS;
             ALTER SERVER ROLE [sysadmin] ADD MEMBER [MAYYHEM\domainadmin];
           "
 
       - name: Verify AD auth
         run: |
-          echo 'password' | kinit Administrator@MAYYHEM.COM
+          echo 'P@ssw0rd' | kinit Administrator@MAYYHEM.COM
           klist
 
       - name: Run integration tests
         env:
           MSSQL_SERVER: localhost
           MSSQL_USER: sa
-          MSSQL_PASSWORD: password
+          MSSQL_PASSWORD: P@ssw0rd
           MSSQL_DOMAIN: mayyhem.com
           MSSQL_DC: 10.2.10.100
           LDAP_USER: Administrator@mayyhem.com
-          LDAP_PASSWORD: password
+          LDAP_PASSWORD: P@ssw0rd
           MSSQL_SKIP_DOMAIN: "false"
           MSSQL_ACTION: all
           MSSQL_SKIP_HTML: "true"
