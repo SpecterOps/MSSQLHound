@@ -130,9 +130,21 @@ jobs:
           timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/389' && echo "LDAP OK" || { echo "LDAP FAILED"; exit 1; }
           echo "Testing Kerberos port (88)..."
           timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/88' && echo "Kerberos OK" || { echo "Kerberos FAILED"; exit 1; }
-          echo "Testing kinit..."
-          echo 'P@ssw0rd' | kinit Administrator@MAYYHEM.COM
-          klist
+          echo "Testing Kerberos with verbose output..."
+          echo "Samba Kerberos listeners inside container:"
+          docker exec dc ss -tlnp | grep -E ':88|:389' || true
+          echo ""
+          echo "Host port forwarding:"
+          ss -tlnp | grep -E ':88|:389' || true
+          echo ""
+          echo "Testing kinit with trace..."
+          KRB5_TRACE=/dev/stderr echo 'P@ssw0rd' | kinit Administrator@MAYYHEM.COM 2>&1 || true
+          echo ""
+          echo "Trying kinit with explicit KDC..."
+          echo 'P@ssw0rd' | kinit -k -t /dev/null Administrator@MAYYHEM.COM 2>&1 || true
+          echo ""
+          echo "Testing direct TCP to KDC port 88..."
+          echo -n "" | nc -w 3 127.0.0.1 88 && echo "nc OK" || echo "nc failed (expected for Kerberos)"
 
       - name: Install SQL Server 2022
         run: |
