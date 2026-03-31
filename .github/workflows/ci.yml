@@ -29,8 +29,6 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-22.04
-    env:
-      DC_IP: 10.2.10.100
     steps:
       - uses: actions/checkout@v4
 
@@ -41,12 +39,8 @@ jobs:
 
       - name: Start Samba AD DC
         run: |
-          docker network create --subnet=10.2.0.0/20 adnet
-
-          # No -p port publishing; we connect directly to the container IP
           docker run -d --privileged \
             --name dc --hostname DC \
-            --network adnet --ip $DC_IP \
             -e REALM='MAYYHEM.COM' \
             -e DOMAIN='MAYYHEM' \
             -e ADMIN_PASS='P@ssw0rd' \
@@ -57,8 +51,26 @@ jobs:
         run: |
           echo "Waiting for Samba provisioning and startup..."
           sudo apt-get install -y ldap-utils > /dev/null 2>&1 || true
+
+          # Get the container IP on the default bridge network
+          for i in $(seq 1 10); do
+            DC_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' dc)
+            if [ -n "$DC_IP" ]; then
+              echo "DC container IP: $DC_IP"
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$DC_IP" ]; then
+            echo "Failed to get DC container IP"
+            docker inspect dc
+            exit 1
+          fi
+
+          # Save for subsequent steps
+          echo "DC_IP=$DC_IP" >> $GITHUB_ENV
+
           for i in $(seq 1 120); do
-            # Test LDAP from the host directly
             if ldapsearch -x -H ldap://$DC_IP -b "" -s base namingContexts 2>/dev/null | grep -q "mayyhem"; then
               echo "Samba AD DC is ready (LDAP responding)"
               ldapsearch -x -H ldap://$DC_IP -b "" -s base namingContexts
@@ -66,44 +78,42 @@ jobs:
             fi
             if [ "$i" -eq 120 ]; then
               echo "Timed out waiting for Samba AD DC"
-              echo "--- Container status ---"
-              docker ps --filter name=dc --format '{{.Status}}' || true
-              echo "--- Last 20 lines of container logs ---"
-              docker logs --tail 20 dc
-              echo "--- Testing TCP to LDAP port ---"
-              timeout 3 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "Port 389 open" || echo "Port 389 closed"
+              echo "Container: $(docker ps --filter name=dc --format '{{.Status}}')"
+              echo "Port 389 test:"
+              timeout 3 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "open" || echo "closed"
+              echo "Port 88 test:"
+              timeout 3 bash -c "echo > /dev/tcp/$DC_IP/88" && echo "open" || echo "closed"
+              echo "--- Last 30 log lines ---"
+              docker logs --tail 30 dc
               exit 1
             fi
             if [ $((i % 20)) -eq 0 ]; then
               echo "Container: $(docker ps --filter name=dc --format '{{.Status}}')"
-              echo "Last log line: $(docker logs --tail 1 dc 2>&1)"
+              timeout 3 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "Port 389: open" || echo "Port 389: closed"
             fi
             echo "Waiting for Samba AD DC... ($i/120)"
             sleep 3
           done
 
-      - name: Verify host can reach DC container
+      - name: Verify host can reach DC
         run: |
-          echo "Testing connectivity to DC at $DC_IP..."
+          echo "DC IP: $DC_IP"
           ping -c 2 -W 2 $DC_IP
-          echo "Testing LDAP (389)..."
-          timeout 5 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "OK" || { echo "FAILED"; exit 1; }
-          echo "Testing Kerberos (88)..."
-          timeout 5 bash -c "echo > /dev/tcp/$DC_IP/88" && echo "OK" || { echo "FAILED"; exit 1; }
+          echo "LDAP (389):"
+          timeout 5 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "OK" || echo "FAILED"
+          echo "Kerberos (88):"
+          timeout 5 bash -c "echo > /dev/tcp/$DC_IP/88" && echo "OK" || echo "FAILED"
 
       - name: Create AD accounts and keytab
         run: |
-          # Create domainadmin
           docker exec dc samba-tool user create domainadmin 'P@ssw0rd' --use-username-as-cn
           docker exec dc samba-tool group addmembers "Domain Admins" domainadmin
 
-          # Create SQL Server service account
           docker exec dc samba-tool user create sqlsvc 'P@ssw0rd' --use-username-as-cn
           HOSTNAME=$(hostname)
           docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com sqlsvc
           docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com:1433 sqlsvc
 
-          # Export keytab
           docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab --principal=sqlsvc
           docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
             --principal=MSSQLSvc/${HOSTNAME}.mayyhem.com
@@ -135,9 +145,7 @@ jobs:
               mayyhem.com = MAYYHEM.COM
           KRBEOF
 
-          # Substitute the actual DC IP
           sudo sed -i "s/DC_IP_PLACEHOLDER/$DC_IP/g" /etc/krb5.conf
-
           echo "--- krb5.conf ---"
           cat /etc/krb5.conf
 
@@ -153,7 +161,7 @@ jobs:
           curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | \
             sudo tee /etc/apt/sources.list.d/mssql-server-2022.list
           sudo apt-get update
-          sudo apt-get install -y mssql-server mssql-tools18 unixodbc-dev
+          sudo apt-get install -y mssql-server
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 || true
 
           sudo MSSQL_SA_PASSWORD='P@ssw0rd' MSSQL_PID='Developer' \
@@ -198,12 +206,12 @@ jobs:
           MSSQL_USER: sa
           MSSQL_PASSWORD: P@ssw0rd
           MSSQL_DOMAIN: mayyhem.com
-          MSSQL_DC: 10.2.10.100
           LDAP_USER: Administrator@mayyhem.com
           LDAP_PASSWORD: P@ssw0rd
           MSSQL_SKIP_DOMAIN: "false"
           MSSQL_ACTION: all
           MSSQL_SKIP_HTML: "true"
         run: |
+          export MSSQL_DC=$DC_IP
           go test -v -count=1 -tags integration -timeout 30m \
             -run TestIntegrationAll ./internal/collector/...
