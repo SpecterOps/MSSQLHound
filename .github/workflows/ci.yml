@@ -45,6 +45,7 @@ jobs:
             -e DOMAIN='MAYYHEM' \
             -e ADMIN_PASS='P@ssw0rd' \
             -e DNS_FORWARDER='8.8.8.8' \
+            -e BIND_NETWORK_INTERFACES='false' \
             diegogslomp/samba-ad-dc
 
       - name: Wait for Samba AD DC
@@ -78,13 +79,15 @@ jobs:
             fi
             if [ "$i" -eq 120 ]; then
               echo "Timed out waiting for Samba AD DC"
-              echo "Container: $(docker ps --filter name=dc --format '{{.Status}}')"
+              echo "Container: $(docker ps -a --filter name=dc --format '{{.Status}}')"
               echo "Port 389 test:"
               timeout 3 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "open" || echo "closed"
               echo "Port 88 test:"
               timeout 3 bash -c "echo > /dev/tcp/$DC_IP/88" && echo "open" || echo "closed"
-              echo "--- Last 30 log lines ---"
-              docker logs --tail 30 dc
+              echo "--- FULL container logs ---"
+              docker logs dc 2>&1 | tail -100
+              echo "--- Container inspect (State) ---"
+              docker inspect dc --format '{{json .State}}' | python3 -m json.tool
               exit 1
             fi
             if [ $((i % 20)) -eq 0 ]; then
