@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run unit tests
+        run: go test -v -count=1 -timeout 10m ./...
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Start Samba AD DC
+        run: |
+          docker network create --subnet=10.2.10.0/20 adnet
+
+          docker run -d --privileged \
+            --name dc --hostname DC \
+            --network adnet --ip 10.2.10.100 \
+            -e REALM='MAYYHEM.COM' \
+            -e DOMAIN='MAYYHEM' \
+            -e ADMIN_PASS='password' \
+            -e DNS_FORWARDER='8.8.8.8' \
+            -p 389:389/tcp -p 389:389/udp \
+            -p 636:636/tcp \
+            -p 88:88/tcp -p 88:88/udp \
+            -p 464:464/tcp -p 464:464/udp \
+            diegogslomp/samba-ad-dc
+
+      - name: Wait for Samba AD DC
+        run: |
+          for i in $(seq 1 60); do
+            if docker exec dc samba-tool domain info 10.2.10.100 2>/dev/null | grep -q "Domain"; then
+              echo "Samba AD DC is ready"
+              exit 0
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "Timed out waiting for Samba AD DC"
+              docker logs dc
+              exit 1
+            fi
+            echo "Waiting for Samba AD DC... ($i/60)"
+            sleep 2
+          done
+
+      - name: Create AD accounts and keytab
+        run: |
+          # Create domainadmin
+          docker exec dc samba-tool user create domainadmin 'password' --use-username-as-cn
+          docker exec dc samba-tool group addmembers "Domain Admins" domainadmin
+
+          # Create SQL Server service account
+          docker exec dc samba-tool user create sqlsvc 'password' --use-username-as-cn
+          HOSTNAME=$(hostname)
+          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com sqlsvc
+          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com:1433 sqlsvc
+
+          # Export keytab
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab --principal=sqlsvc
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
+            --principal=MSSQLSvc/${HOSTNAME}.mayyhem.com
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
+            --principal=MSSQLSvc/${HOSTNAME}.mayyhem.com:1433
+          docker cp dc:/tmp/mssql.keytab /tmp/mssql.keytab
+
+      - name: Configure DNS and Kerberos
+        run: |
+          echo "10.2.10.100 dc.mayyhem.com dc mayyhem.com" | sudo tee -a /etc/hosts
+          sudo sed -i '1i nameserver 10.2.10.100' /etc/resolv.conf
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user
+
+          sudo tee /etc/krb5.conf > /dev/null <<'EOF'
+          [libdefaults]
+              default_realm = MAYYHEM.COM
+              dns_lookup_realm = false
+              dns_lookup_kdc = false
+
+          [realms]
+              MAYYHEM.COM = {
+                  kdc = 10.2.10.100
+                  admin_server = 10.2.10.100
+                  default_domain = mayyhem.com
+              }
+
+          [domain_realm]
+              .mayyhem.com = MAYYHEM.COM
+              mayyhem.com = MAYYHEM.COM
+          EOF
+
+      - name: Install SQL Server 2022
+        run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | \
+            sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | \
+            sudo tee /etc/apt/sources.list.d/mssql-server-2022.list
+          sudo apt-get update
+          sudo apt-get install -y mssql-server
+
+          sudo MSSQL_SA_PASSWORD='password' MSSQL_PID='Developer' \
+            /opt/mssql/bin/mssql-conf setup accept-eula
+
+      - name: Configure SQL Server for AD auth
+        run: |
+          sudo mkdir -p /var/opt/mssql/secrets
+          sudo cp /tmp/mssql.keytab /var/opt/mssql/secrets/mssql.keytab
+          sudo chown mssql:mssql /var/opt/mssql/secrets/mssql.keytab
+          sudo chmod 400 /var/opt/mssql/secrets/mssql.keytab
+
+          sudo /opt/mssql/bin/mssql-conf set network.kerberoskeytabfile /var/opt/mssql/secrets/mssql.keytab
+          sudo /opt/mssql/bin/mssql-conf set network.privilegedadaccount sqlsvc
+          sudo systemctl restart mssql-server
+          sleep 5
+          systemctl status mssql-server --no-pager
+
+      - name: Create domainadmin as SQL sysadmin
+        run: |
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | \
+            sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
+
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'password' -C -Q "
+            CREATE LOGIN [MAYYHEM\domainadmin] FROM WINDOWS;
+            ALTER SERVER ROLE [sysadmin] ADD MEMBER [MAYYHEM\domainadmin];
+          "
+
+      - name: Verify AD auth
+        run: |
+          echo 'password' | kinit Administrator@MAYYHEM.COM
+          klist
+
+      - name: Run integration tests
+        env:
+          MSSQL_SERVER: localhost
+          MSSQL_USER: sa
+          MSSQL_PASSWORD: password
+          MSSQL_DOMAIN: mayyhem.com
+          MSSQL_DC: 10.2.10.100
+          LDAP_USER: Administrator@mayyhem.com
+          LDAP_PASSWORD: password
+          MSSQL_SKIP_DOMAIN: "false"
+          MSSQL_ACTION: all
+          MSSQL_SKIP_HTML: "true"
+        run: |
+          go test -v -count=1 -tags integration -timeout 30m \
+            -run TestIntegrationAll ./internal/collector/...
