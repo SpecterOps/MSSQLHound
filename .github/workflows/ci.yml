@@ -29,6 +29,8 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-22.04
+    env:
+      DC_IP: 10.2.10.100
     steps:
       - uses: actions/checkout@v4
 
@@ -41,30 +43,24 @@ jobs:
         run: |
           docker network create --subnet=10.2.0.0/20 adnet
 
+          # No -p port publishing; we connect directly to the container IP
           docker run -d --privileged \
             --name dc --hostname DC \
-            --network adnet --ip 10.2.10.100 \
+            --network adnet --ip $DC_IP \
             -e REALM='MAYYHEM.COM' \
             -e DOMAIN='MAYYHEM' \
             -e ADMIN_PASS='P@ssw0rd' \
             -e DNS_FORWARDER='8.8.8.8' \
-            -p 389:389/tcp -p 389:389/udp \
-            -p 636:636/tcp \
-            -p 88:88/tcp -p 88:88/udp \
-            -p 464:464/tcp -p 464:464/udp \
             diegogslomp/samba-ad-dc
 
       - name: Wait for Samba AD DC
         run: |
           echo "Waiting for Samba provisioning and startup..."
           for i in $(seq 1 90); do
-            if docker exec dc bash -c "echo > /dev/tcp/127.0.0.1/389" 2>/dev/null; then
-              echo "LDAP port is up, verifying domain info..."
-              if docker exec dc samba-tool domain info 127.0.0.1 2>/dev/null | grep -q "Domain"; then
-                echo "Samba AD DC is ready"
-                docker exec dc samba-tool domain info 127.0.0.1
-                exit 0
-              fi
+            if docker exec dc samba-tool domain info $DC_IP 2>/dev/null | grep -q "Domain"; then
+              echo "Samba AD DC is ready"
+              docker exec dc samba-tool domain info $DC_IP
+              exit 0
             fi
             if [ "$i" -eq 90 ]; then
               echo "Timed out waiting for Samba AD DC"
@@ -74,6 +70,15 @@ jobs:
             echo "Waiting for Samba AD DC... ($i/90)"
             sleep 3
           done
+
+      - name: Verify host can reach DC container
+        run: |
+          echo "Testing connectivity to DC at $DC_IP..."
+          ping -c 2 -W 2 $DC_IP
+          echo "Testing LDAP (389)..."
+          timeout 5 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "OK" || { echo "FAILED"; exit 1; }
+          echo "Testing Kerberos (88)..."
+          timeout 5 bash -c "echo > /dev/tcp/$DC_IP/88" && echo "OK" || { echo "FAILED"; exit 1; }
 
       - name: Create AD accounts and keytab
         run: |
@@ -97,8 +102,7 @@ jobs:
 
       - name: Configure DNS and Kerberos
         run: |
-          # Point mayyhem.com to localhost (ports forwarded from DC container)
-          echo "127.0.0.1 dc.mayyhem.com dc mayyhem.com" | sudo tee -a /etc/hosts
+          echo "$DC_IP dc.mayyhem.com dc mayyhem.com" | sudo tee -a /etc/hosts
 
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user
 
@@ -107,12 +111,11 @@ jobs:
               default_realm = MAYYHEM.COM
               dns_lookup_realm = false
               dns_lookup_kdc = false
-              udp_preference_limit = 1
 
           [realms]
               MAYYHEM.COM = {
-                  kdc = 127.0.0.1
-                  admin_server = 127.0.0.1
+                  kdc = DC_IP_PLACEHOLDER
+                  admin_server = DC_IP_PLACEHOLDER
                   default_domain = mayyhem.com
               }
 
@@ -121,30 +124,16 @@ jobs:
               mayyhem.com = MAYYHEM.COM
           KRBEOF
 
+          # Substitute the actual DC IP
+          sudo sed -i "s/DC_IP_PLACEHOLDER/$DC_IP/g" /etc/krb5.conf
+
           echo "--- krb5.conf ---"
           cat /etc/krb5.conf
 
-      - name: Verify host-to-DC connectivity
+      - name: Verify Kerberos
         run: |
-          echo "Testing LDAP port (389)..."
-          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/389' && echo "LDAP OK" || { echo "LDAP FAILED"; exit 1; }
-          echo "Testing Kerberos port (88)..."
-          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/88' && echo "Kerberos OK" || { echo "Kerberos FAILED"; exit 1; }
-          echo "Testing Kerberos with verbose output..."
-          echo "Samba Kerberos listeners inside container:"
-          docker exec dc ss -tlnp | grep -E ':88|:389' || true
-          echo ""
-          echo "Host port forwarding:"
-          ss -tlnp | grep -E ':88|:389' || true
-          echo ""
-          echo "Testing kinit with trace..."
-          KRB5_TRACE=/dev/stderr echo 'P@ssw0rd' | kinit Administrator@MAYYHEM.COM 2>&1 || true
-          echo ""
-          echo "Trying kinit with explicit KDC..."
-          echo 'P@ssw0rd' | kinit -k -t /dev/null Administrator@MAYYHEM.COM 2>&1 || true
-          echo ""
-          echo "Testing direct TCP to KDC port 88..."
-          echo -n "" | nc -w 3 127.0.0.1 88 && echo "nc OK" || echo "nc failed (expected for Kerberos)"
+          echo 'P@ssw0rd' | kinit Administrator@MAYYHEM.COM
+          klist
 
       - name: Install SQL Server 2022
         run: |
@@ -153,7 +142,8 @@ jobs:
           curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | \
             sudo tee /etc/apt/sources.list.d/mssql-server-2022.list
           sudo apt-get update
-          sudo apt-get install -y mssql-server
+          sudo apt-get install -y mssql-server mssql-tools18 unixodbc-dev
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 || true
 
           sudo MSSQL_SA_PASSWORD='P@ssw0rd' MSSQL_PID='Developer' \
             /opt/mssql/bin/mssql-conf setup accept-eula
@@ -184,16 +174,8 @@ jobs:
             sleep 2
           done
 
-      - name: Install sqlcmd and create domainadmin as SQL sysadmin
+      - name: Create domainadmin as SQL sysadmin
         run: |
-          # sqlcmd already installed with mssql-server, but ensure mssql-tools18 is present
-          if ! command -v /opt/mssql-tools18/bin/sqlcmd &>/dev/null; then
-            curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | \
-              sudo tee /etc/apt/sources.list.d/mssql-release.list
-            sudo apt-get update
-            sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
-          fi
-
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'P@ssw0rd' -C -Q "
             CREATE LOGIN [MAYYHEM\domainadmin] FROM WINDOWS;
             ALTER SERVER ROLE [sysadmin] ADD MEMBER [MAYYHEM\domainadmin];
@@ -205,7 +187,7 @@ jobs:
           MSSQL_USER: sa
           MSSQL_PASSWORD: P@ssw0rd
           MSSQL_DOMAIN: mayyhem.com
-          MSSQL_DC: 127.0.0.1
+          MSSQL_DC: 10.2.10.100
           LDAP_USER: Administrator@mayyhem.com
           LDAP_PASSWORD: P@ssw0rd
           MSSQL_SKIP_DOMAIN: "false"
