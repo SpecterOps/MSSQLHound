@@ -26,6 +26,7 @@ type MatrixConfig struct {
 	Domain         string
 	LDAPUser       string
 	LDAPPassword   string
+	NTHash         []byte // Pre-computed NT hash for pass-the-hash (16 bytes)
 	Verbose        bool
 	Debug          bool
 
@@ -177,6 +178,9 @@ func RunMatrix(ctx context.Context, cfg *MatrixConfig, executor winrmclient.Exec
 		client := mssql.NewClient(cfg.ServerInstance, "", "")
 		client.SetDomain(cfg.Domain)
 		client.SetLDAPCredentials(cfg.LDAPUser, cfg.LDAPPassword)
+		if len(cfg.NTHash) > 0 {
+			client.SetNTHash(cfg.NTHash)
+		}
 		client.SetVerbose(cfg.Verbose)
 		client.SetDebug(cfg.Debug)
 		if cfg.Logger != nil {

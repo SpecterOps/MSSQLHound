@@ -16,7 +16,10 @@ type SQLVersion struct {
 	Revision int
 }
 
-// Compare compares two SQLVersions. Returns -1 if v < other, 0 if equal, 1 if v > other
+// Compare compares two SQLVersions. Returns -1 if v < other, 0 if equal, 1 if v > other.
+// Comparison is lexicographic across the four components (Major.Minor.Build.Revision)
+// with early exit: as soon as a component differs, the result is determined without
+// inspecting lower-significance fields.
 func (v SQLVersion) Compare(other SQLVersion) int {
 	if v.Major != other.Major {
 		if v.Major < other.Major {
@@ -218,8 +221,16 @@ func ExtractVersionFromFullVersion(fullVersion string) string {
 	return ""
 }
 
-// CheckCVE202549758 checks if a SQL Server version is vulnerable to CVE-2025-49758
+// CheckCVE202549758 checks if a SQL Server version is vulnerable to CVE-2025-49758.
 // Reference: https://msrc.microsoft.com/update-guide/en-US/vulnerability/CVE-2025-49758
+//
+// Lookup strategy: each SecurityUpdate defines a [MinAffected, MaxAffected] version
+// range corresponding to a specific SQL Server servicing branch (e.g. "SQL 2022
+// CU20+GDR" or "SQL 2019 RTM+GDR"). The function checks whether the detected
+// version falls within any of these ranges. If it does, it compares against the
+// PatchedAt version for that branch to determine if the fix (KB) has been applied.
+// Versions below SQL 2016 are flagged as vulnerable (out of mainstream support).
+// Versions not matching any range are assumed patched (newer than all known branches).
 func CheckCVE202549758(versionNumber string, fullVersion string) *CVECheckResult {
 	// Try to get version from versionNumber first, then fullVersion
 	versionStr := versionNumber

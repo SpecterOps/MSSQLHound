@@ -259,55 +259,6 @@ func (p *PowerShellClient) ExecuteScalar(ctx context.Context, query string) (int
 	return response.Rows[0][firstCol], nil
 }
 
-// GetString helper to get string value from QueryResult
-func (r QueryResult) GetString(key string) string {
-	if v, ok := r[key]; ok && v != nil {
-		switch val := v.(type) {
-		case string:
-			return val
-		case float64:
-			return fmt.Sprintf("%.0f", val)
-		default:
-			return fmt.Sprintf("%v", val)
-		}
-	}
-	return ""
-}
-
-// GetInt helper to get int value from QueryResult
-func (r QueryResult) GetInt(key string) int {
-	if v, ok := r[key]; ok && v != nil {
-		switch val := v.(type) {
-		case float64:
-			return int(val)
-		case int:
-			return val
-		case int64:
-			return int(val)
-		case string:
-			i, _ := fmt.Sscanf(val, "%d", new(int))
-			return i
-		}
-	}
-	return 0
-}
-
-// GetBool helper to get bool value from QueryResult
-func (r QueryResult) GetBool(key string) bool {
-	if v, ok := r[key]; ok && v != nil {
-		switch val := v.(type) {
-		case bool:
-			return val
-		case float64:
-			return val != 0
-		case int:
-			return val != 0
-		case string:
-			return strings.ToLower(val) == "true" || val == "1"
-		}
-	}
-	return false
-}
 
 // IsUntrustedDomainError checks if the error is the "untrusted domain" SSPI error
 func IsUntrustedDomainError(err error) bool {

@@ -10,5 +10,5 @@ import (
 )
 
 func newGSSAPIClient(domain, user, password string) (ldap.GSSAPIClient, func() error, error) {
-	return nil, nil, fmt.Errorf("GSSAPI/Kerberos SSPI is only supported on Windows")
+	return nil, nil, fmt.Errorf("GSSAPI/Kerberos SSPI is only supported on Windows; use --kerberos with a ccache or keytab for cross-platform Kerberos")
 }

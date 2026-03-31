@@ -27,6 +27,7 @@ type EPATestConfig struct {
 	Domain       string
 	Username     string
 	Password     string
+	NTHash       []byte // Pre-computed NT hash for pass-the-hash (16 bytes)
 	TestMode     EPATestMode
 	Logger       *slog.Logger
 	Verbose      bool
@@ -78,7 +79,20 @@ const (
 )
 
 // runEPATest performs a single raw TDS+TLS+NTLM login with the specified EPA test mode.
-// This replaces the old testConnectionWithEPA which incorrectly used encrypt=disable.
+//
+// Why raw TDS instead of go-mssqldb: go-mssqldb does not expose control over the
+// NTLM AV_PAIR list (MsvAvChannelBindings, MsvAvTargetName) in the Type 3 Authenticate
+// message. EPA enforcement testing requires sending deliberately bogus or missing
+// Channel Binding Tokens (CBT) and Service Principal Names (SPN) to observe which
+// combinations the server accepts or rejects. A raw TDS implementation is the only
+// way to achieve this level of control.
+//
+// The caller runs a 5-connection test matrix to determine the EPA enforcement level:
+//   - Normal:         valid CBT + valid SPN   (baseline -- should always succeed if creds are valid)
+//   - BogusCBT:       garbage CBT + valid SPN (rejected if EPA enforces channel binding)
+//   - MissingCBT:     no CBT + valid SPN      (rejected if EPA enforces channel binding)
+//   - BogusService:   valid CBT + wrong SPN   (rejected if EPA enforces service binding)
+//   - MissingService: valid CBT + no SPN      (rejected if EPA enforces service binding)
 //
 // The flow matches the Python MssqlExtended.login():
 //  1. TCP connect
@@ -179,6 +193,9 @@ func runEPATest(ctx context.Context, config *EPATestConfig) (*epaTestOutcome, by
 	// Step 4: Setup NTLM authenticator
 	spn := computeSPN(config.Hostname, port)
 	auth := newNTLMAuth(config.Domain, config.Username, config.Password, spn)
+	if len(config.NTHash) > 0 {
+		auth.SetNTHash(config.NTHash)
+	}
 	auth.SetEPATestMode(config.TestMode)
 	auth.SetChannelBindingHash(cbtHash)
 	if config.DisableMIC {
@@ -335,6 +352,36 @@ func buildTDSPacketRaw(packetType byte, payload []byte) []byte {
 }
 
 // buildLogin7Packet constructs a TDS LOGIN7 packet payload with SSPI (NTLM Type1).
+//
+// Layout per MS-TDS 2.2.6.4 LOGIN7:
+//
+// The packet starts with a 94-byte fixed header containing scalar fields and an
+// array of (offset, length) pairs that describe where each variable-length field
+// sits in the trailing data section. All multi-byte integers are little-endian.
+//
+//   Bytes 0-3:   Total packet length (uint32 LE)
+//   Bytes 4-7:   TDS version -- 0x74000004 = TDS 7.4 (SQL Server 2012+)
+//   Bytes 8-11:  Packet size (negotiated buffer size)
+//   Bytes 12-15: Client program version
+//   Bytes 16-19: Client PID
+//   Bytes 20-23: Connection ID
+//   Byte  24:    OptionFlags1
+//   Byte  25:    OptionFlags2 -- 0x80 = IntegratedSecurity (SSPI/NTLM),
+//                                0x02 = ODBC driver, 0x01 = InitLangFatal
+//   Byte  26:    TypeFlags
+//   Byte  27:    OptionFlags3
+//   Bytes 28-35: ClientTimezone(4) + ClientLCID(4)
+//   Bytes 36-89: Offset/length pairs for variable fields (hostname, username,
+//                password, appname, servername, extension, ctlintname, language,
+//                database, clientID, SSPI, atchDBFile, changePassword)
+//   Bytes 90-93: SSPILongLength (uint32 LE, used when SSPI > 65535 bytes)
+//
+// Each variable field is stored as (uint16 offset, uint16 length) where length
+// is in UTF-16 characters for string fields, and in bytes for SSPI.
+//
+// Username and password are left empty (length 0) because we use NTLM
+// authentication via the SSPI field. The server reads OptionFlags2 bit 0x80
+// to know it should expect an SSPI token instead of SQL credentials.
 func buildLogin7Packet(hostname, appName, serverName string, sspiPayload []byte) []byte {
 	hostname16 := str2ucs2Login(hostname)
 	appname16 := str2ucs2Login(appName)
@@ -480,9 +527,26 @@ func str2ucs2Login(s string) []byte {
 }
 
 // parsePreloginEncryption extracts the encryption flag from a PRELOGIN response payload.
+//
+// PRELOGIN response format (MS-TDS 2.2.6.5): the payload is a sequence of
+// 5-byte token descriptors followed by a terminator byte (0xFF), then the
+// actual token data at the offsets described by those descriptors.
+//
+// Each token descriptor:
+//   Byte 0:   Token type
+//   Bytes 1-2: Data offset from start of payload (uint16 big-endian)
+//   Bytes 3-4: Data length in bytes (uint16 big-endian)
+//
+// Token types:
+//   0x00 = VERSION
+//   0x01 = ENCRYPTION -- the one we need; its 1-byte data value is:
+//          0x00 = ENCRYPT_OFF, 0x01 = ENCRYPT_ON,
+//          0x02 = ENCRYPT_NOT_SUP, 0x03 = ENCRYPT_REQ
+//   0xFF = Terminator (end of token list)
 func parsePreloginEncryption(payload []byte) (byte, error) {
 	offset := 0
 	for offset < len(payload) {
+		// 0xFF marks end of the token descriptor list.
 		if payload[offset] == 0xFF {
 			break
 		}
@@ -503,8 +567,24 @@ func parsePreloginEncryption(payload []byte) (byte, error) {
 	return 0, fmt.Errorf("encryption option not found in PRELOGIN response")
 }
 
-// extractSSPIToken extracts the NTLM challenge from a TDS response containing SSPI token.
-// The SSPI token is returned as TDS_SSPI (0xED) token in the tabular result stream.
+// extractSSPIToken walks the TDS tabular result stream looking for the SSPI token
+// that carries the NTLM Type 2 (Challenge) message from the server.
+//
+// TDS token stream format (MS-TDS 2.2.7): each token starts with a 1-byte type
+// discriminator, followed by token-specific data. The tokens we may encounter
+// during login and their layouts:
+//
+//   0xED  TDS_SSPI      -- NTLM challenge from server. Format: 2-byte LE length
+//                          prefix followed by the SSPI payload (the NTLM message).
+//                          This is what we are looking for.
+//   0xAA  TDS_ERROR     -- Server error. 2-byte LE length prefix + error body.
+//   0xAB  TDS_INFO      -- Informational message. Same layout as ERROR.
+//   0xE3  ENV_CHANGE    -- Environment change notification (database, language, etc.).
+//                          2-byte LE length prefix + body.
+//   0xAD  LOGINACK      -- Login acknowledgement. 2-byte LE length prefix + body.
+//   0xFD  DONE          -- End-of-statement. Fixed 12-byte body (Status(2) +
+//   0xFE  DONEPROC         CurCmd(2) + RowCount(8), per MS-TDS 2.2.7.6).
+//   0xFF  DONEINPROC
 func extractSSPIToken(data []byte) []byte {
 	offset := 0
 	for offset < len(data) {
@@ -513,7 +593,7 @@ func extractSSPIToken(data []byte) []byte {
 
 		switch tokenType {
 		case tdsTokenSSPI:
-			// SSPI token: 2-byte length (LE) + payload
+			// SSPI token: 2-byte LE length prefix + NTLM payload
 			if offset+2 > len(data) {
 				return nil
 			}
@@ -525,7 +605,7 @@ func extractSSPIToken(data []byte) []byte {
 			return data[offset : offset+length]
 
 		case tdsTokenError, tdsTokenInfo:
-			// Variable-length token with 2-byte length
+			// Variable-length token: 2-byte LE length prefix + body
 			if offset+2 > len(data) {
 				return nil
 			}
@@ -533,6 +613,7 @@ func extractSSPIToken(data []byte) []byte {
 			offset += 2 + length
 
 		case tdsTokenEnvChange:
+			// Variable-length: 2-byte LE length prefix + body
 			if offset+2 > len(data) {
 				return nil
 			}
@@ -540,9 +621,11 @@ func extractSSPIToken(data []byte) []byte {
 			offset += 2 + length
 
 		case tdsTokenDone, tdsTokenDoneProc:
-			offset += 12 // fixed 12 bytes
+			// Fixed-size: Status(2) + CurCmd(2) + RowCount(8) = 12 bytes
+			offset += 12
 
 		case tdsTokenLoginAck:
+			// Variable-length: 2-byte LE length prefix + body
 			if offset+2 > len(data) {
 				return nil
 			}
@@ -550,7 +633,7 @@ func extractSSPIToken(data []byte) []byte {
 			offset += 2 + length
 
 		default:
-			// Unknown token - try to skip (assume 2-byte length prefix)
+			// Unknown token - try to skip (assume 2-byte LE length prefix)
 			if offset+2 > len(data) {
 				return nil
 			}
@@ -635,17 +718,28 @@ func parseLoginTokens(data []byte) (bool, string) {
 }
 
 // parseErrorToken extracts the error message text from a TDS ERROR token payload.
-// ERROR token format: Number(4) + State(1) + Class(1) + MsgTextLength(2) + MsgText(UTF16) + ...
+//
+// TDS ERROR token body format (MS-TDS 2.2.7.9), after the 2-byte length prefix
+// has already been consumed by the caller:
+//
+//   Offset 0-3:  Error number (int32 LE) -- e.g. 18456 for "Login failed"
+//   Offset 4:    State (uint8) -- server-defined error sub-state
+//   Offset 5:    Class (uint8) -- severity level (1-25)
+//   Offset 6-7:  Message text length in *characters*, NOT bytes (uint16 LE)
+//   Offset 8+:   Message text encoded as UTF-16LE (length * 2 bytes)
+//
+// Additional fields follow (server name, proc name, line number) but we only
+// need the message text for EPA test result classification.
 func parseErrorToken(data []byte) string {
 	if len(data) < 8 {
 		return ""
 	}
-	// Skip Number(4) + State(1) + Class(1) = 6 bytes
+	// Skip Number(4) + State(1) + Class(1) = 6 bytes to reach MsgTextLength
 	msgLen := int(binary.LittleEndian.Uint16(data[6:8]))
 	if 8+msgLen*2 > len(data) {
 		return ""
 	}
-	// Decode UTF-16LE message text
+	// Decode UTF-16LE message text (msgLen chars = msgLen*2 bytes)
 	msgBytes := data[8 : 8+msgLen*2]
 	runes := make([]uint16, msgLen)
 	for i := 0; i < msgLen; i++ {
@@ -742,6 +836,9 @@ func runEPATestStrict(ctx context.Context, config *EPATestConfig) (*epaTestOutco
 	// Step 4: Setup NTLM authenticator
 	spn := computeSPN(config.Hostname, port)
 	auth := newNTLMAuth(config.Domain, config.Username, config.Password, spn)
+	if len(config.NTHash) > 0 {
+		auth.SetNTHash(config.NTHash)
+	}
 	auth.SetEPATestMode(config.TestMode)
 	auth.SetChannelBindingHash(cbtHash)
 	if config.DisableMIC {
@@ -853,10 +950,25 @@ func runEPATestStrict(ctx context.Context, config *EPATestConfig) (*epaTestOutco
 	}, encryptionFlag, nil
 }
 
-// readTLSTDSPacket reads a complete TDS packet through TLS.
-// When encryption is ENCRYPT_REQ, TDS packets are wrapped in TLS records.
+// readTLSTDSPacket reads a complete TDS message through TLS, reassembling
+// multiple TDS packets if necessary.
+//
+// TDS packet header format (MS-TDS 2.2.3.1), 8 bytes:
+//
+//   Byte 0:   Type     -- packet type (0x04=response, 0x12=prelogin, etc.)
+//   Byte 1:   Status   -- bit 0 (0x01) is the EOM (End Of Message) flag;
+//                          when set, this is the last packet in the message
+//   Bytes 2-3: Length  -- total packet length including this 8-byte header
+//                          (uint16 big-endian)
+//   Bytes 4-5: SPID    -- server process ID (ignored by client)
+//   Byte 6:   PacketID -- sequence number (ignored here)
+//   Byte 7:   Window   -- currently unused, always 0x00
+//
+// Large server responses (e.g., login responses with many tokens) may span
+// multiple TDS packets. Each packet carries a fragment of the message; we
+// concatenate payloads until we see a packet with the EOM bit set.
 func readTLSTDSPacket(tlsConn net.Conn) ([]byte, error) {
-	// Read TDS header through TLS
+	// Read TDS header (8 bytes) through TLS
 	hdr := make([]byte, tdsHeaderSize)
 	n := 0
 	for n < tdsHeaderSize {
@@ -867,6 +979,7 @@ func readTLSTDSPacket(tlsConn net.Conn) ([]byte, error) {
 		n += read
 	}
 
+	// Length field (bytes 2-3) includes the 8-byte header itself.
 	pktLen := int(binary.BigEndian.Uint16(hdr[2:4]))
 	if pktLen < tdsHeaderSize {
 		return nil, fmt.Errorf("TDS packet length %d too small", pktLen)
@@ -886,13 +999,13 @@ func readTLSTDSPacket(tlsConn net.Conn) ([]byte, error) {
 		}
 	}
 
-	// Check if this is EOM
+	// Check EOM bit (status byte, bit 0). If set, the message is complete.
 	status := hdr[1]
 	if status&0x01 != 0 {
 		return payload, nil
 	}
 
-	// Read more packets until EOM
+	// EOM not set -- reassemble by reading subsequent packets until EOM.
 	for {
 		moreHdr := make([]byte, tdsHeaderSize)
 		n = 0

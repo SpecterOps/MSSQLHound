@@ -228,7 +228,7 @@ func runEdgeCreation(t *testing.T, serverInfo *types.ServerInfo, includeNontrave
 		Domain:                     "domain.com",
 		IncludeNontraversableEdges: includeNontraversable,
 	}
-	c := New(config)
+	c, _ := New(config)
 
 	outputPath := filepath.Join(tmpDir, "test-output.json")
 	writer, err := bloodhound.NewStreamingWriter(outputPath)

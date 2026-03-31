@@ -25,6 +25,21 @@ Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), T
   - [Why a Go Port?](#why-a-go-port)
   - [Building](#building)
   - [Go Usage](#go-usage)
+    - [Basic Usage](#basic-usage)
+    - [Multiple Servers](#multiple-servers)
+    - [Full Domain Enumeration](#full-domain-enumeration)
+    - [DNS and Domain Controller Configuration](#dns-and-domain-controller-configuration)
+    - [SOCKS5 Proxy Support](#socks5-proxy-support)
+    - [Credential Fallback](#credential-fallback)
+    - [Kerberos Authentication](#kerberos-authentication)
+    - [Pass-the-Hash](#pass-the-hash)
+    - [Domain Enum Only (Reconnaissance)](#domain-enum-only-reconnaissance)
+    - [Output and Storage Options](#output-and-storage-options)
+    - [BloodHound Upload](#bloodhound-upload)
+    - [Interesting Edge Options](#interesting-edge-options)
+    - [Linked Server Options](#linked-server-options)
+    - [test-epa-matrix Subcommand](#test-epa-matrix-subcommand)
+    - [Shell Completion](#shell-completion)
   - [Go Command Line Options](#go-command-line-options)
   - [Key Differences from PowerShell Version](#key-differences-from-powershell-version)
   - [CVE Detection](#cve-detection)
@@ -94,6 +109,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
   - PowerShell 4.0 or higher
   - Target is running SQL Server 2005 or higher
   - BloodHound v8.0.0+ with Postgres backend (to use prebuilt Cypher queries): https://bloodhound.specterops.io/get-started/custom-installation#postgresql
+  - **For Kerberos authentication (`-k`):** `krb5-user` package on Linux (`sudo apt install krb5-user`)
 
 ## Minimum Permissions:
 ### Windows Level:
@@ -414,28 +430,222 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 ./mssqlhound --scan-all-computers -u "DOMAIN\admin" -p "password"
 ```
 
+### Kerberos Authentication
+
+```bash
+# Use ccache from KRB5CCNAME env var
+./mssqlhound -s sql.contoso.com -k
+
+# Explicit ccache file
+./mssqlhound -s sql.contoso.com -k --krb5-credcachefile /tmp/krb5cc_1000
+
+# Use a keytab file
+./mssqlhound -s sql.contoso.com -k \
+  --user "CONTOSO\svc_mssqlhound" \
+  --krb5-keytabfile /etc/mssqlhound.keytab \
+  --krb5-realm CONTOSO.COM
+
+# Custom krb5.conf
+./mssqlhound -s sql.contoso.com -k --krb5-configfile /etc/krb5_custom.conf
+```
+
+### Pass-the-Hash
+
+```bash
+# Authenticate with an NT hash instead of a plaintext password
+./mssqlhound -s sql.contoso.com -u "CONTOSO\admin" --nt-hash aad3b435b51404eeaad3b435b51404ee
+
+# Combined with domain enumeration
+./mssqlhound --scan-all-computers --dc-ip 10.0.0.1 \
+  -u "CONTOSO\admin" --nt-hash aad3b435b51404eeaad3b435b51404ee
+```
+
+### Domain Enum Only (Reconnaissance)
+
+```bash
+# List SQL servers discovered via SPNs without connecting to them
+./mssqlhound --domain-enum-only --dc-ip 10.0.0.1 \
+  --ldap-user "CONTOSO\user" --ldap-password "password"
+
+# List all domain computers (not just SPN holders)
+./mssqlhound --domain-enum-only --scan-all-computers --dc-ip 10.0.0.1
+```
+
+### Output and Storage Options
+
+```bash
+# Save zip file to a specific directory
+./mssqlhound -s sql.contoso.com --zip-dir /data/collections/
+
+# Use a custom temporary directory for intermediate files
+./mssqlhound --server-list-file servers.txt --temp-dir /tmp/mssqlhound
+
+# Stop collecting after 500MB of data
+./mssqlhound --server-list-file servers.txt --file-size-limit 500MB
+
+# Save per-target log files in a separate zip archive (useful for debugging)
+./mssqlhound --server-list-file servers.txt --log-per-target
+```
+
+### BloodHound Upload
+
+```bash
+# Collect and automatically upload results to BloodHound CE (via env vars)
+export BLOODHOUND_URL=https://bloodhound.contoso.com
+export BLOODHOUND_TOKEN_ID=<token-id>
+export BLOODHOUND_TOKEN_KEY=<token-key>
+./mssqlhound -s sql.contoso.com --upload-results
+
+# Or pass credentials inline
+./mssqlhound -s sql.contoso.com \
+  --bloodhound-url https://bloodhound.contoso.com \
+  --token-id <id> --token-key <key> \
+  --upload-results
+
+# Upload the MSSQL schema once to register edge/node types in BloodHound
+./mssqlhound \
+  --bloodhound-url https://bloodhound.contoso.com \
+  --token-id <id> --token-key <key> \
+  --upload-schema
+```
+
+### Interesting Edge Options
+
+```bash
+# Include non-traversable edges (shows all permission paths, not just attack paths)
+./mssqlhound -s sql.contoso.com --include-nontraversable
+
+# Make interesting edges traversable (more aggressive pathfinding, may have false positives)
+./mssqlhound -s sql.contoso.com --make-interesting-traversable
+
+# Skip AD node creation (collect only MSSQL nodes, no User/Group/Computer nodes)
+./mssqlhound -s sql.contoso.com --skip-ad-nodes
+```
+
+### Linked Server Options
+
+```bash
+# Skip linked server enumeration (faster, less noisy)
+./mssqlhound -s sql.contoso.com --skip-linked-servers
+
+# Perform full collection on each discovered linked server
+./mssqlhound -s sql.contoso.com --collect-from-linked
+
+# Reduce linked server timeout from the default 300s
+./mssqlhound -s sql.contoso.com --linked-timeout 60
+```
+
+### test-epa-matrix Subcommand
+
+Tests all combinations of Force Encryption, Force Strict Encryption, and Extended Protection by modifying registry settings via WinRM and restarting the SQL Server service. Requires WinRM access and domain credentials.
+
+```bash
+# Test all EPA setting combinations (12 combinations for SQL Server 2022+)
+./mssqlhound test-epa-matrix -s sql.contoso.com -u "CONTOSO\admin" -p "password"
+
+# Named instance, skip strict encryption combos (for pre-SQL Server 2022)
+./mssqlhound test-epa-matrix -s "sql.contoso.com\INST" \
+  --sql-instance-name INST --skip-strict \
+  -u "CONTOSO\admin" -p "password"
+
+# Use HTTPS for WinRM
+./mssqlhound test-epa-matrix -s sql.contoso.com --winrm-https \
+  -u "CONTOSO\admin" -p "password"
+```
+
+### Shell Completion
+
+```bash
+# Bash
+source <(mssqlhound completion bash)
+
+# Zsh
+source <(mssqlhound completion zsh)
+
+# Fish
+mssqlhound completion fish | source
+
+# PowerShell
+mssqlhound completion powershell | Out-String | Invoke-Expression
+```
+
 ## Go Command Line Options
+
+### Authentication
 
 | Flag | Description |
 |------|-------------|
-| `-s, --server` | SQL Server instance (host, host:port, or host\instance) |
+| `-s, --server` | SQL Server instance to collect from (`host`, `host:port`, or `host\instance`) |
 | `-u, --user` | SQL login username |
 | `-p, --password` | SQL login password |
-| `-d, --domain` | Domain for name/SID resolution |
-| `--dc-ip` | Domain controller IP address (used as DNS resolver if `--dns-resolver` not specified) |
+| `--nt-hash` | NT hash (32 hex chars) for pass-the-hash authentication (mutually exclusive with `--password`) |
+| `-k, --kerberos` | Use Kerberos authentication (reads ccache from `KRB5CCNAME` env var or `--krb5-credcachefile`) |
+| `--krb5-configfile` | Path to `krb5.conf` (default: `/etc/krb5.conf` or `KRB5_CONFIG` env var) |
+| `--krb5-credcachefile` | Path to Kerberos credential cache file (overrides `KRB5CCNAME` env var) |
+| `--krb5-keytabfile` | Path to Kerberos keytab file |
+| `--krb5-realm` | Kerberos realm (default: derived from domain or `krb5.conf`) |
+
+### Domain / LDAP
+
+| Flag | Description |
+|------|-------------|
+| `-d, --domain` | Domain to use for name and SID resolution |
+| `--dc-ip` | Domain controller hostname or IP (used for LDAP and as DNS resolver if `--dns-resolver` not specified) |
 | `--dns-resolver` | DNS resolver IP address for domain lookups |
+| `--ldap-user` | LDAP user (`DOMAIN\user` or `user@domain`) for GSSAPI/Kerberos bind |
+| `--ldap-password` | LDAP password for GSSAPI/Kerberos bind |
+
+### Target Selection
+
+| Flag | Description |
+|------|-------------|
+| `--server-list-file` | File containing list of servers (one per line) |
+| `--server-list` | Comma-separated list of servers |
+| `--scan-all-computers` | Scan all domain computers, not just those with SQL SPNs |
+| `--skip-private-address` | Skip private IP check when resolving domain computer addresses |
+
+### Collection
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--domain-enum-only` | false | Only enumerate SPNs/computers, skip MSSQL collection |
+| `--skip-linked-servers` | false | Don't enumerate linked servers |
+| `--collect-from-linked` | false | Perform full collection on discovered linked servers |
+| `--linked-timeout` | 300 | Linked server enumeration timeout (seconds) |
+| `--skip-ad-nodes` | false | Skip creating `User`, `Group`, `Computer` nodes |
+| `--include-nontraversable` | false | Include non-traversable edges |
+| `--make-interesting-traversable` | true | Make interesting edges traversable |
+| `-w, --workers` | 0 | Number of concurrent workers (0 = sequential processing) |
+
+### Output / Storage
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o, --output-format` | `BloodHound` | Output format: `BloodHound`, `BHGeneric` |
+| `--temp-dir` | system temp | Temporary directory for output files |
+| `--zip-dir` | `.` | Directory for the final zip file |
+| `--file-size-limit` | `1GB` | Stop enumeration after output files exceed this size |
+| `--log-per-target` | false | Save per-target log files in a separate zip archive |
+| `--memory-threshold` | 90 | Stop when memory usage exceeds this percentage |
+| `--size-update-interval` | 5 | Interval for file size updates (seconds) |
+
+### BloodHound Upload
+
+| Flag | Env Var | Description |
+|------|---------|-------------|
+| `--bloodhound-url` | `BLOODHOUND_URL` | BloodHound CE instance URL |
+| `--token-id` | `BLOODHOUND_TOKEN_ID` | BloodHound API token ID |
+| `--token-key` | `BLOODHOUND_TOKEN_KEY` | BloodHound API token key |
+| `--upload-results` | | Upload collection results to BloodHound after collection |
+| `--upload-schema` | | Upload schema definitions (`SCHEMA.json`) to BloodHound |
+
+### Diagnostics
+
+| Flag | Description |
+|------|-------------|
+| `-v, --verbose` | Enable verbose output showing detailed collection progress |
+| `--debug` | Enable debug output (includes EPA/TLS/NTLM diagnostics) |
 | `--proxy` | SOCKS5 proxy address for tunneling all traffic (`host:port` or `socks5://[user:pass@]host:port`) |
-| `-w, --workers` | Number of concurrent workers (default: 10) |
-| `-o, --output-directory` | Output directory for zip file |
-| `--scan-all-computers` | Scan all domain computers, not just those with SPNs |
-| `--ldap-user` | LDAP username for AD queries (DOMAIN\\user or user@domain) |
-| `--ldap-password` | LDAP password for AD queries |
-| `--skip-linked-servers` | Don't enumerate linked servers |
-| `--collect-from-linked` | Full collection on discovered linked servers |
-| `--skip-ad-nodes` | Skip creating User, Group, Computer nodes |
-| `--skip-private-address` | Skip servers with private IP addresses |
-| `--include-nontraversable` | Include non-traversable edges |
-| `-v, --verbose` | Enable verbose output |
 
 ## Key Differences from PowerShell Version
 

@@ -27,6 +27,7 @@ type epaAuthProvider struct {
 	mu      sync.Mutex
 	cbt     []byte // Channel binding token (16-byte MD5 of SEC_CHANNEL_BINDINGS)
 	spn     string // Service Principal Name (MSSQLSvc/hostname:port)
+	ntHash  []byte // Pre-computed NT hash for pass-the-hash (16 bytes)
 	verbose bool
 	debug   bool
 	logger  *slog.Logger
@@ -49,6 +50,14 @@ func (p *epaAuthProvider) SetSPN(spn string) {
 	p.spn = spn
 }
 
+// SetNTHash stores a pre-computed NT hash for pass-the-hash authentication.
+func (p *epaAuthProvider) SetNTHash(hash []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ntHash = make([]byte, len(hash))
+	copy(p.ntHash, hash)
+}
+
 // GetIntegratedAuthenticator creates a new NTLM authenticator with EPA support.
 // This is called by go-mssqldb after the TLS handshake completes, so the CBT
 // captured via VerifyPeerCertificate is already available.
@@ -63,11 +72,16 @@ func (p *epaAuthProvider) GetIntegratedAuthenticator(config msdsn.Config) (integ
 	cbt := make([]byte, len(p.cbt))
 	copy(cbt, p.cbt)
 	spn := p.spn
+	ntHash := make([]byte, len(p.ntHash))
+	copy(ntHash, p.ntHash)
 	p.mu.Unlock()
 
-	p.logger.Debug("EPA auth GetIntegratedAuthenticator", "domain", domain, "user", username, "spn", spn, "cbt", fmt.Sprintf("%x", cbt), "cbt_len", len(cbt))
+	p.logger.Debug("EPA auth GetIntegratedAuthenticator", "domain", domain, "user", username, "spn", spn, "cbt", fmt.Sprintf("%x", cbt), "cbt_len", len(cbt), "has_nt_hash", len(ntHash) > 0)
 
 	auth := newNTLMAuth(domain, username, config.Password, spn)
+	if len(ntHash) > 0 {
+		auth.SetNTHash(ntHash)
+	}
 	auth.SetEPATestMode(EPATestNormal)
 	if len(cbt) == 16 {
 		auth.SetChannelBindingHash(cbt)

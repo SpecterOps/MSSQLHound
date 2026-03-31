@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -66,8 +67,8 @@ func runTestEPAMatrix(cmd *cobra.Command, args []string) error {
 	if serverInstance == "" {
 		return fmt.Errorf("--server is required")
 	}
-	if userID == "" || password == "" {
-		return fmt.Errorf("--user and --password are required (DOMAIN\\user format)")
+	if userID == "" || (password == "" && ntHash == "") {
+		return fmt.Errorf("--user and (--password or --nt-hash) are required (DOMAIN\\user format)")
 	}
 
 	// Configure DNS resolver (same logic as root command)
@@ -121,12 +122,23 @@ func runTestEPAMatrix(cmd *cobra.Command, args []string) error {
 
 	log := epaMatrixLogger()
 
+	// Parse NT hash if provided
+	var parsedNTHash []byte
+	if ntHash != "" {
+		var err error
+		parsedNTHash, err = hex.DecodeString(ntHash)
+		if err != nil || len(parsedNTHash) != 16 {
+			return fmt.Errorf("--nt-hash must be exactly 32 hex characters (16 bytes)")
+		}
+	}
+
 	// Use same credentials for EPA testing (NTLM auth)
 	matrixCfg := &epamatrix.MatrixConfig{
 		ServerInstance:        serverInstance,
 		Domain:               strings.ToUpper(domain),
 		LDAPUser:             userID,
 		LDAPPassword:         password,
+		NTHash:               parsedNTHash,
 		Verbose:              verbose,
 		Debug:                debug,
 		SQLInstanceName:      sqlInstanceName,

@@ -22,6 +22,7 @@ import (
 	"github.com/SpecterOps/MSSQLHound/internal/types"
 	mssqldb "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/integratedauth"
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register Kerberos auth provider
 	"github.com/microsoft/go-mssqldb/msdsn"
 )
 
@@ -350,6 +351,12 @@ type Client struct {
 	instanceName             string
 	userID                   string
 	password                 string
+	ntHash                   []byte // Pre-computed NT hash (16 bytes) for pass-the-hash authentication
+	useKerberos              bool   // Use Kerberos authentication
+	krb5ConfigFile           string // Path to krb5.conf
+	krb5CCacheFile           string // Path to credential cache file
+	krb5KeytabFile           string // Path to keytab file
+	krb5Realm                string // Kerberos realm
 	domain                   string // Domain for NTLM authentication (needed for EPA testing)
 	ldapUser                 string // LDAP user (DOMAIN\user or user@domain) for EPA testing
 	ldapPassword             string // LDAP password for EPA testing
@@ -498,10 +505,52 @@ func (c *Client) CheckPort(ctx context.Context) error {
 
 // connectNative tries to connect using go-mssqldb
 func (c *Client) connectNative(ctx context.Context) error {
-	// Connection strategies to try in order
-	// NOTE: Some servers with specific SSPI configurations may fail to connect from Go
-	// even though PowerShell/System.Data.SqlClient works. This is a known limitation
-	// of the go-mssqldb driver's Windows SSPI implementation.
+	// Auto-generate krb5.conf for Kerberos if needed
+	if c.useKerberos && c.krb5ConfigFile == "" {
+		// Check if default config exists (KRB5_CONFIG env or /etc/krb5.conf)
+		configPath := os.Getenv("KRB5_CONFIG")
+		if configPath == "" {
+			configPath = "/etc/krb5.conf"
+		}
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			if c.domain != "" && c.dnsResolver != "" {
+				generated, genErr := GenerateKrb5Config(c.domain, c.dnsResolver)
+				if genErr != nil {
+					c.logVerbose("Failed to auto-generate krb5.conf", "error", genErr)
+				} else {
+					c.krb5ConfigFile = generated
+					defer os.Remove(generated)
+					c.logVerbose("Auto-generated krb5.conf", "path", generated, "domain", c.domain, "kdc", c.dnsResolver)
+				}
+			} else {
+				c.logVerbose("No krb5.conf found and cannot auto-generate (need --domain and --dc-ip)")
+			}
+		}
+	}
+
+	// Connection strategy ordering for go-mssqldb:
+	//
+	// Multiple connection strings are attempted because SQL Server configurations
+	// vary widely: encryption mode (off/on/strict), SPN format expectations, and
+	// hostname-vs-IP behavior all differ across environments.
+	//
+	// Strategy priority depends on EPA pre-test results:
+	//   - If EPA detected TDS 8.0 strict encryption: strict strategies first,
+	//     then encrypt, then SPN override, then unencrypted fallback.
+	//   - Otherwise (most common): encrypt first, then strict, then SPN
+	//     override, then unencrypted.
+	//
+	// For FQDN targets: short hostname variants are appended because some servers
+	// only accept the NetBIOS name (not the FQDN) in the Kerberos SPN, causing
+	// "cannot generate SSPI context" errors with the full name.
+	//
+	// For IP targets: reverse DNS is attempted to obtain a FQDN for the
+	// HostNameInCertificate field, which strict mode needs for TLS certificate
+	// validation (the cert CN/SAN rarely contains an IP).
+	//
+	// NOTE: Some servers with specific SSPI configurations may fail to connect
+	// from Go even though PowerShell/System.Data.SqlClient works. This is a
+	// known limitation of the go-mssqldb driver's Windows SSPI implementation.
 
 	// Get short hostname for some strategies (only for FQDNs, not IP addresses)
 	shortHostname := ""
@@ -557,19 +606,30 @@ func (c *Client) connectNative(ctx context.Context) error {
 		)
 	}
 
-	// When EPA is Required, register a custom NTLM auth provider that includes
-	// channel binding tokens. go-mssqldb's built-in NTLM on Linux does NOT
-	// support EPA, so without this, all strategies fail with "untrusted domain".
+	// Register a custom NTLM auth provider when:
+	// - EPA is Required/Allowed (needs channel binding tokens)
+	// - NT hash is provided (pass-the-hash requires our custom NTLM implementation)
+	// go-mssqldb's built-in NTLM on Linux does NOT support EPA or pass-the-hash,
+	// so without this, strategies fail with "untrusted domain".
 	var epaProvider *epaAuthProvider
-	if c.epaResult != nil && (c.epaResult.EPAStatus == "Required" || c.epaResult.EPAStatus == "Allowed") {
+	useCustomNTLM := !c.useKerberos && ((c.epaResult != nil && (c.epaResult.EPAStatus == "Required" || c.epaResult.EPAStatus == "Allowed")) || len(c.ntHash) > 0)
+	if useCustomNTLM {
 		epaProvider = &epaAuthProvider{verbose: c.verbose, debug: c.debug, logger: c.logger}
 		port := c.port
 		if port == 0 {
 			port = 1433
 		}
 		epaProvider.SetSPN(computeSPN(c.hostname, port))
+		if len(c.ntHash) > 0 {
+			epaProvider.SetNTHash(c.ntHash)
+		}
 		integratedauth.SetIntegratedAuthenticationProvider(epaAuthProviderName, epaProvider)
-		c.logVerbose("Using EPA-aware NTLM authentication", "epa_status", c.epaResult.EPAStatus)
+		if c.epaResult != nil {
+			c.logVerbose("Using EPA-aware NTLM authentication", "epa_status", c.epaResult.EPAStatus)
+		}
+		if len(c.ntHash) > 0 {
+			c.logVerbose("Using pass-the-hash NTLM authentication")
+		}
 	}
 
 	// Special strategy for strict encryption + EPA: do TLS ourselves in the dialer
@@ -692,6 +752,26 @@ func (c *Client) connectNative(ctx context.Context) error {
 			// settings so we can connect to servers with self-signed certs.
 			if config.TLSConfig != nil {
 				config.TLSConfig.InsecureSkipVerify = true //nolint:gosec // security tool needs to connect to any server
+			}
+		}
+
+		// When Kerberos is enabled, inject krb5 authenticator parameters.
+		if c.useKerberos {
+			if config.Parameters == nil {
+				config.Parameters = make(map[string]string)
+			}
+			config.Parameters["authenticator"] = "krb5"
+			if c.krb5ConfigFile != "" {
+				config.Parameters["krb5-configfile"] = c.krb5ConfigFile
+			}
+			if c.krb5CCacheFile != "" {
+				config.Parameters["krb5-credcachefile"] = c.krb5CCacheFile
+			}
+			if c.krb5KeytabFile != "" {
+				config.Parameters["krb5-keytabfile"] = c.krb5KeytabFile
+			}
+			if c.krb5Realm != "" {
+				config.Parameters["krb5-realm"] = c.krb5Realm
 			}
 		}
 
@@ -870,7 +950,27 @@ func (c *Client) buildConnectionStringForStrategy(serverName, encrypt string, us
 		parts = append(parts, fmt.Sprintf("instance=%s", c.instanceName))
 	}
 
-	if c.useWindowsAuth {
+	if c.useKerberos {
+		// Kerberos authentication via go-mssqldb's krb5 provider
+		parts = append(parts, "trusted_connection=yes")
+		if c.userID != "" {
+			parts = append(parts, fmt.Sprintf("user id=%s", c.userID))
+		}
+		// Set ServerSPN for Kerberos ticket request
+		effectiveHost := serverName
+		if spnHost != "" {
+			effectiveHost = spnHost
+		}
+		port := c.port
+		if port == 0 {
+			port = 1433
+		}
+		if c.instanceName != "" && c.instanceName != "MSSQLSERVER" {
+			parts = append(parts, fmt.Sprintf("ServerSPN=MSSQLSvc/%s:%s", effectiveHost, c.instanceName))
+		} else {
+			parts = append(parts, fmt.Sprintf("ServerSPN=MSSQLSvc/%s:%d", effectiveHost, port))
+		}
+	} else if c.useWindowsAuth {
 		// Use Windows integrated auth
 		parts = append(parts, "trusted_connection=yes")
 
@@ -919,6 +1019,21 @@ func (c *Client) SetDebug(debug bool) {
 
 func (c *Client) SetCollectFromLinkedServers(collect bool) {
 	c.collectFromLinkedServers = collect
+}
+
+// SetNTHash sets a pre-computed NT hash (16 bytes) for pass-the-hash authentication.
+// When set, NTLM auth will use this hash instead of deriving one from the password.
+func (c *Client) SetNTHash(hash []byte) {
+	c.ntHash = hash
+}
+
+// SetKerberosConfig sets Kerberos authentication parameters.
+func (c *Client) SetKerberosConfig(configFile, ccacheFile, keytabFile, realm string) {
+	c.useKerberos = true
+	c.krb5ConfigFile = configFile
+	c.krb5CCacheFile = ccacheFile
+	c.krb5KeytabFile = keytabFile
+	c.krb5Realm = realm
 }
 
 // SetDomain sets the domain for NTLM authentication (needed for EPA testing)
@@ -1004,15 +1119,35 @@ type EPATestResult struct {
 // This matches the approach used in the Python reference implementation
 // (MssqlExtended.py / MssqlInformer.py).
 //
-// For encrypted connections (ENCRYPT_REQ): tests channel binding manipulation
-// For unencrypted connections (ENCRYPT_OFF): tests service binding manipulation
+// Two-path EPA detection flow (per MS-TDS spec):
+//
+//   Path 1 - TDS 7.x normal (most servers):
+//     PRELOGIN(cleartext) -> TLS-over-TDS handshake -> LOGIN7 with NTLM Type1
+//     -> server returns NTLM Type2 challenge (contains encryption flag)
+//
+//   Path 2 - TDS 8.0 strict (ForceStrictEncryption=1):
+//     Direct TLS handshake -> PRELOGIN(inside TLS) -> LOGIN7 with NTLM Type1
+//     -> server returns NTLM Type2 challenge
+//     Tried only when Path 1 PRELOGIN fails (strict servers reject cleartext PRELOGIN).
+//
+// EPA determination logic (for encrypted connections):
+//   1. Normal login (unmodified NTLM) succeeds -> baseline established
+//   2. BogusCBT login (garbage channel binding token) fails with "untrusted domain"
+//      -> server is checking channel bindings, proceed to step 3
+//      BogusCBT succeeds -> EPA is Off (server ignores channel bindings)
+//   3. MissingCBT login (no channel binding token at all):
+//      Fails with "untrusted domain" -> EPA = Required
+//      Succeeds -> EPA = Allowed (accepts but doesn't require CBT)
+//
+// For unencrypted connections (ENCRYPT_OFF): service binding is tested instead.
 func (c *Client) TestEPA(ctx context.Context) (*EPATestResult, error) {
 	result := &EPATestResult{}
 
 	// EPA testing requires LDAP/domain credentials for NTLM authentication.
 	// These are separate from the SQL auth credentials (-u/-p).
-	if c.ldapUser == "" || c.ldapPassword == "" {
-		return nil, fmt.Errorf("EPA testing requires LDAP credentials (--ldap-user and --ldap-password)")
+	// Pass-the-hash (--nt-hash) can substitute for --ldap-password.
+	if c.ldapUser == "" || (c.ldapPassword == "" && len(c.ntHash) == 0) {
+		return nil, fmt.Errorf("EPA testing requires LDAP credentials (--ldap-user and --ldap-password or --nt-hash)")
 	}
 
 	// Parse domain and username from LDAP user (DOMAIN\user or user@domain format)
@@ -1043,6 +1178,7 @@ func (c *Client) TestEPA(ctx context.Context) (*EPATestResult, error) {
 		return &EPATestConfig{
 			Hostname: c.hostname, Port: port, InstanceName: c.instanceName,
 			Domain: epaDomain, Username: epaUsername, Password: c.ldapPassword,
+			NTHash:   c.ntHash,
 			TestMode: mode, Verbose: c.verbose, Debug: c.debug,
 			DNSResolver: c.dnsResolver,
 			ProxyDialer: c.proxyDialer,

@@ -19,6 +19,12 @@ type SQLInstanceInfo struct {
 
 // BuildDetectInstanceScript returns PowerShell that finds the SQL Server instance
 // registry root and outputs "RegistryRoot|RegistryPath|ServiceName".
+//
+// SQL Server registry layout (HKLM\SOFTWARE\Microsoft\Microsoft SQL Server):
+//   Instance Names\SQL  -- maps logical instance names (e.g. "MSSQLSERVER",
+//                          "SQLEXPRESS") to versioned roots (e.g. "MSSQL16.MSSQLSERVER").
+//   <root>\MSSQLServer\SuperSocketNetLib  -- contains the network/security DWORDs
+//                          that control encryption and EPA behavior.
 func BuildDetectInstanceScript(instanceName string) string {
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $instanceName = '%s'
@@ -53,6 +59,17 @@ Write-Output "$fe|$fse|$ep"
 }
 
 // BuildWriteSettingsScript returns PowerShell that sets the EPA-related registry values.
+//
+// SuperSocketNetLib DWORD values written:
+//   ForceEncryption       (0|1): 1 = server requires TLS for all connections (ENCRYPT_REQ
+//                                in TDS PRELOGIN), 0 = TLS optional (ENCRYPT_OFF).
+//   ForceStrictEncryption (0|1): 1 = TDS 8.0 strict mode -- TLS handshake occurs before
+//                                any TDS traffic (PRELOGIN sent inside TLS tunnel).
+//                                Requires ForceEncryption=1 as a prerequisite.
+//   ExtendedProtection    (0|1|2): Controls EPA / channel binding token enforcement.
+//                                0 = Off, 1 = Allowed (accept CBT if present, don't
+//                                require it), 2 = Required (reject connections without
+//                                a valid CBT). See MS-TDS 2.2.6.5.
 func BuildWriteSettingsScript(registryPath string, settings RegistrySettings) string {
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $path = '%s'

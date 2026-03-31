@@ -30,7 +30,7 @@ func TestEdgeCreation(t *testing.T) {
 		TempDir:                    tmpDir,
 		IncludeNontraversableEdges: true,
 	}
-	c := New(config)
+	c, _ := New(config)
 
 	// Create output file
 	outputPath := filepath.Join(tmpDir, "test-output.json")
@@ -734,7 +734,7 @@ func TestNodeKinds(t *testing.T) {
 		{"APPLICATION_ROLE", bloodhound.NodeKinds.ApplicationRole, false},
 	}
 
-	c := New(&Config{})
+	c, _ := New(&Config{})
 
 	for _, tt := range tests {
 		t.Run(tt.typeDesc, func(t *testing.T) {
@@ -851,7 +851,7 @@ func TestCoerceAndRelayEdge(t *testing.T) {
 		Domain:                     "domain.com",
 		IncludeNontraversableEdges: true,
 	}
-	c := New(config)
+	c, _ := New(config)
 
 	// Create output file
 	outputPath := filepath.Join(tmpDir, "test-output.json")

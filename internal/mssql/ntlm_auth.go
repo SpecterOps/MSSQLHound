@@ -19,37 +19,50 @@ import (
 	"golang.org/x/crypto/md4"
 )
 
-// NTLM AV_PAIR IDs (MS-NLMP 2.2.2.1)
+// NTLM AV_PAIR IDs (MS-NLMP 2.2.2.1).
+// AV_PAIRs are typed attribute-value pairs embedded in the Type2 (Challenge)
+// target info payload. The client parses these to extract the server's identity
+// and timestamp, then rebuilds them in the Type3 (Authenticate) blob to convey
+// EPA channel bindings (MsvAvChannelBindings) and service binding (MsvAvTargetName).
 const (
-	avIDMsvAvEOL             uint16 = 0x0000
-	avIDMsvAvNbComputerName  uint16 = 0x0001
-	avIDMsvAvNbDomainName    uint16 = 0x0002
-	avIDMsvAvDNSComputerName uint16 = 0x0003
-	avIDMsvAvDNSDomainName   uint16 = 0x0004
-	avIDMsvAvDNSTreeName     uint16 = 0x0005
-	avIDMsvAvFlags           uint16 = 0x0006
-	avIDMsvAvTimestamp       uint16 = 0x0007
-	avIDMsvAvTargetName      uint16 = 0x0009
-	avIDMsvChannelBindings   uint16 = 0x000A
+	avIDMsvAvEOL             uint16 = 0x0000 // Terminator; marks the end of the AV_PAIR list
+	avIDMsvAvNbComputerName  uint16 = 0x0001 // NetBIOS computer name of the server
+	avIDMsvAvNbDomainName    uint16 = 0x0002 // NetBIOS domain name; used as input to NTLMv2 hash computation
+	avIDMsvAvDNSComputerName uint16 = 0x0003 // FQDN of the server
+	avIDMsvAvDNSDomainName   uint16 = 0x0004 // DNS domain name (e.g. "corp.example.com")
+	avIDMsvAvDNSTreeName     uint16 = 0x0005 // DNS forest tree name
+	avIDMsvAvFlags           uint16 = 0x0006 // Bitfield; bit 0x02 = MIC is present in the Type3 message
+	avIDMsvAvTimestamp       uint16 = 0x0007 // 8-byte Windows FILETIME; used as the blob timestamp in Type3
+	avIDMsvAvTargetName      uint16 = 0x0009 // SPN target name for service binding (EPA); e.g. "MSSQLSvc/host:1433"
+	avIDMsvChannelBindings   uint16 = 0x000A // 16-byte MD5 of SEC_CHANNEL_BINDINGS for channel binding token (EPA)
 )
 
-// NTLM negotiate flags
+// NTLM negotiate flags (MS-NLMP 2.2.2.5 NEGOTIATE).
+// These flags are set in Type1 (Negotiate) and echoed/adjusted in Type2/Type3.
+// They fall into three categories:
+//   - Encoding: Unicode and OEM control string encoding (Unicode is required for NTLMv2).
+//   - Authentication: NTLM, AlwaysSign, and ExtendedSessionSecurity select the NTLMv2
+//     authentication scheme. ExtendedSessionSecurity is critical -- it enables NTLMv2
+//     session security and is required for EPA channel binding to function.
+//   - Capabilities: TargetInfo requests AV_PAIRs in the Type2 challenge (needed for
+//     EPA), Version includes the OS version block, and 128/56/KeyExch control session
+//     key strength and exchange.
 const (
-	ntlmFlagUnicode                 uint32 = 0x00000001
-	ntlmFlagOEM                     uint32 = 0x00000002
-	ntlmFlagRequestTarget           uint32 = 0x00000004
-	ntlmFlagSign                    uint32 = 0x00000010
-	ntlmFlagSeal                    uint32 = 0x00000020
-	ntlmFlagNTLM                    uint32 = 0x00000200
-	ntlmFlagAlwaysSign              uint32 = 0x00008000
-	ntlmFlagDomainSupplied          uint32 = 0x00001000
-	ntlmFlagWorkstationSupplied     uint32 = 0x00002000
-	ntlmFlagExtendedSessionSecurity uint32 = 0x00080000
-	ntlmFlagTargetInfo              uint32 = 0x00800000
-	ntlmFlagVersion                 uint32 = 0x02000000
-	ntlmFlag128                     uint32 = 0x20000000
-	ntlmFlagKeyExch                 uint32 = 0x40000000
-	ntlmFlag56                      uint32 = 0x80000000
+	ntlmFlagUnicode                 uint32 = 0x00000001 // NTLMSSP_NEGOTIATE_UNICODE: use UTF-16LE encoding
+	ntlmFlagOEM                     uint32 = 0x00000002 // NTLMSSP_NEGOTIATE_OEM: support OEM character set
+	ntlmFlagRequestTarget           uint32 = 0x00000004 // NTLMSSP_REQUEST_TARGET: request TargetName in Type2
+	ntlmFlagSign                    uint32 = 0x00000010 // NTLMSSP_NEGOTIATE_SIGN: session signing capability
+	ntlmFlagSeal                    uint32 = 0x00000020 // NTLMSSP_NEGOTIATE_SEAL: session sealing (encryption)
+	ntlmFlagNTLM                    uint32 = 0x00000200 // NTLMSSP_NEGOTIATE_NTLM: NTLM authentication scheme
+	ntlmFlagAlwaysSign              uint32 = 0x00008000 // NTLMSSP_NEGOTIATE_ALWAYS_SIGN: signing required on session
+	ntlmFlagDomainSupplied          uint32 = 0x00001000 // NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED
+	ntlmFlagWorkstationSupplied     uint32 = 0x00002000 // NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED
+	ntlmFlagExtendedSessionSecurity uint32 = 0x00080000 // NTLMSSP_NEGOTIATE_EXTENDED_SESSIONSECURITY: NTLMv2 session security; required for EPA
+	ntlmFlagTargetInfo              uint32 = 0x00800000 // NTLMSSP_NEGOTIATE_TARGET_INFO: server must include AV_PAIRs in Type2
+	ntlmFlagVersion                 uint32 = 0x02000000 // NTLMSSP_NEGOTIATE_VERSION: include NTLM version block
+	ntlmFlag128                     uint32 = 0x20000000 // NTLMSSP_NEGOTIATE_128: 128-bit session key
+	ntlmFlagKeyExch                 uint32 = 0x40000000 // NTLMSSP_NEGOTIATE_KEY_EXCH: encrypted session key exchange
+	ntlmFlag56                      uint32 = 0x80000000 // NTLMSSP_NEGOTIATE_56: 56-bit session key (legacy fallback)
 )
 
 // MsvAvFlags bit values
@@ -91,6 +104,7 @@ type ntlmAuth struct {
 	domain     string
 	username   string
 	password   string
+	ntHash     []byte // Pre-computed NT hash (16 bytes) for pass-the-hash; skips MD4(password) when set
 	targetName string // SPN e.g. MSSQLSvc/hostname:port
 
 	testMode           EPATestMode
@@ -149,6 +163,12 @@ func (a *ntlmAuth) SetUseClientTimestamp(use bool) {
 	a.useClientTimestamp = use
 }
 
+// SetNTHash sets a pre-computed NT hash (16 bytes) for pass-the-hash authentication.
+// When set, the password field is ignored and the MD4(UTF16LE(password)) step is skipped.
+func (a *ntlmAuth) SetNTHash(hash []byte) {
+	a.ntHash = hash
+}
+
 // GetAuthDomain returns the domain that will be used for NTLMv2 hash computation.
 func (a *ntlmAuth) GetAuthDomain() string {
 	return a.domain
@@ -156,8 +176,16 @@ func (a *ntlmAuth) GetAuthDomain() string {
 
 // ComputeNTLMv2HashHex returns the hex-encoded NTLMv2 hash for diagnostic logging.
 func (a *ntlmAuth) ComputeNTLMv2HashHex() string {
-	hash := computeNTLMv2Hash(a.password, a.username, a.domain)
+	hash := a.computeNTLMv2HashResolved()
 	return fmt.Sprintf("%x", hash)
+}
+
+// computeNTLMv2HashResolved returns the NTLMv2 hash, using the pre-computed NT hash if set.
+func (a *ntlmAuth) computeNTLMv2HashResolved() []byte {
+	if len(a.ntHash) > 0 {
+		return computeNTLMv2HashFromNT(a.ntHash, a.username, a.domain)
+	}
+	return computeNTLMv2Hash(a.password, a.username, a.domain)
 }
 
 // GetTargetInfoPairs returns the parsed AV_PAIRs from the server's Type2 target info
@@ -197,10 +225,15 @@ func AVPairName(id uint16) string {
 	}
 }
 
-// CreateNegotiateMessage builds NTLM Type1 (Negotiate) message.
-// Uses minimal flags without domain payload. Including a domain in Type1 causes
-// SQL Server to reject immediately with "untrusted domain" before even sending
-// a Type2 challenge, so we omit it. The domain is provided in the Type3 message.
+// CreateNegotiateMessage builds the NTLM Type1 (Negotiate) message per MS-NLMP
+// Section 3.1.5.1.1. This is the first message in the NTLM 3-way handshake:
+//   Type1 (client -> server) -> Type2 (server -> client) -> Type3 (client -> server)
+//
+// The Type1 message advertises the client's capabilities via negotiate flags and
+// optionally includes domain/workstation payloads. We intentionally omit the
+// domain payload: SQL Server rejects Type1 messages with a domain field before
+// issuing a Type2 challenge, returning an "untrusted domain" error. The domain
+// is instead supplied in the Type3 Authenticate message.
 func (a *ntlmAuth) CreateNegotiateMessage() []byte {
 	flags := ntlmFlagUnicode |
 		ntlmFlagOEM |
@@ -231,8 +264,27 @@ func (a *ntlmAuth) CreateNegotiateMessage() []byte {
 	return msg
 }
 
-// ProcessChallenge parses NTLM Type2 (Challenge) and extracts server challenge,
-// flags, and target info AV_PAIRs.
+// ProcessChallenge parses the NTLM Type2 (Challenge) message per MS-NLMP 2.2.1.2.
+//
+// Type2 byte layout:
+//   Offset 0-7:   Signature ("NTLMSSP\x00")
+//   Offset 8-11:  MessageType (uint32 = 2)
+//   Offset 12-19: TargetNameFields (Len/MaxLen/Offset)
+//   Offset 20-23: NegotiateFlags (uint32)
+//   Offset 24-31: ServerChallenge (8 bytes -- the nonce for NTProofStr)
+//   Offset 32-39: Reserved
+//   Offset 40-47: TargetInfoFields (Len/MaxLen/Offset)
+//   Offset 48+:   Version (optional), payload data
+//
+// Key extractions:
+//   - ServerChallenge: 8-byte nonce used as HMAC input for NTProofStr in Type3.
+//   - MsvAvNbDomainName: NetBIOS domain from the server's AV_PAIRs, stored in
+//     serverDomain for NTLMv2 hash computation (though the user-provided domain
+//     is used in practice -- see CreateAuthenticateMessage).
+//   - MsvAvTimestamp: 8-byte FILETIME from the server's AV_PAIRs, used as the
+//     blob timestamp in the Type3 NtChallengeResponse. Using the server's
+//     timestamp (rather than a client-generated one) ensures the DC's replay
+//     detection window is honored.
 func (a *ntlmAuth) ProcessChallenge(challengeData []byte) error {
 	if len(challengeData) < 32 {
 		return fmt.Errorf("NTLM challenge too short: %d bytes", len(challengeData))
@@ -285,8 +337,36 @@ func (a *ntlmAuth) ProcessChallenge(challengeData []byte) error {
 	return nil
 }
 
-// CreateAuthenticateMessage builds NTLM Type3 (Authenticate) message with
-// controllable AV_PAIRs based on the test mode.
+// CreateAuthenticateMessage builds the NTLM Type3 (Authenticate) message per
+// MS-NLMP Section 3.3.2. This is the final message in the handshake, containing
+// the NTLMv2 proof-of-knowledge and (optionally) EPA bindings.
+//
+// NtChallengeResponse blob structure (MS-NLMP 3.3.2 NTLMv2_CLIENT_CHALLENGE):
+//   ResponseType(1) + HiResponseType(1) + Reserved1(2) + Reserved2(4) +
+//   TimeStamp(8) + ChallengeFromClient(8) + Reserved3(4) + AvPairs(variable) + Reserved4(4)
+//   Total fixed overhead: 28 bytes + AV_PAIR payload + 4-byte trailing reserved.
+//   NTProofStr = HMAC-MD5(NTLMv2Hash, ServerChallenge || blob) is prepended to form
+//   the full NtChallengeResponse.
+//
+// Domain handling: authDomain uses the user-provided domain rather than
+// serverDomain (MsvAvNbDomainName from Type2). Although MS-NLMP 3.3.2 suggests
+// using MsvAvNbDomainName, real-world implementations (Windows SSPI, go-mssqldb,
+// impacket) all use the user-supplied domain. The DC validates against the
+// account's actual domain stored in AD.
+//
+// Type3 message layout uses an 88-byte header (matching go-mssqldb):
+//   Offset 0-7:   Signature ("NTLMSSP\x00")
+//   Offset 8-11:  MessageType (uint32 = 3)
+//   Offset 12-19: LmChallengeResponse fields
+//   Offset 20-27: NtChallengeResponse fields
+//   Offset 28-35: DomainName fields
+//   Offset 36-43: UserName fields
+//   Offset 44-51: Workstation fields
+//   Offset 52-59: EncryptedRandomSessionKey fields
+//   Offset 60-63: NegotiateFlags
+//   Offset 64-71: Version (zeroed)
+//   Offset 72-87: MIC (16 bytes) -- HMAC-MD5(SessionBaseKey, Type1||Type2||Type3)
+//   Offset 88+:   Payload data (LM, NT, domain, user, workstation)
 func (a *ntlmAuth) CreateAuthenticateMessage() ([]byte, error) {
 	if a.targetInfoRaw == nil {
 		return nil, fmt.Errorf("no target info available from challenge")
@@ -314,8 +394,12 @@ func (a *ntlmAuth) CreateAuthenticateMessage() ([]byte, error) {
 	var timestamp []byte
 	if a.useClientTimestamp {
 		timestamp = make([]byte, 8)
-		// Windows FILETIME: 100-nanosecond intervals since January 1, 1601
-		// Unix epoch is January 1, 1970 = 116444736000000000 FILETIME ticks
+		// Windows FILETIME: 100-nanosecond intervals since January 1, 1601 (UTC).
+		// The constant 116444736000000000 is the number of 100ns ticks between
+		// the Windows epoch (1601-01-01) and the Unix epoch (1970-01-01):
+		//   369 years * 365.2425 days/year * 86400 seconds/day * 10^7 ticks/second.
+		// Go's UnixNano() returns nanoseconds since Unix epoch, so dividing by 100
+		// converts to FILETIME ticks, then adding the offset shifts to the 1601 base.
 		const windowsEpochDiff = 116444736000000000
 		ft := uint64(time.Now().UnixNano()/100) + windowsEpochDiff
 		binary.LittleEndian.PutUint64(timestamp, ft)
@@ -333,7 +417,7 @@ func (a *ntlmAuth) CreateAuthenticateMessage() ([]byte, error) {
 	// Tested both "MAYYHEM" (user) and "mayyhem" (server) - neither helped, confirming
 	// the domain case is not the root cause of auth failures.
 	authDomain := a.domain
-	ntlmV2Hash := computeNTLMv2Hash(a.password, a.username, authDomain)
+	ntlmV2Hash := a.computeNTLMv2HashResolved()
 
 	// Build the NtChallengeResponse blob (NTLMv2_CLIENT_CHALLENGE / temp)
 	// Structure: ResponseType(1) + HiResponseType(1) + Reserved1(2) + Reserved2(4) +
@@ -457,6 +541,22 @@ func (a *ntlmAuth) CreateAuthenticateMessage() ([]byte, error) {
 
 // buildModifiedTargetInfo constructs the target info for the NtChallengeResponse
 // with AV_PAIRs added, removed, or modified per the EPATestMode.
+//
+// EPA (Extended Protection for Authentication, MS-TDS 3.2.5.2) relies on two
+// AV_PAIRs in the Type3 target info: MsvAvChannelBindings (CBT) and
+// MsvAvTargetName (SPN). By selectively including, omitting, or corrupting
+// these pairs, we can probe each EPA enforcement level on the target server.
+// The five test modes and their AV_PAIR manipulations:
+//
+//   EPATestNormal:         Correct CBT hash + correct SPN. Full EPA compliance.
+//   EPATestBogusCBT:       Wrong (hardcoded) CBT hash + correct SPN. Tests whether
+//                          the server validates the channel binding hash.
+//   EPATestMissingCBT:     No MsvAvChannelBindings pair at all + correct SPN. Tests
+//                          whether the server requires channel binding.
+//   EPATestBogusService:   Correct CBT + wrong SPN (replaces "MSSQLSvc/" with "cifs/").
+//                          Tests whether the server validates the service class.
+//   EPATestMissingService: No MsvAvChannelBindings + no MsvAvTargetName. Tests
+//                          whether the server requires any EPA bindings at all.
 func (a *ntlmAuth) buildModifiedTargetInfo() []byte {
 	pairs := parseAVPairs(a.targetInfoRaw)
 
@@ -589,7 +689,12 @@ func computeNTLMv2Hash(password, username, domain string) []byte {
 	h.Write(encodeUTF16LE(password))
 	ntHash := h.Sum(nil)
 
-	// NTLMv2 hash = HMAC-MD5(ntHash, UTF16LE(UPPER(username) + domain))
+	return computeNTLMv2HashFromNT(ntHash, username, domain)
+}
+
+// computeNTLMv2HashFromNT computes NTLMv2 hash from a pre-computed NT hash (pass-the-hash).
+// NTLMv2 hash = HMAC-MD5(ntHash, UTF16LE(UPPER(username) + domain))
+func computeNTLMv2HashFromNT(ntHash []byte, username, domain string) []byte {
 	identity := encodeUTF16LE(strings.ToUpper(username) + domain)
 	return hmacMD5Sum(ntHash, identity)
 }
@@ -604,16 +709,23 @@ func computeMIC(sessionBaseKey, negotiateMsg, challengeMsg, authenticateMsg []by
 }
 
 // computeCBTHash computes the MD5 hash of the SEC_CHANNEL_BINDINGS structure
-// for the MsvAvChannelBindings AV_PAIR.
+// for the MsvAvChannelBindings AV_PAIR (MS-NLMP 2.2.2.1, RFC 5929).
 //
-// The SEC_CHANNEL_BINDINGS structure is:
+// SEC_CHANNEL_BINDINGS layout (20-byte header + variable application data):
+//   Offset 0-3:   dwInitiatorAddrType  (uint32 = 0, unused for TLS)
+//   Offset 4-7:   cbInitiatorLength    (uint32 = 0, unused for TLS)
+//   Offset 8-11:  dwAcceptorAddrType   (uint32 = 0, unused for TLS)
+//   Offset 12-15: cbAcceptorLength     (uint32 = 0, unused for TLS)
+//   Offset 16-19: cbApplicationDataLen (uint32 = length of application data)
+//   Offset 20+:   Application data     (channel binding type prefix + binding value)
 //
-//	Initiator addr type (4 bytes): 0
-//	Initiator addr length (4 bytes): 0
-//	Acceptor addr type (4 bytes): 0
-//	Acceptor addr length (4 bytes): 0
-//	Application data length (4 bytes): len(appData)
-//	Application data: prefix + bindingValue
+// The first four uint32 fields are always zero because TLS channel bindings
+// do not use initiator/acceptor addresses. The application data is the
+// concatenation of the binding type prefix string (e.g. "tls-unique:" or
+// "tls-server-end-point:") and the binding value bytes.
+//
+// The final 16-byte MD5 hash of this structure becomes the value of the
+// MsvAvChannelBindings AV_PAIR in the Type3 target info.
 func computeCBTHash(prefix string, bindingValue []byte) []byte {
 	appData := append([]byte(prefix), bindingValue...)
 	appDataLen := len(appData)
@@ -641,9 +753,20 @@ func certHashForEndpoint(cert *x509.Certificate) []byte {
 }
 
 // getChannelBindingHashFromTLS computes the CBT hash from a TLS connection.
-// For TLS 1.2: uses "tls-unique" (TLS Finished message), matching impacket.
-// For TLS 1.3: uses "tls-server-end-point" (cert hash), since tls-unique
-// was removed in TLS 1.3 (RFC 8446).
+//
+// RFC 5929 channel binding type selection:
+//   - TLS 1.2 and below: uses "tls-unique", which is the TLS Finished message
+//     from the handshake (available via ConnectionState.TLSUnique). This matches
+//     impacket's behavior.
+//   - TLS 1.3: uses "tls-server-end-point", which is the hash of the server's
+//     leaf certificate. The "tls-unique" binding was removed in TLS 1.3
+//     (RFC 8446 Appendix C.5) because the Finished message is encrypted and
+//     not exported. Go's TLSUnique field is empty for TLS 1.3 connections,
+//     so we fall through to the certificate-based binding.
+//
+// The certificate hash algorithm follows RFC 5929 Section 4.1: if the cert's
+// signature algorithm uses MD5 or SHA-1, SHA-256 is used instead (see
+// certHashForEndpoint). In practice, SHA-256 covers nearly all SQL Server certs.
 func getChannelBindingHashFromTLS(tlsConn *tls.Conn) ([]byte, string, error) {
 	state := tlsConn.ConnectionState()
 

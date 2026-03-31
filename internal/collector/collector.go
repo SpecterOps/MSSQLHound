@@ -4,6 +4,7 @@ package collector
 import (
 	"archive/zip"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,6 +25,7 @@ import (
 	"github.com/SpecterOps/MSSQLHound/internal/mssql"
 	"github.com/SpecterOps/MSSQLHound/internal/proxydialer"
 	"github.com/SpecterOps/MSSQLHound/internal/types"
+	"github.com/SpecterOps/MSSQLHound/internal/uploader"
 	"github.com/SpecterOps/MSSQLHound/internal/wmi"
 )
 
@@ -35,6 +37,12 @@ type Config struct {
 	ServerList     string
 	UserID         string
 	Password       string
+	NTHash         string // NT hash (32 hex chars) for pass-the-hash authentication
+	UseKerberos    bool   // Use Kerberos authentication
+	Krb5ConfigFile string // Path to krb5.conf
+	Krb5CCacheFile string // Path to Kerberos credential cache file
+	Krb5KeytabFile string // Path to Kerberos keytab file
+	Krb5Realm      string // Kerberos realm
 	Domain         string
 	DCIP           string // Domain controller hostname or IP address
 	DNSResolver    string // DNS resolver to use for lookups
@@ -74,6 +82,13 @@ type Config struct {
 	Logger       *slog.Logger
 	LogPerTarget bool         // Save per-target log files in a separate zip
 	LogLevel     slog.Leveler // Shared log level for per-target file handlers
+
+	// BloodHound upload options
+	BloodHoundURL string // BloodHound CE instance URL
+	TokenID       string // API token ID
+	TokenKey      string // API token key
+	UploadSchema  bool   // Upload schema definitions (SCHEMA.json)
+	UploadResults bool   // Upload results after collection
 }
 
 // Collector handles the data collection process
@@ -92,6 +107,7 @@ type Collector struct {
 	serverSPNDataMu            sync.RWMutex              // Protects serverSPNData
 	skippedChangePasswordEdges map[string]bool           // Track unique skipped ChangePassword edges for CVE-2025-49758
 	skippedChangePasswordMu    sync.Mutex                // Protects skippedChangePasswordEdges
+	ntHash                     []byte                    // Parsed NT hash bytes (from config.NTHash hex string)
 	ldapAuthFailed             bool                      // Set when LDAP auth fails with invalid credentials to prevent lockout
 	ldapAuthFailedMu           sync.RWMutex              // Protects ldapAuthFailed
 	spnEnumerationDone         bool                      // true after initial broad SPN sweep completed
@@ -125,15 +141,44 @@ type ServerSPNInfo struct {
 }
 
 // New creates a new collector
-func New(config *Config) *Collector {
+func New(config *Config) (*Collector, error) {
 	if config.Logger == nil {
 		config.Logger = slog.New(logging.NewHandler(os.Stderr, nil))
 	}
-	return &Collector{
+	c := &Collector{
 		config:        config,
 		serverSPNData: make(map[string]*ServerSPNInfo),
 		adSeenNodes:   make(map[string]bool),
 	}
+	if config.NTHash != "" {
+		hash, err := hex.DecodeString(config.NTHash)
+		if err != nil || len(hash) != 16 {
+			return nil, fmt.Errorf("--nt-hash must be exactly 32 hex characters (16 bytes): got %d chars", len(config.NTHash))
+		}
+		c.ntHash = hash
+	}
+	// Auto-generate krb5.conf for Kerberos if no config file is available.
+	// Done at collector level so both MSSQL and AD clients share the same config.
+	if config.UseKerberos && config.Krb5ConfigFile == "" {
+		configPath := os.Getenv("KRB5_CONFIG")
+		if configPath == "" {
+			configPath = "/etc/krb5.conf"
+		}
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			if config.Domain != "" && config.DCIP != "" {
+				generated, genErr := mssql.GenerateKrb5Config(config.Domain, config.DCIP)
+				if genErr != nil {
+					config.Logger.Warn("Failed to auto-generate krb5.conf", "error", genErr)
+				} else {
+					config.Krb5ConfigFile = generated
+					config.Logger.Info("Auto-generated krb5.conf", "path", generated, "domain", config.Domain, "kdc", config.DCIP)
+				}
+			} else {
+				return nil, fmt.Errorf("--kerberos requires a krb5.conf file: provide --krb5-configfile, or both --domain and --dc-ip for auto-generation")
+			}
+		}
+	}
+	return c, nil
 }
 
 // getDNSResolver returns the DNS resolver to use, applying the logic:
@@ -159,6 +204,12 @@ func (c *Collector) newADClient(domain string) *ad.Client {
 		return nil
 	}
 	adClient := ad.NewClient(domain, c.config.DCIP, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword, c.getDNSResolver())
+	if c.config.NTHash != "" {
+		adClient.SetNTHash(c.config.NTHash)
+	}
+	if c.config.UseKerberos {
+		adClient.SetKerberosConfig(c.config.Krb5ConfigFile, c.config.Krb5CCacheFile, c.config.Krb5KeytabFile, c.config.Krb5Realm)
+	}
 	if c.proxyDialer != nil {
 		adClient.SetProxyDialer(c.proxyDialer)
 	}
@@ -194,6 +245,12 @@ func (c *Collector) newMSSQLClient(serverInstance, userID, password string, log 
 	}
 	if c.proxyDialer != nil {
 		client.SetProxyDialer(c.proxyDialer)
+	}
+	if len(c.ntHash) > 0 {
+		client.SetNTHash(c.ntHash)
+	}
+	if c.config.UseKerberos {
+		client.SetKerberosConfig(c.config.Krb5ConfigFile, c.config.Krb5CCacheFile, c.config.Krb5KeytabFile, c.config.Krb5Realm)
 	}
 	return client
 }
@@ -266,8 +323,10 @@ func (c *Collector) Run() error {
 	}
 
 	// Create zip file
+	var zipPath string
 	if len(c.outputFiles) > 0 {
-		zipPath, err := c.createZipFile()
+		var err error
+		zipPath, err = c.createZipFile()
 		if err != nil {
 			return fmt.Errorf("failed to create zip file: %w", err)
 		}
@@ -283,6 +342,13 @@ func (c *Collector) Run() error {
 			return fmt.Errorf("failed to create logs zip file: %w", err)
 		}
 		c.config.Logger.Info("Per-target logs written", "path", logsZipPath)
+	}
+
+	// Upload to BloodHound CE if configured
+	if c.config.UploadSchema || (c.config.UploadResults && zipPath != "") {
+		if err := c.uploadToBloodHound(zipPath); err != nil {
+			c.config.Logger.Warn("BloodHound upload failed", "error", err)
+		}
 	}
 
 	c.config.Logger.Info("Total run duration", "duration", time.Since(runStart).Round(time.Millisecond))
@@ -353,20 +419,34 @@ func (c *Collector) processServersConcurrently() {
 	c.config.Logger.Info("Processing completed", "succeeded", successCount, "failed", failCount)
 }
 
-// serverWorker is a worker goroutine that processes servers from the jobs channel
+// serverWorker is a worker goroutine that processes servers from the jobs channel.
+// Each job is wrapped in a closure with panic recovery to prevent a single panicking
+// server from deadlocking the entire worker pool (wg.Wait would hang forever).
 func (c *Collector) serverWorker(id int, jobs <-chan serverJob, results chan<- serverResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for job := range jobs {
 		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Worker processing server", "worker", id, "target", job.server.ConnectionString)
 
-		err := c.processServer(job.server)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.config.Logger.Error("Worker panic recovered", "worker", id, "target", job.server.ConnectionString, "panic", r)
+					results <- serverResult{
+						index:  job.index,
+						server: job.server,
+						err:    fmt.Errorf("worker panicked: %v", r),
+					}
+				}
+			}()
 
-		results <- serverResult{
-			index:  job.index,
-			server: job.server,
-			err:    err,
-		}
+			err := c.processServer(job.server)
+			results <- serverResult{
+				index:  job.index,
+				server: job.server,
+				err:    err,
+			}
+		}()
 	}
 }
 
@@ -514,10 +594,20 @@ func (c *Collector) addServerToProcess(server *ServerToProcess) {
 
 // buildServerList builds the list of servers to process
 func (c *Collector) buildServerList() error {
+	// Create a shared AD client for SID resolution across all servers in the list.
+	// This avoids creating a new LDAP connection per server.
+	var sharedADClient *ad.Client
+	if c.config.Domain != "" {
+		sharedADClient = c.newADClient(c.config.Domain)
+		if sharedADClient != nil {
+			defer sharedADClient.Close()
+		}
+	}
+
 	// From command line argument
 	if c.config.ServerInstance != "" {
 		server := c.parseServerString(c.config.ServerInstance)
-		c.tryResolveSID(server)
+		c.tryResolveSID(server, sharedADClient)
 		c.addServerToProcess(server)
 		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Added server from command line", "server", c.config.ServerInstance)
 	}
@@ -531,7 +621,7 @@ func (c *Collector) buildServerList() error {
 			s = strings.TrimSpace(s)
 			if s != "" {
 				server := c.parseServerString(s)
-				c.tryResolveSID(server)
+				c.tryResolveSID(server, sharedADClient)
 				c.addServerToProcess(server)
 				count++
 			}
@@ -552,7 +642,7 @@ func (c *Collector) buildServerList() error {
 			line = strings.TrimSpace(line)
 			if line != "" && !strings.HasPrefix(line, "#") {
 				server := c.parseServerString(line)
-				c.tryResolveSID(server)
+				c.tryResolveSID(server, sharedADClient)
 				c.addServerToProcess(server)
 				count++
 			}
@@ -596,18 +686,19 @@ func (c *Collector) buildServerList() error {
 				if runtime.GOOS != "windows" && c.config.LDAPUser == "" {
 					hint = "On Linux/macOS, explicit LDAP credentials are required for SPN enumeration. Use --ldap-user and --ldap-password, or specify servers manually with --server/--server-list/--server-list-file"
 				}
-				c.config.Logger.Warn(hint, "error", err)
+				c.config.Logger.Error(hint, "error", err)
 			}
 		} else {
-			c.config.Logger.Warn("No servers specified and could not detect domain. Use --domain to specify a domain or --server to specify a server.")
+			c.config.Logger.Error("No servers specified and could not detect domain. Use --domain to specify a domain or --server to specify a server.")
 		}
 	}
 
 	return nil
 }
 
-// tryResolveSID attempts to resolve the computer SID for a server
-func (c *Collector) tryResolveSID(server *ServerToProcess) {
+// tryResolveSID attempts to resolve the computer SID for a server.
+// If sharedClient is non-nil, it is used for LDAP lookups instead of creating a new connection.
+func (c *Collector) tryResolveSID(server *ServerToProcess, sharedClient *ad.Client) {
 	if c.config.Domain == "" {
 		return
 	}
@@ -621,12 +712,15 @@ func (c *Collector) tryResolveSID(server *ServerToProcess) {
 		}
 	}
 
-	// Try LDAP
-	adClient := c.newADClient(c.config.Domain)
+	// Use shared client if available, otherwise create a one-off client
+	adClient := sharedClient
 	if adClient == nil {
-		return
+		adClient = c.newADClient(c.config.Domain)
+		if adClient == nil {
+			return
+		}
+		defer adClient.Close()
 	}
-	defer adClient.Close()
 
 	sid, err := adClient.ResolveComputerSID(server.Hostname)
 	if err != nil && isLDAPAuthError(err) {
@@ -684,16 +778,18 @@ func (c *Collector) detectDomain() string {
 	return ""
 }
 
-// enumerateServersFromAD discovers MSSQL servers from Active Directory SPNs
+// enumerateServersFromAD discovers MSSQL servers from Active Directory SPNs.
+// Uses a single shared LDAP connection for all SPN enumeration and SID resolution.
 func (c *Collector) enumerateServersFromAD() error {
-	// First try native Go LDAP
+	// Create a single AD client for the entire enumeration phase.
+	// This client is reused for SPN enumeration, ScanAllComputers, and per-server SID resolution.
 	adClient := c.newADClient(c.config.Domain)
 	if adClient == nil {
 		return fmt.Errorf("LDAP authentication previously failed, skipping AD enumeration")
 	}
+	defer adClient.Close()
 
 	spns, err := adClient.EnumerateMSSQLSPNs()
-	adClient.Close()
 
 	if err != nil && isLDAPAuthError(err) {
 		c.setLDAPAuthFailed()
@@ -710,6 +806,7 @@ func (c *Collector) enumerateServersFromAD() error {
 		return fmt.Errorf("failed to enumerate MSSQL SPNs: %w", err)
 	}
 
+	c.config.Logger.Info("LDAP bind successful", "auth", adClient.AuthMethod())
 	c.config.Logger.Info("Found MSSQL SPNs", "count", len(spns))
 
 	for _, spn := range spns {
@@ -732,8 +829,8 @@ func (c *Collector) enumerateServersFromAD() error {
 			server.ConnectionString = spn.Hostname
 		}
 
-		// Try to resolve computer SID early
-		c.tryResolveSID(server)
+		// Try to resolve computer SID early (reuses shared AD client)
+		c.tryResolveSID(server, adClient)
 
 		// Build ObjectIdentifier and add to processing list (handles deduplication)
 		c.addServerToProcess(server)
@@ -764,14 +861,9 @@ func (c *Collector) enumerateServersFromAD() error {
 	}
 
 	// If ScanAllComputers is enabled, also enumerate all domain computers
+	// Reuses the same shared AD client from above.
 	if c.config.ScanAllComputers {
 		c.config.Logger.Info("ScanAllComputers enabled, enumerating all domain computers")
-		adClient := c.newADClient(c.config.Domain)
-		if adClient == nil {
-			c.config.Logger.Warn("Skipping: LDAP authentication previously failed")
-			return nil
-		}
-		defer adClient.Close()
 
 		computers, err := adClient.EnumerateAllComputers()
 		if err != nil && isLDAPAuthError(err) {
@@ -790,7 +882,7 @@ func (c *Collector) enumerateServersFromAD() error {
 			added := 0
 			for _, computer := range computers {
 				server := c.parseServerString(computer)
-				c.tryResolveSID(server)
+				c.tryResolveSID(server, adClient)
 				oldLen := len(c.serversToProcess)
 				c.addServerToProcess(server)
 				if len(c.serversToProcess) > oldLen {
@@ -974,7 +1066,7 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 	// Run EPA checks before attempting SQL authentication
 	var epaResult *mssql.EPATestResult
 	var epaPrereqFailed bool
-	if c.config.LDAPUser != "" && c.config.LDAPPassword != "" {
+	if !c.config.UseKerberos && c.config.LDAPUser != "" && (c.config.LDAPPassword != "" || c.config.NTHash != "") {
 		var epaErr error
 		epaResult, epaErr = client.TestEPA(ctx)
 		if epaErr != nil {
@@ -1054,7 +1146,7 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 
 			// Run EPA checks before attempting SQL authentication on FQDN client
 			var fqdnEPAPrereqFailed bool
-			if c.config.LDAPUser != "" && c.config.LDAPPassword != "" {
+			if !c.config.UseKerberos && c.config.LDAPUser != "" && (c.config.LDAPPassword != "" || c.config.NTHash != "") {
 				fqdnEPAResult, epaErr := fqdnClient.TestEPA(ctx)
 				if epaErr != nil {
 					if mssql.IsEPAPrereqError(epaErr) {
@@ -1162,10 +1254,21 @@ connected:
 		}
 	}
 
+	// Create a shared AD client for all LDAP resolution calls within this server.
+	// This avoids the N+1 connection problem where each resolution call would
+	// create its own LDAP connection (TCP + TLS + bind) per identity.
+	var sharedADClient *ad.Client
+	if c.config.Domain != "" {
+		sharedADClient = c.newADClient(c.config.Domain)
+		if sharedADClient != nil {
+			defer sharedADClient.Close()
+		}
+	}
+
 	// If we couldn't get the computer SID from SQL Server, try other methods
 	// The resolution function will extract domain from FQDN if not provided
 	if serverInfo.ComputerSID == "" {
-		c.resolveComputerSIDViaLDAP(serverInfo, log)
+		c.resolveComputerSIDViaLDAP(serverInfo, log, sharedADClient)
 	}
 
 	// Convert built-in service accounts (LocalSystem, Local Service, Network Service)
@@ -1173,10 +1276,10 @@ connected:
 	c.preprocessServiceAccounts(serverInfo, log)
 
 	// Resolve service account SIDs via LDAP if they don't have SIDs
-	c.resolveServiceAccountSIDsViaLDAP(serverInfo, log)
+	c.resolveServiceAccountSIDsViaLDAP(serverInfo, log, sharedADClient)
 
 	// Resolve credential identity SIDs via LDAP for credential edges
-	c.resolveCredentialSIDsViaLDAP(serverInfo, log)
+	c.resolveCredentialSIDsViaLDAP(serverInfo, log, sharedADClient)
 
 	// Enumerate local Windows groups that have SQL logins and their domain members
 	c.enumerateLocalGroupMembers(serverInfo, log)
@@ -1492,8 +1595,9 @@ func (c *Collector) parseServerInstance(serverInstance string) (hostname, port, 
 	return
 }
 
-// resolveComputerSIDViaLDAP attempts to resolve the computer SID via multiple methods
-func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger) {
+// resolveComputerSIDViaLDAP attempts to resolve the computer SID via multiple methods.
+// If sharedClient is non-nil, it is used for LDAP lookups instead of creating a new connection.
+func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger, sharedClient *ad.Client) {
 	// Try to determine the domain from the FQDN if not provided
 	domain := c.config.Domain
 	if domain == "" && strings.Contains(serverInfo.FQDN, ".") {
@@ -1537,11 +1641,16 @@ func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log 
 	}
 
 	log.Log(context.Background(), logging.LevelVerbose, "Attempting to resolve computer SID", "machine", machineName, "domain", domain, "method", "LDAP")
-	adClient := c.newADClient(domain)
+
+	// Use shared client if available, otherwise create a one-off client
+	adClient := sharedClient
 	if adClient == nil {
-		return
+		adClient = c.newADClient(domain)
+		if adClient == nil {
+			return
+		}
+		defer adClient.Close()
 	}
-	defer adClient.Close()
 
 	sid, err := adClient.ResolveComputerSID(machineName)
 	if err != nil {
@@ -1696,8 +1805,9 @@ func (c *Collector) preprocessServiceAccounts(serverInfo *types.ServerInfo, log 
 	serverInfo.ServiceAccounts = uniqueServiceAccounts
 }
 
-// resolveServiceAccountSIDsViaLDAP resolves service account SIDs via multiple methods
-func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger) {
+// resolveServiceAccountSIDsViaLDAP resolves service account SIDs via multiple methods.
+// If sharedClient is non-nil, it is used for LDAP lookups instead of creating a new connection per account.
+func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger, sharedClient *ad.Client) {
 	for i := range serverInfo.ServiceAccounts {
 		sa := &serverInfo.ServiceAccounts[i]
 
@@ -1744,12 +1854,16 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 
 			// For other computer accounts, try LDAP
 			if c.config.Domain != "" {
-				adClient := c.newADClient(c.config.Domain)
+				// Use shared client if available, otherwise create a one-off client
+				adClient := sharedClient
 				if adClient == nil {
-					continue
+					adClient = c.newADClient(c.config.Domain)
+					if adClient == nil {
+						continue
+					}
+					defer adClient.Close()
 				}
 				principal, err := adClient.ResolveSID(sa.SID)
-				adClient.Close()
 				if err != nil && isLDAPAuthError(err) {
 					c.setLDAPAuthFailed()
 					continue
@@ -1773,13 +1887,16 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 				continue
 			}
 
-			// Create AD client
-			adClient := c.newADClient(c.config.Domain)
+			// Use shared client if available, otherwise create a one-off client
+			adClient := sharedClient
 			if adClient == nil {
-				continue
+				adClient = c.newADClient(c.config.Domain)
+				if adClient == nil {
+					continue
+				}
+				defer adClient.Close()
 			}
 			principal, err := adClient.ResolveName(sa.Name)
-			adClient.Close()
 			if err != nil && isLDAPAuthError(err) {
 				c.setLDAPAuthFailed()
 				continue
@@ -1801,9 +1918,10 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 	}
 }
 
-// resolveCredentialSIDsViaLDAP resolves credential identities to AD SIDs
-// This matches PowerShell's Resolve-DomainPrincipal behavior for credential edges
-func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger) {
+// resolveCredentialSIDsViaLDAP resolves credential identities to AD SIDs.
+// This matches PowerShell's Resolve-DomainPrincipal behavior for credential edges.
+// If sharedClient is non-nil, it is used for LDAP lookups instead of creating a new connection per credential.
+func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger, sharedClient *ad.Client) {
 	if c.config.Domain == "" {
 		return
 	}
@@ -1815,12 +1933,16 @@ func (c *Collector) resolveCredentialSIDsViaLDAP(serverInfo *types.ServerInfo, l
 		if identity == "" {
 			return nil
 		}
-		adClient := c.newADClient(c.config.Domain)
+		// Use shared client if available, otherwise create a one-off client
+		adClient := sharedClient
 		if adClient == nil {
-			return nil
+			adClient = c.newADClient(c.config.Domain)
+			if adClient == nil {
+				return nil
+			}
+			defer adClient.Close()
 		}
 		principal, err := adClient.ResolveName(identity)
-		adClient.Close()
 		if err != nil && isLDAPAuthError(err) {
 			c.setLDAPAuthFailed()
 			return nil
@@ -4373,7 +4495,7 @@ func (c *Collector) addLinkedServerToQueue(hostname string, discoveredFrom strin
 	server := c.parseServerString(hostname)
 	server.DiscoveredFrom = discoveredFrom
 	server.Domain = domain
-	c.tryResolveSID(server)
+	c.tryResolveSID(server, nil)
 	c.linkedServersToProcess = append(c.linkedServersToProcess, server)
 }
 
@@ -6062,6 +6184,44 @@ func (c *Collector) writeADFiles() error {
 	}
 	c.config.Logger.Info("Added seed_data.json")
 
+	return nil
+}
+
+// uploadToBloodHound uploads the results zip (and optionally the schema) to BloodHound CE.
+func (c *Collector) uploadToBloodHound(zipPath string) error {
+	u := uploader.NewUploader(c.config.BloodHoundURL, c.config.TokenID, c.config.TokenKey, c.config.Logger)
+	if u == nil {
+		return fmt.Errorf("BloodHound upload requires --bloodhound-url and --token-id/--token-key")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Upload schema (SCHEMA.json) if requested — this registers custom node/edge
+	// kinds with BloodHound CE, separate from the results zip.
+	if c.config.UploadSchema {
+		c.config.Logger.Info("Uploading schema to BloodHound...")
+		schemaPath := filepath.Join(c.tempDir, "SCHEMA.json")
+		if err := os.WriteFile(schemaPath, bloodhound.SeedDataJSON, 0o644); err != nil {
+			return fmt.Errorf("failed to write schema file: %w", err)
+		}
+
+		summary := u.UploadFiles(ctx, []string{schemaPath})
+		if summary.FilesFailed > 0 {
+			return fmt.Errorf("schema upload failed")
+		}
+	}
+
+	// Upload results zip
+	if c.config.UploadResults && zipPath != "" {
+		c.config.Logger.Info("Uploading results to BloodHound...", "file", zipPath)
+		summary := u.UploadFiles(ctx, []string{zipPath})
+		if summary.FilesFailed > 0 {
+			return fmt.Errorf("results upload failed")
+		}
+	}
+
+	c.config.Logger.Info("BloodHound upload complete")
 	return nil
 }
 
