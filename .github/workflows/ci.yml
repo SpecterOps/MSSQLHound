@@ -56,16 +56,22 @@ jobs:
       - name: Wait for Samba AD DC
         run: |
           echo "Waiting for Samba provisioning and startup..."
-          for i in $(seq 1 90); do
-            if docker exec dc samba-tool domain info $DC_IP 2>/dev/null | grep -q "Domain"; then
+          for i in $(seq 1 120); do
+            if docker exec dc samba-tool domain info 10.2.10.100 2>/dev/null | grep -q "Domain"; then
               echo "Samba AD DC is ready"
-              docker exec dc samba-tool domain info $DC_IP
+              docker exec dc samba-tool domain info 10.2.10.100
               exit 0
             fi
-            if [ "$i" -eq 90 ]; then
+            if [ "$i" -eq 120 ]; then
               echo "Timed out waiting for Samba AD DC"
               docker logs dc
               exit 1
+            fi
+            # Every 10 iterations, show container status
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "Container status:"
+              docker ps --filter name=dc --format '{{.Status}}' || true
+              docker exec dc ps aux 2>/dev/null | head -5 || true
             fi
             echo "Waiting for Samba AD DC... ($i/90)"
             sleep 3
