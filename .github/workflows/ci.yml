@@ -56,18 +56,24 @@ jobs:
 
       - name: Wait for Samba AD DC
         run: |
-          for i in $(seq 1 60); do
-            if docker exec dc samba-tool domain info 10.2.10.100 2>/dev/null | grep -q "Domain"; then
-              echo "Samba AD DC is ready"
-              exit 0
+          echo "Waiting for Samba provisioning and startup..."
+          for i in $(seq 1 90); do
+            # Check if LDAP port 389 is accepting connections inside the container
+            if docker exec dc bash -c "echo > /dev/tcp/127.0.0.1/389" 2>/dev/null; then
+              echo "LDAP port is up, verifying domain info..."
+              if docker exec dc samba-tool domain info 127.0.0.1 2>/dev/null | grep -q "Domain"; then
+                echo "Samba AD DC is ready"
+                docker exec dc samba-tool domain info 127.0.0.1
+                exit 0
+              fi
             fi
-            if [ "$i" -eq 60 ]; then
+            if [ "$i" -eq 90 ]; then
               echo "Timed out waiting for Samba AD DC"
               docker logs dc
               exit 1
             fi
-            echo "Waiting for Samba AD DC... ($i/60)"
-            sleep 2
+            echo "Waiting for Samba AD DC... ($i/90)"
+            sleep 3
           done
 
       - name: Create AD accounts and keytab
