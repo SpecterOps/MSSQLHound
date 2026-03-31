@@ -39,7 +39,7 @@ jobs:
 
       - name: Start Samba AD DC
         run: |
-          docker network create --subnet=10.2.10.0/20 adnet
+          docker network create --subnet=10.2.0.0/20 adnet
 
           docker run -d --privileged \
             --name dc --hostname DC \
