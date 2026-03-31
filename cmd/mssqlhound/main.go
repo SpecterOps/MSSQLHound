@@ -174,7 +174,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 		rootCmd.PersistentFlags().SetAnnotation(name, "group", []string{"Diagnostics"}) //nolint:errcheck
 	}
 
-	// Custom help function with grouped flag display
+	// Shared grouped usage display used by both --help and error usage
 	groupOrder := []string{
 		"Authentication",
 		"Domain / LDAP",
@@ -184,24 +184,8 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 		"BloodHound Upload",
 		"Diagnostics",
 	}
-	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		out := cmd.OutOrStdout()
-
-		if cmd.Long != "" {
-			fmt.Fprintln(out, cmd.Long)
-			fmt.Fprintln(out)
-		}
+	printUsage := func(cmd *cobra.Command, out interface{ Write([]byte) (int, error) }) {
 		fmt.Fprintf(out, "Usage:\n  %s\n\n", cmd.UseLine())
-
-		if cmd.HasAvailableSubCommands() {
-			fmt.Fprintln(out, "Available Commands:")
-			for _, sub := range cmd.Commands() {
-				if sub.IsAvailableCommand() {
-					fmt.Fprintf(out, "  %-20s %s\n", sub.Name(), sub.Short)
-				}
-			}
-			fmt.Fprintln(out)
-		}
 
 		// Merge all applicable flag sets
 		allFS := pflag.NewFlagSet("", pflag.ContinueOnError)
@@ -248,8 +232,28 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 		}
 
 		if cmd.HasAvailableSubCommands() {
+			fmt.Fprintln(out, "Available Commands:")
+			for _, sub := range cmd.Commands() {
+				if sub.IsAvailableCommand() {
+					fmt.Fprintf(out, "  %-20s %s\n", sub.Name(), sub.Short)
+				}
+			}
+			fmt.Fprintln(out)
 			fmt.Fprintf(out, "Use \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
 		}
+	}
+
+	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		out := cmd.OutOrStdout()
+		if cmd.Long != "" {
+			fmt.Fprintln(out, cmd.Long)
+			fmt.Fprintln(out)
+		}
+		printUsage(cmd, out)
+	})
+	rootCmd.SetUsageFunc(func(cmd *cobra.Command) error {
+		printUsage(cmd, cmd.OutOrStderr())
+		return nil
 	})
 
 	// Register subcommands
