@@ -102,7 +102,7 @@ jobs:
 
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user
 
-          sed 's/^ *//' <<'KRBEOF' | sudo tee /etc/krb5.conf > /dev/null
+          sed 's/^          //' <<'KRBEOF' | sudo tee /etc/krb5.conf > /dev/null
           [libdefaults]
               default_realm = MAYYHEM.COM
               dns_lookup_realm = false
