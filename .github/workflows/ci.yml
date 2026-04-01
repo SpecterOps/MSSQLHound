@@ -44,19 +44,16 @@ jobs:
           sudo rm -f /etc/resolv.conf
           echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
 
-          docker network create --subnet=10.2.0.0/20 adnet
+          # Use --network host so all Samba services (DNS/53, LDAP/389,
+          # Kerberos/88, etc.) bind directly to localhost. No port publishing
+          # or NAT needed — eliminates DNS forwarding issues.
           docker run -d --privileged \
             --name dc --hostname DC \
-            --network adnet --ip 10.2.10.100 \
+            --network host \
             -e REALM='MAYYHEM.COM' \
             -e DOMAIN='MAYYHEM' \
             -e ADMIN_PASS='P@ssw0rd' \
             -e DNS_FORWARDER='8.8.8.8' \
-            -p 53:53/tcp -p 53:53/udp \
-            -p 389:389/tcp -p 389:389/udp \
-            -p 636:636/tcp \
-            -p 88:88/tcp -p 88:88/udp \
-            -p 464:464/tcp -p 464:464/udp \
             diegogslomp/samba-ad-dc
 
       - name: Wait for Samba AD DC
@@ -100,14 +97,13 @@ jobs:
 
       - name: Configure DNS and Kerberos
         run: |
-          # Use 127.0.0.1 for host access since ports are published via -p flags.
-          # The container IP (10.2.10.100) is NOT reachable from the host on GHA runners.
           echo "127.0.0.1 dc.mayyhem.com dc mayyhem.com" | sudo tee -a /etc/hosts
-          sudo sed -i '1i nameserver 127.0.0.1' /etc/resolv.conf
+          # Point resolv.conf at the Samba DC DNS (now on localhost via host networking)
+          echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
 
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user
 
-          sudo tee /etc/krb5.conf > /dev/null <<'KRBEOF'
+          cat > /tmp/krb5.conf <<'KRBEOF'
           [libdefaults]
               default_realm = MAYYHEM.COM
               dns_lookup_realm = false
@@ -122,6 +118,7 @@ jobs:
               .mayyhem.com = MAYYHEM.COM
               mayyhem.com = MAYYHEM.COM
           KRBEOF
+          sed 's/^          //' /tmp/krb5.conf | sudo tee /etc/krb5.conf > /dev/null
 
           echo "--- krb5.conf ---"
           cat /etc/krb5.conf
@@ -139,12 +136,12 @@ jobs:
 
       - name: Verify host-to-DC connectivity
         run: |
-          echo "Testing published ports on localhost..."
+          echo "Testing services on localhost (host network)..."
           timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/389' && echo "LDAP OK" || echo "LDAP FAILED"
           timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/88' && echo "Kerberos OK" || echo "Kerberos FAILED"
-          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/53' && echo "DNS OK" || echo "DNS FAILED"
-          echo "Testing DNS resolution via DC..."
-          nslookup mayyhem.com 127.0.0.1 || true
+          echo "Testing DNS resolution via Samba DC..."
+          nslookup mayyhem.com 127.0.0.1
+          dig mayyhem.com @127.0.0.1 +short || true
 
       - name: Configure SQL Server for AD auth
         timeout-minutes: 5
