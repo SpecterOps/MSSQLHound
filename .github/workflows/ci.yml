@@ -39,6 +39,11 @@ jobs:
 
       - name: Start Samba AD DC
         run: |
+          # Stop systemd-resolved to free port 53 for the Samba DC DNS
+          sudo systemctl stop systemd-resolved
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+
           docker network create --subnet=10.2.0.0/20 adnet
           docker run -d --privileged \
             --name dc --hostname DC \
