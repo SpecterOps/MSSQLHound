@@ -301,7 +301,10 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 	t.Logf("Running enumeration as %s (nontraversable: %v)...",
 		cfg.EnumUserID, includeNontraversable)
 
-	collector := New(collectorCfg)
+	collector, err := New(collectorCfg)
+	if err != nil {
+		t.Fatalf("Failed to create collector: %v", err)
+	}
 	if err := collector.Run(); err != nil {
 		t.Fatalf("Collector failed: %v", err)
 	}
