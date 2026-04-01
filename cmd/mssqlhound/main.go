@@ -46,7 +46,7 @@ var (
 	zipDir         string
 	fileSizeLimit  string
 
-	logPerTarget                    bool
+	logPerTarget bool
 
 	domainEnumOnly                  bool
 	skipLinkedServerEnum            bool
@@ -135,7 +135,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolVar(&scanAllComputers, "scan-all-computers", false, "Scan all domain computers, not just those with SPNs")
 	rootCmd.Flags().BoolVar(&skipADNodeCreation, "skip-ad-nodes", false, "Skip creating User, Group, Computer nodes")
 	rootCmd.Flags().BoolVar(&includeNontraversableEdges, "include-nontraversable", false, "Include non-traversable edges")
-	rootCmd.Flags().BoolVar(&makeInterestingEdgesTraversable, "make-interesting-traversable", true, "Make interesting edges traversable (default true)")
+	rootCmd.Flags().BoolVar(&makeInterestingEdgesTraversable, "make-interesting-traversable", true, "Make interesting edges traversable")
 	rootCmd.Flags().IntVar(&linkedServerTimeout, "linked-timeout", 300, "Linked server enumeration timeout (seconds)")
 	rootCmd.Flags().IntVar(&memoryThresholdPercent, "memory-threshold", 90, "Stop when memory exceeds this percentage")
 	rootCmd.Flags().IntVar(&fileSizeUpdateInterval, "size-update-interval", 5, "Interval for file size updates (seconds)")
@@ -157,7 +157,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 		rootCmd.PersistentFlags().SetAnnotation(name, "group", []string{"Domain / LDAP"}) //nolint:errcheck
 	}
 	for _, name := range []string{"server-list-file", "server-list", "scan-all-computers", "skip-private-address"} {
-		rootCmd.Flags().SetAnnotation(name, "group", []string{"Target Selection"}) //nolint:errcheck
+		rootCmd.Flags().SetAnnotation(name, "group", []string{"Target Selection (default query domain SPNs)"}) //nolint:errcheck
 	}
 	for _, name := range []string{"domain-enum-only", "skip-linked-servers", "collect-from-linked",
 		"linked-timeout", "skip-ad-nodes", "include-nontraversable", "make-interesting-traversable", "workers"} {
