@@ -39,37 +39,24 @@ jobs:
 
       - name: Start Samba AD DC
         run: |
+          docker network create --subnet=10.2.10.0/20 adnet
+
           docker run -d --privileged \
             --name dc --hostname DC \
+            --network adnet --ip 10.2.10.100 \
             -e REALM='MAYYHEM.COM' \
             -e DOMAIN='MAYYHEM' \
             -e ADMIN_PASS='P@ssw0rd' \
             -e DNS_FORWARDER='8.8.8.8' \
-            -e BIND_NETWORK_INTERFACES='false' \
             diegogslomp/samba-ad-dc
 
       - name: Wait for Samba AD DC
+        env:
+          DC_IP: 10.2.10.100
         run: |
+          echo "DC_IP=$DC_IP" >> $GITHUB_ENV
           echo "Waiting for Samba provisioning and startup..."
           sudo apt-get install -y ldap-utils > /dev/null 2>&1 || true
-
-          # Get the container IP on the default bridge network
-          for i in $(seq 1 10); do
-            DC_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' dc)
-            if [ -n "$DC_IP" ]; then
-              echo "DC container IP: $DC_IP"
-              break
-            fi
-            sleep 1
-          done
-          if [ -z "$DC_IP" ]; then
-            echo "Failed to get DC container IP"
-            docker inspect dc
-            exit 1
-          fi
-
-          # Save for subsequent steps
-          echo "DC_IP=$DC_IP" >> $GITHUB_ENV
 
           for i in $(seq 1 120); do
             if ldapsearch -x -H ldap://$DC_IP -b "" -s base namingContexts 2>/dev/null | grep -q "mayyhem"; then
@@ -80,14 +67,8 @@ jobs:
             if [ "$i" -eq 120 ]; then
               echo "Timed out waiting for Samba AD DC"
               echo "Container: $(docker ps -a --filter name=dc --format '{{.Status}}')"
-              echo "Port 389 test:"
-              timeout 3 bash -c "echo > /dev/tcp/$DC_IP/389" && echo "open" || echo "closed"
-              echo "Port 88 test:"
-              timeout 3 bash -c "echo > /dev/tcp/$DC_IP/88" && echo "open" || echo "closed"
               echo "--- FULL container logs ---"
               docker logs dc 2>&1 | tail -100
-              echo "--- Container inspect (State) ---"
-              docker inspect dc --format '{{json .State}}' | python3 -m json.tool
               exit 1
             fi
             if [ $((i % 20)) -eq 0 ]; then
@@ -127,6 +108,7 @@ jobs:
       - name: Configure DNS and Kerberos
         run: |
           echo "$DC_IP dc.mayyhem.com dc mayyhem.com" | sudo tee -a /etc/hosts
+          sudo sed -i "1i nameserver $DC_IP" /etc/resolv.conf
 
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user
 
@@ -171,6 +153,7 @@ jobs:
             /opt/mssql/bin/mssql-conf setup accept-eula
 
       - name: Configure SQL Server for AD auth
+        timeout-minutes: 5
         run: |
           sudo mkdir -p /var/opt/mssql/secrets
           sudo cp /tmp/mssql.keytab /var/opt/mssql/secrets/mssql.keytab
@@ -179,7 +162,13 @@ jobs:
 
           sudo /opt/mssql/bin/mssql-conf set network.kerberoskeytabfile /var/opt/mssql/secrets/mssql.keytab
           sudo /opt/mssql/bin/mssql-conf set network.privilegedadaccount sqlsvc
-          sudo systemctl restart mssql-server
+          sudo systemctl restart mssql-server || {
+            echo "--- mssql-server status ---"
+            systemctl status mssql-server --no-pager || true
+            echo "--- error log ---"
+            sudo tail -100 /var/opt/mssql/log/errorlog || true
+            exit 1
+          }
 
           echo "Waiting for SQL Server to start..."
           for i in $(seq 1 30); do
