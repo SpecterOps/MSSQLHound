@@ -143,6 +143,18 @@ jobs:
           nslookup mayyhem.com 127.0.0.1
           dig mayyhem.com @127.0.0.1 +short || true
 
+      - name: Join host to Samba AD domain
+        run: |
+          # SQL Server on Linux needs the host to be domain-joined so it can
+          # resolve Windows accounts for CREATE LOGIN ... FROM WINDOWS.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y realmd sssd \
+            sssd-tools adcli packagekit samba-common-bin
+          echo 'P@ssw0rd' | sudo realm join mayyhem.com -U Administrator --verbose
+          sudo systemctl start sssd
+          # Verify domain join
+          id Administrator@mayyhem.com || true
+          realm list
+
       - name: Configure SQL Server for AD auth
         run: |
           sudo mkdir -p /var/opt/mssql/secrets

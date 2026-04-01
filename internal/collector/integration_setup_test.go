@@ -364,50 +364,6 @@ func createDomainObjects(t *testing.T, cfg *integrationConfig) {
 	addGroupMember(t, conn, "CN=EdgeTestDomainGroup,"+usersOU, "CN=EdgeTestDomainUser1,"+usersOU)
 }
 
-// waitForADAccountsVisible polls SQL Server until a representative AD account
-// can be resolved. SQL Server validates Windows accounts against the DC when
-// executing CREATE LOGIN ... FROM WINDOWS. After LDAP creation there is often a
-// short propagation delay in Samba AD DC before the account is visible.
-func waitForADAccountsVisible(t *testing.T, db *sql.DB, domain string) {
-	t.Helper()
-
-	netbios := strings.ToUpper(domain)
-	if idx := strings.Index(netbios, "."); idx != -1 {
-		netbios = netbios[:idx]
-	}
-
-	// Use a well-known domain user we just created as the probe.
-	probe := netbios + `\EdgeTestDomainUser1`
-	t.Logf("Waiting for AD account %s to be visible to SQL Server...", probe)
-
-	for attempt := 1; attempt <= 30; attempt++ {
-		// Try to create and immediately drop a login. If the account isn't
-		// visible yet, CREATE LOGIN FROM WINDOWS will fail with "not found".
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, err := db.ExecContext(ctx, fmt.Sprintf(`
-			IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '%s')
-			BEGIN
-				CREATE LOGIN [%s] FROM WINDOWS;
-				DROP LOGIN [%s];
-			END
-		`, probe, probe, probe))
-		cancel()
-
-		if err == nil {
-			t.Logf("AD accounts visible to SQL Server after %d attempts", attempt)
-			return
-		}
-
-		if attempt == 30 {
-			t.Logf("Warning: AD account %s still not visible after 90s: %v", probe, err)
-			t.Log("Proceeding anyway — SQL setup may fail for Windows login creation")
-			return
-		}
-
-		time.Sleep(3 * time.Second)
-	}
-}
-
 // createDomainUser creates an AD user via LDAP.
 func createDomainUser(t *testing.T, conn *ldap.Conn, ouDN, username, password string) {
 	t.Helper()
@@ -606,14 +562,7 @@ func runSetup(t *testing.T, cfg *integrationConfig) {
 	t.Log("Creating domain objects...")
 	createDomainObjects(t, cfg)
 
-	// 4. Wait for AD accounts to be visible to SQL Server.
-	// After LDAP creation, there can be a propagation delay before the DC
-	// returns newly created accounts in name lookups (used by CREATE LOGIN ... FROM WINDOWS).
-	if !cfg.SkipDomain {
-		waitForADAccountsVisible(t, db, cfg.Domain)
-	}
-
-	// 5. Run all setup scripts
+	// 4. Run all setup scripts
 	for edgeType, sqlScript := range setupScripts {
 		if cfg.LimitToEdge != "" {
 			shortName := strings.TrimPrefix(cfg.LimitToEdge, "MSSQL_")
