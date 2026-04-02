@@ -1290,6 +1290,30 @@ connected:
 		}
 	}
 
+	// If service accounts are still empty (e.g. Linux SQL Server where the DMV
+	// and registry methods both fail), try looking up SPNs from AD as a fallback.
+	if len(serverInfo.ServiceAccounts) == 0 && spnInfo == nil {
+		spnInfo = c.lookupSPNsForServer(server)
+		if spnInfo != nil {
+			if len(serverInfo.SPNs) == 0 {
+				serverInfo.SPNs = spnInfo.SPNs
+			}
+			if spnInfo.AccountName != "" {
+				serverInfo.ServiceAccounts = append(serverInfo.ServiceAccounts, types.ServiceAccount{
+					Name:             spnInfo.AccountName,
+					SID:              spnInfo.AccountSID,
+					ObjectIdentifier: spnInfo.AccountSID,
+				})
+				log.Info("Resolved service account from AD SPN lookup", "account", spnInfo.AccountName)
+			}
+		}
+	}
+
+	// Warn if no service account could be resolved by any method
+	if len(serverInfo.ServiceAccounts) == 0 {
+		log.Warn("Could not determine service account (DMV, registry, and SPN lookup all failed)")
+	}
+
 	// Create a shared AD client for all LDAP resolution calls within this server.
 	// This avoids the N+1 connection problem where each resolution call would
 	// create its own LDAP connection (TCP + TLS + bind) per identity.
