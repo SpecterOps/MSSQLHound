@@ -559,6 +559,30 @@ func (c *Collector) parseServerString(serverStr string) *ServerToProcess {
 	return server
 }
 
+// extractLineCredentials strips user:pass@ from a target line, applying the
+// credentials to config.UserID/Password (first match wins). Returns the cleaned target.
+func (c *Collector) extractLineCredentials(line string) string {
+	atIdx := strings.LastIndex(line, "@")
+	if atIdx < 0 {
+		return line
+	}
+
+	credentials := line[:atIdx]
+	target := line[atIdx+1:]
+
+	colonIdx := strings.Index(credentials, ":")
+	if colonIdx < 0 || credentials[:colonIdx] == "" || target == "" {
+		return line
+	}
+
+	if c.config.UserID == "" {
+		c.config.UserID = credentials[:colonIdx]
+		c.config.Password = credentials[colonIdx+1:]
+		c.config.Logger.Info("Parsed inline credentials from target file", "user", c.config.UserID)
+	}
+	return target
+}
+
 // addServerToProcess adds a server to the processing list, deduplicating by ObjectIdentifier
 func (c *Collector) addServerToProcess(server *ServerToProcess) {
 	// Build ObjectIdentifier if we have a SID
@@ -641,6 +665,7 @@ func (c *Collector) buildServerList() error {
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line != "" && !strings.HasPrefix(line, "#") {
+				line = c.extractLineCredentials(line)
 				server := c.parseServerString(line)
 				c.tryResolveSID(server, sharedADClient)
 				c.addServerToProcess(server)

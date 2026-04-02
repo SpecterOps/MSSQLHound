@@ -61,11 +61,12 @@ var (
 	workers                int
 
 	// BloodHound upload options
-	bloodhoundURL string
-	tokenID       string
-	tokenKey      string
-	uploadSchema  bool
-	uploadResults bool
+	bloodhoundUpload string // -B shorthand: <token-id>:<token_key>@<bloodhound_url>
+	bloodhoundURL    string
+	tokenID          string
+	tokenKey         string
+	uploadSchema     bool
+	uploadResults    bool
 )
 
 var (
@@ -103,7 +104,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolP("version", "V", false, "Print version information")
 
 	// Shared connection flags (persistent - available to subcommands)
-	rootCmd.PersistentFlags().StringVarP(&serverInstance, "targets", "t", "", "SQL Server targets: host, host:port, host\\instance, MSSQLSvc/host:port, comma-separated list, or file path (default: enumerate domain MSSQLSvc SPNs)")
+	rootCmd.PersistentFlags().StringVarP(&serverInstance, "targets", "t", "", "SQL Server targets: [user:pass@]host, host:port, host\\instance, MSSQLSvc/host:port, comma-separated list, or file path (default: enumerate domain MSSQLSvc SPNs)")
 	rootCmd.PersistentFlags().StringVarP(&userID, "user", "u", "", "SQL Server login username (used to connect and enumerate)")
 	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SQL Server login password")
 	rootCmd.PersistentFlags().StringVar(&ntHash, "nt-hash", "", "NT hash for pass-the-hash SQL auth (32 hex chars; mutually exclusive with -p)")
@@ -141,6 +142,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().IntVarP(&workers, "workers", "w", 0, "Number of concurrent workers (0 = sequential processing)")
 
 	// BloodHound upload flags (uses local DNS, bypasses --proxy)
+	rootCmd.Flags().StringVarP(&bloodhoundUpload, "bloodhound", "B", "", "Upload to BloodHound CE: <token-id>:<token_key>@<bloodhound_url> (uploads schema + results)")
 	rootCmd.Flags().StringVar(&bloodhoundURL, "bloodhound-url", "", "BloodHound CE instance URL, uses local DNS (env: BLOODHOUND_URL)")
 	rootCmd.Flags().StringVar(&tokenID, "token-id", "", "BloodHound API token ID (env: BLOODHOUND_TOKEN_ID)")
 	rootCmd.Flags().StringVar(&tokenKey, "token-key", "", "BloodHound API token key (env: BLOODHOUND_TOKEN_KEY)")
@@ -167,7 +169,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	for _, name := range []string{"output-format", "temp-dir", "zip-dir", "log-per-target"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output"}) //nolint:errcheck
 	}
-	for _, name := range []string{"bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema"} {
+	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"BloodHound Upload"}) //nolint:errcheck
 	}
 
@@ -275,6 +277,12 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--kerberos and --nt-hash are mutually exclusive")
 	}
 
+	// Extract inline credentials from targets if present: user:pass@target
+	// Only extract if -u was not explicitly provided
+	if serverInstance != "" && !cmd.Flags().Changed("user") {
+		serverInstance = extractAndApplyCredentials(serverInstance)
+	}
+
 	// Smart server target detection: file path, comma-separated list, or single instance
 	serverInstance, serverListFile, serverList := classifyTarget(serverInstance)
 
@@ -340,6 +348,27 @@ func run(cmd *cobra.Command, args []string) error {
 				effectiveLDAPPassword = password
 			}
 		}
+	}
+
+	// Parse -B shorthand: <token-id>:<token_key>@<bloodhound_url>
+	if bloodhoundUpload != "" {
+		atIdx := strings.Index(bloodhoundUpload, "@")
+		if atIdx < 0 {
+			return fmt.Errorf("-B format must be <token-id>:<token_key>@<bloodhound_url>")
+		}
+		credentials := bloodhoundUpload[:atIdx]
+		url := bloodhoundUpload[atIdx+1:]
+
+		colonIdx := strings.Index(credentials, ":")
+		if colonIdx < 0 {
+			return fmt.Errorf("-B format must be <token-id>:<token_key>@<bloodhound_url>")
+		}
+
+		tokenID = credentials[:colonIdx]
+		tokenKey = credentials[colonIdx+1:]
+		bloodhoundURL = url
+		uploadSchema = true
+		uploadResults = true
 	}
 
 	// Apply environment variable defaults for BloodHound upload options
@@ -432,4 +461,76 @@ func classifyTarget(target string) (string, string, string) {
 	}
 	// Otherwise it's a single server instance (host, host:port, host\instance, SPN)
 	return target, "", ""
+}
+
+// extractTargetCredentials parses user:password@target from a target string.
+// Splits on the last '@' (so UPN usernames like user@domain work) and the
+// first ':' in the credentials portion. Returns (user, password, cleanTarget, ok).
+func extractTargetCredentials(target string) (string, string, string, bool) {
+	atIdx := strings.LastIndex(target, "@")
+	if atIdx < 0 {
+		return "", "", target, false
+	}
+
+	credentials := target[:atIdx]
+	cleanTarget := target[atIdx+1:]
+
+	// Credentials must contain a colon separating user from password
+	colonIdx := strings.Index(credentials, ":")
+	if colonIdx < 0 {
+		return "", "", target, false
+	}
+
+	user := credentials[:colonIdx]
+	pass := credentials[colonIdx+1:]
+
+	// Sanity: both user and target must be non-empty
+	if user == "" || cleanTarget == "" {
+		return "", "", target, false
+	}
+
+	return user, pass, cleanTarget, true
+}
+
+// extractAndApplyCredentials strips user:pass@ from one or more comma-separated
+// targets, sets the package-level userID/password from the first entry that has
+// credentials, and returns the cleaned target string (credentials removed).
+func extractAndApplyCredentials(targets string) string {
+	// Don't touch file paths — they'll be detected by classifyTarget later
+	if info, err := os.Stat(targets); err == nil && !info.IsDir() {
+		return targets
+	}
+
+	parts := strings.Split(targets, ",")
+	cleaned := make([]string, 0, len(parts))
+	var credUser, credPass string
+	credSet := false
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if extractedUser, extractedPass, cleanTarget, ok := extractTargetCredentials(part); ok {
+			if !credSet {
+				credUser = extractedUser
+				credPass = extractedPass
+				credSet = true
+			}
+			cleaned = append(cleaned, cleanTarget)
+		} else {
+			cleaned = append(cleaned, part)
+		}
+	}
+
+	if credSet {
+		userID = credUser
+		password = credPass
+		logger.Info("Parsed inline credentials from target", "user", userID)
+	}
+
+	if len(cleaned) == 1 {
+		return cleaned[0]
+	}
+	return strings.Join(cleaned, ",")
 }
