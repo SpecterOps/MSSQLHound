@@ -97,7 +97,8 @@ jobs:
 
       - name: Configure DNS and Kerberos
         run: |
-          echo "127.0.0.1 dc.mayyhem.com dc mayyhem.com" | sudo tee -a /etc/hosts
+          HOSTNAME=$(hostname)
+          echo "127.0.0.1 dc.mayyhem.com dc mayyhem.com ${HOSTNAME}.mayyhem.com" | sudo tee -a /etc/hosts
           # Point resolv.conf at the Samba DC DNS (now on localhost via host networking)
           echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
 
@@ -135,13 +136,24 @@ jobs:
           sudo MSSQL_SA_PASSWORD='P@ssw0rd' MSSQL_PID='Developer' \
             /opt/mssql/bin/mssql-conf setup accept-eula
 
+      - name: Register hostname in AD DNS
+        run: |
+          HOSTNAME=$(hostname)
+          # Register A record in Samba DC DNS (custom resolver bypasses /etc/hosts)
+          docker exec dc samba-tool dns add 127.0.0.1 mayyhem.com $HOSTNAME A 127.0.0.1 \
+            -U Administrator --password='P@ssw0rd'
+          # Export FQDN for use in later env blocks
+          echo "RUNNER_FQDN=${HOSTNAME}.mayyhem.com" >> $GITHUB_ENV
+
       - name: Verify host-to-DC connectivity
         run: |
           echo "Testing services on localhost (host network)..."
           timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/389' && echo "LDAP OK" || echo "LDAP FAILED"
+          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/636' && echo "LDAPS OK" || echo "LDAPS FAILED"
           timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/88' && echo "Kerberos OK" || echo "Kerberos FAILED"
           echo "Testing DNS resolution via Samba DC..."
           nslookup mayyhem.com 127.0.0.1
+          nslookup $(hostname).mayyhem.com 127.0.0.1 || true
           dig mayyhem.com @127.0.0.1 +short || true
 
       - name: Join host to Samba AD domain
@@ -197,16 +209,17 @@ jobs:
 
       - name: Run integration tests
         env:
-          MSSQL_SERVER: localhost
+          MSSQL_SERVER: ${{ env.RUNNER_FQDN }}
           MSSQL_USER: sa
           MSSQL_PASSWORD: P@ssw0rd
           MSSQL_DOMAIN: mayyhem.com
-          MSSQL_DC: 127.0.0.1
+          MSSQL_DC: dc.mayyhem.com
           LDAP_USER: Administrator@mayyhem.com
           LDAP_PASSWORD: P@ssw0rd
           MSSQL_SKIP_DOMAIN: "false"
           MSSQL_ACTION: all
           MSSQL_SKIP_HTML: "true"
+          MSSQL_USE_KERBEROS: "true"
         run: |
           go test -v -count=1 -tags integration -timeout 30m \
             -run TestIntegrationAll ./internal/collector/...

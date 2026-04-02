@@ -294,6 +294,7 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 		OutputFormat:              "BloodHound",
 		TempDir:                   tempDir,
 		Verbose:                   true,
+		UseKerberos:               cfg.UseKerberos,
 		IncludeNontraversableEdges: includeNontraversable,
 		SkipLinkedServerEnum:      false,
 	}
