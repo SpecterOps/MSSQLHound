@@ -108,6 +108,7 @@ jobs:
               default_realm = MAYYHEM.COM
               dns_lookup_realm = false
               dns_lookup_kdc = false
+              rdns = false
           [realms]
               MAYYHEM.COM = {
                   kdc = 127.0.0.1
