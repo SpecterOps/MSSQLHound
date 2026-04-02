@@ -1678,11 +1678,14 @@ IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'MAYYHEM\EdgeTes
     CREATE LOGIN [MAYYHEM\EdgeTestNoConnect] FROM WINDOWS;
 DENY CONNECT SQL TO [MAYYHEM\EdgeTestNoConnect];
 
--- Create local group and add it as login
--- Note: This requires the group to exist on the SQL Server host
--- The test framework should handle creation of BUILTIN groups
-IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'BUILTIN\Remote Desktop Users')
-    CREATE LOGIN [BUILTIN\Remote Desktop Users] FROM WINDOWS;
+-- Create local group login (best-effort: BUILTIN groups may not exist in CI/Linux environments)
+BEGIN TRY
+    IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'BUILTIN\Remote Desktop Users')
+        CREATE LOGIN [BUILTIN\Remote Desktop Users] FROM WINDOWS;
+END TRY
+BEGIN CATCH
+    PRINT 'Skipping BUILTIN\Remote Desktop Users login (group not available): ' + ERROR_MESSAGE();
+END CATCH;
 
 -- Create SQL login (negative test - not a domain account)
 CREATE LOGIN [HasLoginTest_SQLLogin] WITH PASSWORD = 'EdgeTestP@ss123!';
