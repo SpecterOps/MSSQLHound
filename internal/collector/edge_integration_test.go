@@ -472,7 +472,11 @@ func logActualEdgesOfType(t *testing.T, edges []bloodhound.Edge, edgeType string
 	}
 	t.Logf("  actual %s edges (%d total):", edgeType, len(actual))
 	for _, e := range actual {
-		t.Logf("    %s -> %s", e.Start.Value, e.End.Value)
+		if path, ok := e.Properties["path"].(string); ok && path != "" {
+			t.Logf("    %s -> %s (path=%s)", e.Start.Value, e.End.Value, path)
+		} else {
+			t.Logf("    %s -> %s", e.Start.Value, e.End.Value)
+		}
 	}
 }
 

@@ -585,7 +585,7 @@ var linkedAsAdminTestCases = []edgeTestCase{
 // ---------------------------------------------------------------------------
 
 var linkedToTestCases = []edgeTestCase{
-	{EdgeType: "MSSQL_LinkedTo", Description: "All 10 loopback linked servers create LinkedTo edges", SourcePattern: "S-1-5-21-*", TargetPattern: "S-1-5-21-*", ExpectedCount: 11},
+	{EdgeType: "MSSQL_LinkedTo", Description: "All 10 loopback linked servers create LinkedTo edges", SourcePattern: "S-1-5-21-*", TargetPattern: "S-1-5-21-*", ExpectedCount: 10},
 }
 
 // ---------------------------------------------------------------------------
