@@ -353,29 +353,41 @@ go build -o mssqlhound.exe ./cmd/mssqlhound
 Collect from a single SQL Server:
 ```bash
 # Windows integrated authentication
-./mssqlhound -s sql.contoso.com
+./mssqlhound -t sql.contoso.com
 
 # SQL authentication
-./mssqlhound -s sql.contoso.com -u sa -p password
+./mssqlhound -t sql.contoso.com -u sa -p password
+
+# Inline credentials (equivalent to the above)
+./mssqlhound -t 'sa:password@sql.contoso.com'
 
 # Named instance
-./mssqlhound -s "sql.contoso.com\INSTANCE"
+./mssqlhound -t 'sql.contoso.com\INSTANCE'
 
 # Custom port
-./mssqlhound -s "sql.contoso.com:1434"
+./mssqlhound -t 'sql.contoso.com:1434'
+
+# Inline credentials with named instance
+./mssqlhound -t 'sa:password@sql.contoso.com\INSTANCE'
+
+# Inline credentials with SPN format
+./mssqlhound -t 'CONTOSO\admin:password@MSSQLSvc/sql.contoso.com:1433'
 ```
 
 ### Multiple Servers
 
 ```bash
-# From command line
-./mssqlhound --server-list "server1,server2,server3"
+# Comma-separated list
+./mssqlhound -t 'server1,server2,server3' -u sa -p password
 
-# From file (one server per line)
-./mssqlhound --server-list-file servers.txt
+# Comma-separated with inline credentials
+./mssqlhound -t 'sa:password@server1,sa:password@server2,sa:password@server3'
 
-# With concurrent workers (default: 10)
-./mssqlhound --server-list-file servers.txt -w 20
+# From file (one server per line, supports user:pass@host per line)
+./mssqlhound -t servers.txt
+
+# With concurrent workers
+./mssqlhound -t servers.txt -w 20
 ```
 
 ### Full Domain Enumeration
@@ -410,10 +422,10 @@ All network traffic (SQL connections, LDAP queries, EPA tests) can be tunneled t
 
 ```bash
 # Basic SOCKS5 proxy
-./mssqlhound -s sql.contoso.com --proxy 127.0.0.1:1080
+./mssqlhound -t sql.contoso.com --proxy 127.0.0.1:1080
 
 # With proxy authentication
-./mssqlhound -s sql.contoso.com --proxy "socks5://user:pass@127.0.0.1:1080"
+./mssqlhound -t sql.contoso.com --proxy "socks5://user:pass@127.0.0.1:1080"
 
 # Combined with domain enumeration
 ./mssqlhound --scan-all-computers --proxy 127.0.0.1:1080 --dc 10.0.0.1
@@ -434,26 +446,26 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 
 ```bash
 # Use ccache from KRB5CCNAME env var
-./mssqlhound -s sql.contoso.com -k
+./mssqlhound -t sql.contoso.com -k
 
 # Explicit ccache file
-./mssqlhound -s sql.contoso.com -k --krb5-credcachefile /tmp/krb5cc_1000
+./mssqlhound -t sql.contoso.com -k --krb5-credcachefile /tmp/krb5cc_1000
 
 # Use a keytab file
-./mssqlhound -s sql.contoso.com -k \
+./mssqlhound -t sql.contoso.com -k \
   --user "CONTOSO\svc_mssqlhound" \
   --krb5-keytabfile /etc/mssqlhound.keytab \
   --krb5-realm CONTOSO.COM
 
 # Custom krb5.conf
-./mssqlhound -s sql.contoso.com -k --krb5-configfile /etc/krb5_custom.conf
+./mssqlhound -t sql.contoso.com -k --krb5-configfile /etc/krb5_custom.conf
 ```
 
 ### Pass-the-Hash
 
 ```bash
 # Authenticate with an NT hash instead of a plaintext password
-./mssqlhound -s sql.contoso.com -u "CONTOSO\admin" --nt-hash aad3b435b51404eeaad3b435b51404ee
+./mssqlhound -t sql.contoso.com -u "CONTOSO\admin" --nt-hash aad3b435b51404eeaad3b435b51404ee
 
 # Combined with domain enumeration
 ./mssqlhound --scan-all-computers --dc 10.0.0.1 \
@@ -475,29 +487,37 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 
 ```bash
 # Save zip file to a specific directory
-./mssqlhound -s sql.contoso.com --zip-dir /data/collections/
+./mssqlhound -t sql.contoso.com --zip-dir /data/collections/
 
 # Use a custom temporary directory for intermediate files
-./mssqlhound --server-list-file servers.txt --temp-dir /tmp/mssqlhound
+./mssqlhound -t servers.txt --temp-dir /tmp/mssqlhound
 
 # Stop collecting after 500MB of data
-./mssqlhound --server-list-file servers.txt --file-size-limit 500MB
+./mssqlhound -t servers.txt --file-size-limit 500MB
 
 # Save per-target log files in a separate zip archive (useful for debugging)
-./mssqlhound --server-list-file servers.txt --log-per-target
+./mssqlhound -t servers.txt --log-per-target
 ```
 
 ### BloodHound Upload
 
 ```bash
-# Collect and automatically upload results to BloodHound CE (via env vars)
+# Shorthand: collect and upload schema + results in one shot
+./mssqlhound -t 'sa:password@sql.contoso.com' \
+  -B '<token-id>:<token-key>@https://bloodhound.contoso.com'
+
+# Shorthand with inline target credentials and domain enumeration
+./mssqlhound -t 'CONTOSO\admin:password@sql.contoso.com' -d contoso.com \
+  -B '<token-id>:<token-key>@https://bloodhound.contoso.com'
+
+# Via environment variables
 export BLOODHOUND_URL=https://bloodhound.contoso.com
 export BLOODHOUND_TOKEN_ID=<token-id>
 export BLOODHOUND_TOKEN_KEY=<token-key>
-./mssqlhound -s sql.contoso.com --upload-results
+./mssqlhound -t sql.contoso.com -u sa -p password --upload-results
 
-# Or pass credentials inline
-./mssqlhound -s sql.contoso.com \
+# Explicit long flags
+./mssqlhound -t sql.contoso.com -u sa -p password \
   --bloodhound-url https://bloodhound.contoso.com \
   --token-id <id> --token-key <key> \
   --upload-results
@@ -513,26 +533,26 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
 
 ```bash
 # Include non-traversable edges (shows all permission paths, not just attack paths)
-./mssqlhound -s sql.contoso.com --include-nontraversable
+./mssqlhound -t sql.contoso.com --include-nontraversable
 
 # Make interesting edges traversable (more aggressive pathfinding, may have false positives)
-./mssqlhound -s sql.contoso.com --make-interesting-traversable
+./mssqlhound -t sql.contoso.com --make-interesting-traversable
 
 # Skip AD node creation (collect only MSSQL nodes, no User/Group/Computer nodes)
-./mssqlhound -s sql.contoso.com --skip-ad-nodes
+./mssqlhound -t sql.contoso.com --skip-ad-nodes
 ```
 
 ### Linked Server Options
 
 ```bash
 # Skip linked server enumeration (faster, less noisy)
-./mssqlhound -s sql.contoso.com --skip-linked-servers
+./mssqlhound -t sql.contoso.com --skip-linked-servers
 
 # Perform full collection on each discovered linked server
-./mssqlhound -s sql.contoso.com --collect-from-linked
+./mssqlhound -t sql.contoso.com --collect-from-linked
 
 # Reduce linked server timeout from the default 300s
-./mssqlhound -s sql.contoso.com --linked-timeout 60
+./mssqlhound -t sql.contoso.com --linked-timeout 60
 ```
 
 ### test-epa-matrix Subcommand
@@ -541,15 +561,15 @@ Tests all combinations of Force Encryption, Force Strict Encryption, and Extende
 
 ```bash
 # Test all EPA setting combinations (12 combinations for SQL Server 2022+)
-./mssqlhound test-epa-matrix -s sql.contoso.com -u "CONTOSO\admin" -p "password"
+./mssqlhound test-epa-matrix -t sql.contoso.com -u "CONTOSO\admin" -p "password"
 
 # Named instance, skip strict encryption combos (for pre-SQL Server 2022)
-./mssqlhound test-epa-matrix -s "sql.contoso.com\INST" \
+./mssqlhound test-epa-matrix -t "sql.contoso.com\INST" \
   --sql-instance-name INST --skip-strict \
   -u "CONTOSO\admin" -p "password"
 
 # Use HTTPS for WinRM
-./mssqlhound test-epa-matrix -s sql.contoso.com --winrm-https \
+./mssqlhound test-epa-matrix -t sql.contoso.com --winrm-https \
   -u "CONTOSO\admin" -p "password"
 ```
 
@@ -575,7 +595,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 | Flag | Description |
 |------|-------------|
-| `-s, --server` | SQL Server instance to collect from (`host`, `host:port`, or `host\instance`) |
+| `-t, --targets` | SQL Server targets: `[user:pass@]host`, `host:port`, `host\instance`, `MSSQLSvc/host:port`, comma-separated list, or file path (default: enumerate domain MSSQLSvc SPNs) |
 | `-u, --user` | SQL login username |
 | `-p, --password` | SQL login password |
 | `--nt-hash` | NT hash (32 hex chars) for pass-the-hash authentication (mutually exclusive with `--password`) |
@@ -599,9 +619,8 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 | Flag | Description |
 |------|-------------|
-| `--server-list-file` | File containing list of servers (one per line) |
-| `--server-list` | Comma-separated list of servers |
-| `--scan-all-computers` | Scan all domain computers, not just those with SQL SPNs |
+| `-t, --targets` | Targets (see Authentication above): single, comma-separated, or file path |
+| `-A, --scan-all-computers` | Scan all domain computers, not just those with SQL SPNs |
 | `--skip-private-address` | Skip private IP check when resolving domain computer addresses |
 
 ### Collection
@@ -633,6 +652,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 | Flag | Env Var | Description |
 |------|---------|-------------|
+| `-B, --bloodhound` | | Upload to BloodHound CE: `<token-id>:<token-key>@<bloodhound_url>` (uploads schema + results) |
 | `--bloodhound-url` | `BLOODHOUND_URL` | BloodHound CE instance URL |
 | `--token-id` | `BLOODHOUND_TOKEN_ID` | BloodHound API token ID |
 | `--token-key` | `BLOODHOUND_TOKEN_KEY` | BloodHound API token key |
@@ -804,7 +824,7 @@ Use `--ldap-user` and `--ldap-password` when:
 Use `-v` or `--verbose` to see detailed connection attempts and errors:
 
 ```bash
-./mssqlhound -s sql.contoso.com -v
+./mssqlhound -t sql.contoso.com -u sa -p password -v
 ```
 
 ### Common Error Messages
