@@ -286,12 +286,12 @@ func buildHasLoginTestData() *types.ServerInfo {
 
 	// Local group (BUILTIN)
 	info.ServerPrincipals = append(info.ServerPrincipals, types.ServerPrincipal{
-		ObjectIdentifier:           "BUILTIN\\Remote Desktop Users@" + info.ObjectIdentifier,
+		ObjectIdentifier:           "BUILTIN\\Administrators@" + info.ObjectIdentifier,
 		PrincipalID:                uniquePrincipalID(),
-		Name:                       "BUILTIN\\Remote Desktop Users",
+		Name:                       "BUILTIN\\Administrators",
 		TypeDescription:            "WINDOWS_GROUP",
 		IsActiveDirectoryPrincipal: false,
-		SecurityIdentifier:         "S-1-5-32-555",
+		SecurityIdentifier:         "S-1-5-32-544",
 		SQLServerName:              info.SQLServerName,
 		Permissions: []types.Permission{
 			{Permission: "CONNECT SQL", State: "GRANT", ClassDesc: "SERVER"},

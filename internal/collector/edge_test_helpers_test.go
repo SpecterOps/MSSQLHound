@@ -820,10 +820,24 @@ func roleMembership(name string, serverOID string) types.RoleMembership {
 // runTestCases runs all test cases against the given edges.
 func runTestCases(t *testing.T, edges []bloodhound.Edge, testCases []edgeTestCase) {
 	t.Helper()
+	var failedNames []string
 	for _, tc := range testCases {
-		t.Run(tc.Description, func(t *testing.T) {
+		tc := tc
+		passed := t.Run(tc.Description, func(t *testing.T) {
 			runSingleTestCase(t, edges, tc)
 		})
+		if !passed {
+			failedNames = append(failedNames, tc.EdgeType+"/"+tc.Description)
+		}
+	}
+	if len(failedNames) > 0 {
+		t.Logf("\n========================================")
+		t.Logf("FAILING TESTS (%d):", len(failedNames))
+		t.Logf("========================================")
+		for _, name := range failedNames {
+			t.Logf("  FAIL: %s", name)
+		}
+		t.Logf("========================================")
 	}
 }
 
