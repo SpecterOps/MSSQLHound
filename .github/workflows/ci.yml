@@ -83,12 +83,12 @@ jobs:
           docker exec dc samba-tool user create domainadmin 'P@ssw0rd' --use-username-as-cn
           docker exec dc samba-tool group addmembers "Domain Admins" domainadmin
           # Create SQL Server service account
-          docker exec dc samba-tool user create sqlsvc 'P@ssw0rd' --use-username-as-cn
+          docker exec dc samba-tool user create sccmsqlsvc 'P@ssw0rd' --use-username-as-cn
           HOSTNAME=$(hostname)
-          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com sqlsvc
-          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com:1433 sqlsvc
+          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com sccmsqlsvc
+          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com:1433 sccmsqlsvc
           # Export keytab
-          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab --principal=sqlsvc
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab --principal=sccmsqlsvc
           docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
             --principal=MSSQLSvc/${HOSTNAME}.mayyhem.com
           docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
@@ -170,13 +170,30 @@ jobs:
 
       - name: Configure SQL Server for AD auth
         run: |
+          # Verify domain account is resolvable after domain join
+          id sccmsqlsvc@mayyhem.com || echo "WARNING: domain account not yet resolvable via SSSD"
+
+          # Grant the domain account ownership of SQL Server directories
+          sudo chown -R sccmsqlsvc@mayyhem.com /var/opt/mssql
+          sudo chown -R sccmsqlsvc@mayyhem.com /opt/mssql
+
+          # Override systemd unit to run SQL Server as the domain account
+          sudo mkdir -p /etc/systemd/system/mssql-server.service.d
+          cat <<'EOF' | sudo tee /etc/systemd/system/mssql-server.service.d/override.conf
+          [Service]
+          User=sccmsqlsvc@mayyhem.com
+          Group=domain users@mayyhem.com
+          EOF
+          sudo sed -i 's/^          //' /etc/systemd/system/mssql-server.service.d/override.conf
+          sudo systemctl daemon-reload
+
           sudo mkdir -p /var/opt/mssql/secrets
           sudo cp /tmp/mssql.keytab /var/opt/mssql/secrets/mssql.keytab
-          sudo chown mssql:mssql /var/opt/mssql/secrets/mssql.keytab
+          sudo chown sccmsqlsvc@mayyhem.com /var/opt/mssql/secrets/mssql.keytab
           sudo chmod 400 /var/opt/mssql/secrets/mssql.keytab
           sudo /opt/mssql/bin/mssql-conf set network.kerberoskeytabfile /var/opt/mssql/secrets/mssql.keytab
-          sudo /opt/mssql/bin/mssql-conf set network.privilegedadaccount sqlsvc
-          echo "Restarting SQL Server (timeout 60s)..."
+          sudo /opt/mssql/bin/mssql-conf set network.privilegedadaccount sccmsqlsvc
+          echo "Restarting SQL Server as MAYYHEM\\sccmsqlsvc (timeout 60s)..."
           sudo systemctl restart mssql-server &
           RESTART_PID=$!
           for i in $(seq 1 12); do
@@ -188,6 +205,8 @@ jobs:
           done
           sleep 3
           systemctl status mssql-server --no-pager || true
+          # Confirm SQL Server is running as the domain account
+          ps -eo user,pid,comm | grep sqlservr || true
           echo "SQL Server error log (last 30 lines):"
           sudo tail -30 /var/opt/mssql/log/errorlog || true
 
