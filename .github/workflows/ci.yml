@@ -219,7 +219,6 @@ jobs:
           MSSQL_SKIP_DOMAIN: "false"
           MSSQL_ACTION: all
           MSSQL_SKIP_HTML: "true"
-          MSSQL_USE_KERBEROS: "true"
         run: |
           go test -v -count=1 -tags integration -timeout 30m \
             -run TestIntegrationAll ./internal/collector/...

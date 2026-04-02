@@ -32,7 +32,6 @@ type integrationConfig struct {
 	SkipDomain     bool   // Skip AD object creation
 	Action         string // "all", "setup", "test", "teardown", "coverage" (default: "all")
 	SkipHTMLReport bool   // Skip HTML report generation
-	UseKerberos    bool   // Use Kerberos authentication for LDAP
 	ZipFile        string // Path to existing MSSQLHound .zip output to validate
 
 	// Enumeration user (defaults to MSSQL_USER/MSSQL_PASSWORD)
@@ -51,7 +50,6 @@ func loadIntegrationConfig() *integrationConfig {
 		LDAPPassword:   os.Getenv("LDAP_PASSWORD"),
 		LimitToEdge:    os.Getenv("MSSQL_LIMIT_EDGE"),
 		SkipDomain:     os.Getenv("MSSQL_SKIP_DOMAIN") == "true",
-		UseKerberos:    os.Getenv("MSSQL_USE_KERBEROS") == "true",
 		Action:         envOrDefault("MSSQL_ACTION", "all"),
 		SkipHTMLReport: os.Getenv("MSSQL_SKIP_HTML") == "true",
 		ZipFile:        os.Getenv("MSSQL_ZIP"),

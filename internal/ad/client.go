@@ -159,78 +159,66 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 		}
 	}
 
-	// tryBinds attempts each bind method on the given connection.
-	// Returns true if a bind succeeded (c.conn is set).
-	tryBinds := func(conn *ldap.Conn, transport string) (bool, error) {
+	// Transport configurations to try in order of preference.
+	type transportConfig struct {
+		label   string
+		scheme  string
+		port    string
+		tls     *tls.Config
+		startTLS bool
+	}
+	transports := []transportConfig{
+		// LDAPS (port 636) - most secure, direct TLS
+		{"LDAPS:636", "ldaps", "636", &tls.Config{
+			ServerName: serverName, InsecureSkipVerify: true,
+		}, false},
+		// LDAP + StartTLS (port 389) - upgrade to TLS
+		{"LDAP:389+StartTLS", "ldap", "389", nil, true},
+	}
+	// Plain LDAP with NTLM only (NTLM provides its own signing/sealing)
+	if !c.useKerberos {
+		transports = append(transports, transportConfig{
+			"LDAP:389", "ldap", "389", nil, false,
+		})
+	}
+
+	// Try each transport+bind combination with a fresh connection per attempt.
+	// A failed bind (especially NTLM) can leave the connection in a broken
+	// state, so we must not reuse a connection after a bind failure.
+	for _, t := range transports {
 		for _, m := range bindMethods {
+			// Plain LDAP (no TLS, no StartTLS) only allows NTLM (has built-in encryption)
+			if !t.startTLS && t.tls == nil && m.name != "NTLM" {
+				continue
+			}
+
+			conn, err := c.dialLDAP(t.scheme, dc, t.port, t.tls)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("%s connect: %v", t.label, err))
+				break // if we can't connect on this transport, skip to next transport
+			}
+			conn.SetTimeout(30 * time.Second)
+
+			if t.startTLS {
+				if tlsErr := c.startTLS(conn, dc); tlsErr != nil {
+					errors = append(errors, fmt.Sprintf("%s StartTLS: %v", t.label, tlsErr))
+					conn.Close()
+					break // StartTLS failed, skip to next transport
+				}
+			}
+
 			if bindErr := m.fn(conn, dc); bindErr == nil {
 				c.conn = conn
 				c.baseDN = domainToDN(c.domain)
-				c.authMethod = fmt.Sprintf("%s %s", transport, m.name)
-				return true, nil
+				c.authMethod = fmt.Sprintf("%s %s", t.label, m.name)
+				return nil
 			} else {
-				errors = append(errors, fmt.Sprintf("%s %s: %v", transport, m.name, bindErr))
+				errors = append(errors, fmt.Sprintf("%s %s: %v", t.label, m.name, bindErr))
+				conn.Close()
 				if isLDAPAuthError(bindErr) {
-					conn.Close()
-					return false, fmt.Errorf("LDAP authentication failed (invalid credentials): %s", strings.Join(errors, "; "))
+					return fmt.Errorf("LDAP authentication failed (invalid credentials): %s", strings.Join(errors, "; "))
 				}
 			}
-		}
-		return false, nil
-	}
-
-	// Try LDAPS first (port 636) - most secure
-	conn, err := c.dialLDAP("ldaps", dc, "636", &tls.Config{
-		ServerName:         serverName,
-		InsecureSkipVerify: true,
-	})
-	if err == nil {
-		conn.SetTimeout(30 * time.Second)
-		if ok, authErr := tryBinds(conn, "LDAPS:636"); ok {
-			return nil
-		} else if authErr != nil {
-			return authErr
-		}
-		conn.Close()
-	} else {
-		errors = append(errors, fmt.Sprintf("LDAPS:636 connect: %v", err))
-	}
-
-	// Try StartTLS on port 389
-	conn, err = c.dialLDAP("ldap", dc, "389", nil)
-	if err == nil {
-		conn.SetTimeout(30 * time.Second)
-		tlsErr := c.startTLS(conn, dc)
-		if tlsErr == nil {
-			if ok, authErr := tryBinds(conn, "LDAP:389+StartTLS"); ok {
-				return nil
-			} else if authErr != nil {
-				return authErr
-			}
-		} else {
-			errors = append(errors, fmt.Sprintf("LDAP:389 StartTLS: %v", tlsErr))
-		}
-		conn.Close()
-	} else {
-		errors = append(errors, fmt.Sprintf("LDAP:389+StartTLS connect: %v", err))
-	}
-
-	// Try plain LDAP with NTLM only (has built-in encryption via NTLM sealing)
-	if !c.useKerberos {
-		conn, err = c.dialLDAP("ldap", dc, "389", nil)
-		if err == nil {
-			conn.SetTimeout(30 * time.Second)
-			if bindErr := c.ntlmBind(conn); bindErr == nil {
-				c.conn = conn
-				c.baseDN = domainToDN(c.domain)
-				c.authMethod = "LDAP:389 NTLM"
-				return nil
-			} else {
-				errors = append(errors, fmt.Sprintf("LDAP:389 NTLM: %v", bindErr))
-			}
-			conn.Close()
-		} else {
-			errors = append(errors, fmt.Sprintf("LDAP:389 connect: %v", err))
 		}
 	}
 
