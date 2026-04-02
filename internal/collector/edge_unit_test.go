@@ -1364,24 +1364,33 @@ func TestExecuteOnHostEdges(t *testing.T) {
 func buildLinkedServerTestData() *types.ServerInfo {
 	info := baseServerInfo()
 
-	// Create 11 linked servers pointing back to ourselves (loopback)
-	// to match test expectation of 11 LinkedTo edges.
+	// Create 10 linked servers pointing back to ourselves (loopback)
+	// to match the 10 linked servers in the integration SQL setup:
+	//   8 admin (SQL login with sysadmin)
+	//   1 regular (SQL login, no admin)
+	//   1 Windows auth (non-admin)
 	// Each gets a unique LocalLogin so StreamingWriter dedup doesn't collapse them.
-	for i := 0; i < 11; i++ {
+	for i := 0; i < 10; i++ {
 		name := "LinkedServer" + string(rune('A'+i))
 		opts := []linkedServerOption{
 			withResolvedTarget(testServerOID),
 			withLocalLogin(fmt.Sprintf("locallogin%d", i)),
 		}
-		// 8 of them are admin (SQL login, sysadmin, mixed mode)
 		if i < 8 {
+			// 8 admin linked servers (SQL login, sysadmin, mixed mode)
 			opts = append(opts,
 				withRemoteLogin("adminuser"),
 				withRemoteSysadmin(),
 				withRemoteMixedMode(),
 			)
+		} else if i == 8 {
+			// 1 regular SQL login (no admin privileges)
+			opts = append(opts,
+				withRemoteLogin("regularuser"),
+				withRemoteMixedMode(),
+			)
 		} else {
-			// The other 3 are non-admin (Windows login with backslash)
+			// 1 Windows auth login (non-admin)
 			opts = append(opts,
 				withRemoteLogin("DOMAIN\\windowsuser"),
 				withRemoteMixedMode(),
