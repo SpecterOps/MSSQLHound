@@ -523,7 +523,7 @@ func (c *Client) connectNative(ctx context.Context) error {
 					c.logVerbose("Auto-generated krb5.conf", "path", generated, "domain", c.domain, "kdc", c.dnsResolver)
 				}
 			} else {
-				c.logVerbose("No krb5.conf found and cannot auto-generate (need --domain and --dc-ip)")
+				c.logVerbose("No krb5.conf found and cannot auto-generate (need --domain and --dc)")
 			}
 		}
 	}

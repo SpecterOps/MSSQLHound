@@ -44,7 +44,7 @@ type Config struct {
 	Krb5KeytabFile string // Path to Kerberos keytab file
 	Krb5Realm      string // Kerberos realm
 	Domain         string
-	DCIP           string // Domain controller hostname or IP address
+	DC           string // Domain controller hostname or IP address
 	DNSResolver    string // DNS resolver to use for lookups
 	LDAPUser       string
 	LDAPPassword   string
@@ -165,16 +165,16 @@ func New(config *Config) (*Collector, error) {
 			configPath = "/etc/krb5.conf"
 		}
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
-			if config.Domain != "" && config.DCIP != "" {
-				generated, genErr := mssql.GenerateKrb5Config(config.Domain, config.DCIP)
+			if config.Domain != "" && config.DC != "" {
+				generated, genErr := mssql.GenerateKrb5Config(config.Domain, config.DC)
 				if genErr != nil {
 					config.Logger.Warn("Failed to auto-generate krb5.conf", "error", genErr)
 				} else {
 					config.Krb5ConfigFile = generated
-					config.Logger.Info("Auto-generated krb5.conf", "path", generated, "domain", config.Domain, "kdc", config.DCIP)
+					config.Logger.Info("Auto-generated krb5.conf", "path", generated, "domain", config.Domain, "kdc", config.DC)
 				}
 			} else {
-				return nil, fmt.Errorf("--kerberos requires a krb5.conf file: provide --krb5-configfile, or both --domain and --dc-ip for auto-generation")
+				return nil, fmt.Errorf("--kerberos requires a krb5.conf file: provide --krb5-configfile, or both --domain and --dc for auto-generation")
 			}
 		}
 	}
@@ -182,13 +182,13 @@ func New(config *Config) (*Collector, error) {
 }
 
 // getDNSResolver returns the DNS resolver to use, applying the logic:
-// if --dc-ip is specified but --dns-resolver is not, use dc-ip as the resolver
+// if --dc is specified but --dns-resolver is not, use dc as the resolver
 func (c *Collector) getDNSResolver() string {
 	if c.config.DNSResolver != "" {
 		return c.config.DNSResolver
 	}
-	if c.config.DCIP != "" {
-		return c.config.DCIP
+	if c.config.DC != "" {
+		return c.config.DC
 	}
 	return ""
 }
@@ -203,7 +203,7 @@ func (c *Collector) newADClient(domain string) *ad.Client {
 	if failed {
 		return nil
 	}
-	adClient := ad.NewClient(domain, c.config.DCIP, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword, c.getDNSResolver())
+	adClient := ad.NewClient(domain, c.config.DC, c.config.SkipPrivateAddress, c.config.LDAPUser, c.config.LDAPPassword, c.getDNSResolver())
 	if c.config.NTHash != "" {
 		adClient.SetNTHash(c.config.NTHash)
 	}
@@ -1085,17 +1085,28 @@ func (c *Collector) processServer(server *ServerToProcess) error {
 	}
 
 	if epaPrereqFailed {
-		// Skip authentication - go straight to partial output handling
-		if spnInfo != nil {
-			log.Info("EPA prereq failed but server has SPN - creating nodes/edges from SPN data")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"), log)
+		// Check if we have separate SQL credentials to fall back on.
+		// EPA uses LDAP/domain creds (NTLM); SQL auth (UserID/Password) is independent.
+		hasSeparateSQLCreds := c.config.UserID != "" && c.config.Password != "" &&
+			(c.config.UserID != c.config.LDAPUser || c.config.Password != c.config.LDAPPassword)
+
+		if hasSeparateSQLCreds {
+			log.Warn("EPA prereq failed with domain credentials, falling back to SQL auth",
+				"sqlUser", c.config.UserID)
+			// Fall through to Connect() which uses UserID/Password
+		} else {
+			// No separate SQL creds - skip authentication, go straight to partial output
+			if spnInfo != nil {
+				log.Info("EPA prereq failed but server has SPN - creating nodes/edges from SPN data")
+				return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"), log)
+			}
+			spnInfo = c.lookupSPNsForServer(server)
+			if spnInfo != nil {
+				log.Info("EPA prereq failed - looked up SPN from AD, creating partial output")
+				return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"), log)
+			}
+			return fmt.Errorf("EPA prereq check failed and no SPN data available for %s", server.ConnectionString)
 		}
-		spnInfo = c.lookupSPNsForServer(server)
-		if spnInfo != nil {
-			log.Info("EPA prereq failed - looked up SPN from AD, creating partial output")
-			return c.processServerFromSPNData(server, spnInfo, epaResult, fmt.Errorf("EPA prereq check failed"), log)
-		}
-		return fmt.Errorf("EPA prereq check failed and no SPN data available for %s", server.ConnectionString)
 	}
 
 	// If the EPA unmodified connection failed (login_failed), the credentials don't

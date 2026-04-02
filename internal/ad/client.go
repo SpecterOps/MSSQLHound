@@ -425,7 +425,15 @@ func (c *Client) gssapiBind(conn *ldap.Conn, dc string) error {
 	defer closeFn()
 
 	serviceHost := dc
-	if !strings.Contains(serviceHost, ".") && c.domain != "" {
+	if net.ParseIP(dc) != nil {
+		// Kerberos SPNs require hostnames, not IP addresses.
+		// Reverse DNS the IP to get the DC hostname for SPN construction.
+		if names, err := c.resolver.LookupAddr(context.Background(), dc); err == nil && len(names) > 0 {
+			serviceHost = strings.TrimSuffix(names[0], ".")
+		} else {
+			return fmt.Errorf("cannot construct Kerberos SPN for IP address %s: reverse DNS lookup failed (%w). Use the DC hostname instead of an IP with --dc, or ensure reverse DNS is configured", dc, err)
+		}
+	} else if !strings.Contains(serviceHost, ".") && c.domain != "" {
 		serviceHost = fmt.Sprintf("%s.%s", dc, c.domain)
 	}
 

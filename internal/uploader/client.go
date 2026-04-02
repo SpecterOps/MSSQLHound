@@ -69,7 +69,7 @@ type Client struct {
 
 // NewClient creates a Client for the given BloodHound CE instance.
 // It uses the system (cgo) DNS resolver to avoid inheriting any overridden
-// net.DefaultResolver (e.g. when --dc-ip redirects DNS to a domain controller).
+// net.DefaultResolver (e.g. when --dc redirects DNS to a domain controller).
 func NewClient(baseURL string, auth Authenticator) *Client {
 	// PreferGo: false uses the system's C library resolver (getaddrinfo),
 	// which correctly handles /etc/hosts, .localhost TLD, mDNS, and NSS —

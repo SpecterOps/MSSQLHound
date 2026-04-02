@@ -151,7 +151,7 @@ All TCP connections support SOCKS5 proxy tunneling (`--proxy`). TLS connections 
 | LDAPS | 636/tcp | TLS | Domain controller | SPN enumeration, principal/SID resolution, computer enumeration | First LDAP method attempted |
 | LDAP + StartTLS | 389/tcp | TCP upgraded to TLS | Domain controller | Same as LDAPS | Fallback if LDAPS fails |
 | Plain LDAP | 389/tcp | TCP (unencrypted) | Domain controller | Same as LDAPS | Final LDAP fallback |
-| DNS | 53/udp | UDP | `--dns-resolver` or `--dc-ip` | SRV records (`_ldap._tcp.<domain>`), A records, reverse DNS (PTR) | When domain resolution is needed |
+| DNS | 53/udp | UDP | `--dns-resolver` or `--dc` | SRV records (`_ldap._tcp.<domain>`), A records, reverse DNS (PTR) | When domain resolution is needed |
 | WinRM | 5985/tcp (HTTP) or 5986/tcp (HTTPS) | HTTP/HTTPS | SQL Server host | Remote PowerShell for EPA configuration | **Only `test-epa-matrix` subcommand** |
 | WMI/DCOM | 135/tcp + dynamic RPC | TCP | SQL Server host | Enumerate local group members (`Win32_GroupUser`) | **Windows only.** Fails gracefully on other platforms. |
 
@@ -388,7 +388,7 @@ Collect from a single SQL Server:
 ./mssqlhound --scan-all-computers --ldap-user "DOMAIN\username" --ldap-password "password"
 
 # Specifying domain controller IP (also used as DNS resolver)
-./mssqlhound --scan-all-computers --dc-ip 10.0.0.1 --ldap-user "DOMAIN\username" --ldap-password "password"
+./mssqlhound --scan-all-computers --dc 10.0.0.1 --ldap-user "DOMAIN\username" --ldap-password "password"
 ```
 
 ### DNS and Domain Controller Configuration
@@ -398,10 +398,10 @@ Collect from a single SQL Server:
 ./mssqlhound --scan-all-computers --dns-resolver 10.0.0.1
 
 # Specify DC IP (automatically used as DNS resolver if --dns-resolver is not set)
-./mssqlhound --scan-all-computers --dc-ip 10.0.0.1
+./mssqlhound --scan-all-computers --dc 10.0.0.1
 
 # Use separate DNS resolver and DC
-./mssqlhound --scan-all-computers --dc-ip 10.0.0.1 --dns-resolver 10.0.0.2
+./mssqlhound --scan-all-computers --dc 10.0.0.1 --dns-resolver 10.0.0.2
 ```
 
 ### SOCKS5 Proxy Support
@@ -416,7 +416,7 @@ All network traffic (SQL connections, LDAP queries, EPA tests) can be tunneled t
 ./mssqlhound -s sql.contoso.com --proxy "socks5://user:pass@127.0.0.1:1080"
 
 # Combined with domain enumeration
-./mssqlhound --scan-all-computers --proxy 127.0.0.1:1080 --dc-ip 10.0.0.1
+./mssqlhound --scan-all-computers --proxy 127.0.0.1:1080 --dc 10.0.0.1
 ```
 
 **Note:** SQL Browser (UDP) resolution is not supported through SOCKS5 proxies. Named instances must include explicit ports (e.g., `sql.contoso.com\INSTANCE:1433`).
@@ -456,7 +456,7 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 ./mssqlhound -s sql.contoso.com -u "CONTOSO\admin" --nt-hash aad3b435b51404eeaad3b435b51404ee
 
 # Combined with domain enumeration
-./mssqlhound --scan-all-computers --dc-ip 10.0.0.1 \
+./mssqlhound --scan-all-computers --dc 10.0.0.1 \
   -u "CONTOSO\admin" --nt-hash aad3b435b51404eeaad3b435b51404ee
 ```
 
@@ -464,11 +464,11 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 
 ```bash
 # List SQL servers discovered via SPNs without connecting to them
-./mssqlhound --domain-enum-only --dc-ip 10.0.0.1 \
+./mssqlhound --domain-enum-only --dc 10.0.0.1 \
   --ldap-user "CONTOSO\user" --ldap-password "password"
 
 # List all domain computers (not just SPN holders)
-./mssqlhound --domain-enum-only --scan-all-computers --dc-ip 10.0.0.1
+./mssqlhound --domain-enum-only --scan-all-computers --dc 10.0.0.1
 ```
 
 ### Output and Storage Options
@@ -590,7 +590,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | Flag | Description |
 |------|-------------|
 | `-d, --domain` | Domain to use for name and SID resolution |
-| `--dc-ip` | Domain controller hostname or IP (used for LDAP and as DNS resolver if `--dns-resolver` not specified) |
+| `--dc` | Domain controller hostname or IP (auto-resolved from `--domain` if omitted; used for LDAP and as DNS resolver if `--dns-resolver` not specified) |
 | `--dns-resolver` | DNS resolver IP address for domain lookups |
 | `--ldap-user` | LDAP user (`DOMAIN\user` or `user@domain`) for GSSAPI/Kerberos bind |
 | `--ldap-password` | LDAP password for GSSAPI/Kerberos bind |

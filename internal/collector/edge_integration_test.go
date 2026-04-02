@@ -287,8 +287,8 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 		UserID:                    cfg.EnumUserID,
 		Password:                  cfg.EnumPassword,
 		Domain:                    cfg.Domain,
-		DCIP:                      cfg.DCIP,
-		DNSResolver:               cfg.DCIP, // Use DC as DNS resolver when no explicit resolver is set
+		DC:                        cfg.DC,
+		DNSResolver:               cfg.DC, // Use DC as DNS resolver when no explicit resolver is set
 		LDAPUser:                  cfg.LDAPUser,
 		LDAPPassword:              cfg.LDAPPassword,
 		OutputFormat:              "BloodHound",

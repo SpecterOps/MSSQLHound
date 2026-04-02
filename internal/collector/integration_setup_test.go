@@ -25,7 +25,7 @@ type integrationConfig struct {
 	UserID         string // Sysadmin user for setup (empty = Windows auth)
 	Password       string // Sysadmin password
 	Domain         string // AD domain name (default: $USERDOMAIN)
-	DCIP           string // Domain controller (optional, auto-discovered)
+	DC           string // Domain controller (optional, auto-discovered)
 	LDAPUser       string // LDAP credentials for AD operations
 	LDAPPassword   string // LDAP password
 	LimitToEdge    string // Limit to specific edge type (optional)
@@ -45,7 +45,7 @@ func loadIntegrationConfig() *integrationConfig {
 		UserID:         os.Getenv("MSSQL_USER"),
 		Password:       os.Getenv("MSSQL_PASSWORD"),
 		Domain:         envOrDefault("MSSQL_DOMAIN", os.Getenv("USERDOMAIN")),
-		DCIP:           os.Getenv("MSSQL_DC"),
+		DC:           os.Getenv("MSSQL_DC"),
 		LDAPUser:       os.Getenv("LDAP_USER"),
 		LDAPPassword:   os.Getenv("LDAP_PASSWORD"),
 		LimitToEdge:    os.Getenv("MSSQL_LIMIT_EDGE"),
@@ -71,10 +71,10 @@ func envOrDefault(key, defaultVal string) string {
 // =============================================================================
 
 // resolveServerInstance resolves the server hostname using the DC as DNS resolver
-// when DCIP is set and the system resolver can't resolve the hostname.
+// when DC is set and the system resolver can't resolve the hostname.
 // Returns the instance string with the hostname replaced by the resolved IP if needed.
-func resolveServerInstance(instance, dcIP string) string {
-	if dcIP == "" {
+func resolveServerInstance(instance, dc string) string {
+	if dc == "" {
 		return instance
 	}
 
@@ -99,7 +99,7 @@ func resolveServerInstance(instance, dcIP string) string {
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, "udp", net.JoinHostPort(dcIP, "53"))
+			return d.DialContext(ctx, "udp", net.JoinHostPort(dc, "53"))
 		},
 	}
 
@@ -117,7 +117,7 @@ func resolveServerInstance(instance, dcIP string) string {
 // connectSQL creates a SQL connection for setup/teardown operations (sysadmin).
 func connectSQL(cfg *integrationConfig) (*sql.DB, error) {
 	// Resolve hostname via DC if system DNS can't reach the server
-	serverInstance := resolveServerInstance(cfg.ServerInstance, cfg.DCIP)
+	serverInstance := resolveServerInstance(cfg.ServerInstance, cfg.DC)
 
 	var connStr string
 	if cfg.UserID != "" {
@@ -272,7 +272,7 @@ func domainToDN(domain string) string {
 
 // ldapConnect establishes an LDAP connection to the domain controller.
 func ldapConnect(cfg *integrationConfig) (*ldap.Conn, string, error) {
-	dc := cfg.DCIP
+	dc := cfg.DC
 	if dc == "" {
 		dc = cfg.Domain
 	}

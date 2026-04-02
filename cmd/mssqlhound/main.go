@@ -25,7 +25,7 @@ var (
 	password       string
 	ntHash         string // NT hash for pass-the-hash authentication
 	domain         string
-	dcIP           string
+	dc             string
 	dnsResolver    string
 	ldapUser       string
 	ldapPassword   string
@@ -39,9 +39,7 @@ var (
 	proxyAddr      string
 
 	// Collection-specific options (local to root command)
-	serverListFile string
-	serverList     string
-	outputFormat   string
+	outputFormat string
 	tempDir        string
 	zipDir         string
 	fileSizeLimit  string
@@ -101,28 +99,29 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
+	// Add -V shorthand for --version
+	rootCmd.Flags().BoolP("version", "V", false, "Print version information")
+
 	// Shared connection flags (persistent - available to subcommands)
-	rootCmd.PersistentFlags().StringVarP(&serverInstance, "server", "s", "", "SQL Server instance to collect from (host, host:port, or host\\instance)")
-	rootCmd.PersistentFlags().StringVarP(&userID, "user", "u", "", "SQL login username")
-	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SQL login password")
-	rootCmd.PersistentFlags().StringVar(&ntHash, "nt-hash", "", "NT hash (32 hex chars) for pass-the-hash authentication (mutually exclusive with --password)")
-	rootCmd.PersistentFlags().StringVarP(&domain, "domain", "d", "", "Domain to use for name and SID resolution")
-	rootCmd.PersistentFlags().StringVar(&dcIP, "dc-ip", "", "Domain controller hostname or IP (used for LDAP and as DNS resolver if --dns-resolver not specified)")
-	rootCmd.PersistentFlags().StringVar(&dnsResolver, "dns-resolver", "", "DNS resolver IP address for domain lookups")
-	rootCmd.PersistentFlags().StringVar(&ldapUser, "ldap-user", "", "LDAP user (DOMAIN\\user or user@domain) for GSSAPI/Kerberos bind")
-	rootCmd.PersistentFlags().StringVar(&ldapPassword, "ldap-password", "", "LDAP password for GSSAPI/Kerberos bind")
-	rootCmd.PersistentFlags().BoolVarP(&useKerberos, "kerberos", "k", false, "Use Kerberos authentication (reads ccache from KRB5CCNAME or --krb5-credcachefile)")
+	rootCmd.PersistentFlags().StringVarP(&serverInstance, "targets", "t", "", "SQL Server targets: host, host:port, host\\instance, MSSQLSvc/host:port, comma-separated list, or file path (default: enumerate domain MSSQLSvc SPNs)")
+	rootCmd.PersistentFlags().StringVarP(&userID, "user", "u", "", "SQL Server login username (used to connect and enumerate)")
+	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "SQL Server login password")
+	rootCmd.PersistentFlags().StringVar(&ntHash, "nt-hash", "", "NT hash for pass-the-hash SQL auth (32 hex chars; mutually exclusive with -p)")
+	rootCmd.PersistentFlags().StringVar(&ldapUser, "ldap-user", "", "Domain user for LDAP queries and EPA testing (DOMAIN\\user or user@domain); not used for SQL login")
+	rootCmd.PersistentFlags().StringVar(&ldapPassword, "ldap-password", "", "Password for --ldap-user (LDAP bind and EPA NTLM; not used for SQL login)")
+	rootCmd.PersistentFlags().BoolVarP(&useKerberos, "kerberos", "k", false, "Use Kerberos for SQL Server authentication (reads ccache from KRB5CCNAME or --krb5-credcachefile)")
 	rootCmd.PersistentFlags().StringVar(&krb5ConfigFile, "krb5-configfile", "", "Path to krb5.conf (default: /etc/krb5.conf or KRB5_CONFIG env var)")
 	rootCmd.PersistentFlags().StringVar(&krb5CCacheFile, "krb5-credcachefile", "", "Path to Kerberos credential cache file (overrides KRB5CCNAME env var)")
 	rootCmd.PersistentFlags().StringVar(&krb5KeytabFile, "krb5-keytabfile", "", "Path to Kerberos keytab file")
 	rootCmd.PersistentFlags().StringVar(&krb5Realm, "krb5-realm", "", "Kerberos realm (default: derived from domain or krb5.conf)")
+	rootCmd.PersistentFlags().StringVarP(&domain, "domain", "d", "", "Domain to use for name and SID resolution")
+	rootCmd.PersistentFlags().StringVar(&dc, "dc", "", "Domain controller hostname or IP (used for LDAP and as DNS resolver if --dns-resolver not specified)")
+	rootCmd.PersistentFlags().StringVar(&dnsResolver, "dns-resolver", "", "DNS resolver IP address for domain lookups")
+	rootCmd.PersistentFlags().StringVarP(&proxyAddr, "proxy", "x", "", "SOCKS5 proxy address (host:port or socks5://[user:pass@]host:port)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output showing detailed collection progress")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output (includes EPA/TLS/NTLM diagnostics)")
-	rootCmd.PersistentFlags().StringVar(&proxyAddr, "proxy", "", "SOCKS5 proxy address (host:port or socks5://[user:pass@]host:port)")
 
 	// Collection-specific flags (local to root command only)
-	rootCmd.Flags().StringVar(&serverListFile, "server-list-file", "", "File containing list of servers (one per line)")
-	rootCmd.Flags().StringVar(&serverList, "server-list", "", "Comma-separated list of servers")
 	rootCmd.Flags().StringVarP(&outputFormat, "output-format", "o", "BloodHound", "Output format: BloodHound, BHGeneric")
 	rootCmd.Flags().StringVar(&tempDir, "temp-dir", "", "Temporary directory for output files")
 	rootCmd.Flags().StringVar(&zipDir, "zip-dir", ".", "Directory for final zip file")
@@ -132,7 +131,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolVar(&skipLinkedServerEnum, "skip-linked-servers", false, "Don't enumerate linked servers")
 	rootCmd.Flags().BoolVar(&collectFromLinkedServers, "collect-from-linked", false, "Perform full collection on discovered linked servers")
 	rootCmd.Flags().BoolVar(&skipPrivateAddress, "skip-private-address", false, "Skip private IP check when resolving domains")
-	rootCmd.Flags().BoolVar(&scanAllComputers, "scan-all-computers", false, "Scan all domain computers, not just those with SPNs")
+	rootCmd.Flags().BoolVarP(&scanAllComputers, "scan-all-computers", "A", false, "Scan all domain computers, not just those with SPNs")
 	rootCmd.Flags().BoolVar(&skipADNodeCreation, "skip-ad-nodes", false, "Skip creating User, Group, Computer nodes")
 	rootCmd.Flags().BoolVar(&includeNontraversableEdges, "include-nontraversable", false, "Include non-traversable edges")
 	rootCmd.Flags().BoolVar(&makeInterestingEdgesTraversable, "make-interesting-traversable", true, "Make interesting edges traversable")
@@ -149,40 +148,36 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolVar(&uploadResults, "upload-results", false, "Upload collection results to BloodHound after collection")
 
 	// Annotate flags with display groups for --help output
-	for _, name := range []string{"server", "user", "password", "nt-hash", "kerberos",
-		"krb5-configfile", "krb5-credcachefile", "krb5-keytabfile", "krb5-realm"} {
+	for _, name := range []string{"user", "password", "nt-hash", "ldap-user", "ldap-password",
+		"kerberos", "krb5-configfile", "krb5-credcachefile", "krb5-keytabfile", "krb5-realm"} {
 		rootCmd.PersistentFlags().SetAnnotation(name, "group", []string{"Authentication"}) //nolint:errcheck
 	}
-	for _, name := range []string{"domain", "dc-ip", "dns-resolver", "ldap-user", "ldap-password"} {
-		rootCmd.PersistentFlags().SetAnnotation(name, "group", []string{"Domain / LDAP"}) //nolint:errcheck
+	for _, name := range []string{"targets", "domain", "dc", "dns-resolver", "proxy"} {
+		rootCmd.PersistentFlags().SetAnnotation(name, "group", []string{"Collection"}) //nolint:errcheck
 	}
-	for _, name := range []string{"server-list-file", "server-list", "scan-all-computers", "skip-private-address"} {
-		rootCmd.Flags().SetAnnotation(name, "group", []string{"Target Selection (default query domain SPNs)"}) //nolint:errcheck
-	}
-	for _, name := range []string{"domain-enum-only", "skip-linked-servers", "collect-from-linked",
-		"linked-timeout", "skip-ad-nodes", "include-nontraversable", "make-interesting-traversable", "workers"} {
+	for _, name := range []string{"scan-all-computers", "skip-private-address",
+		"domain-enum-only", "skip-linked-servers", "collect-from-linked",
+		"skip-ad-nodes", "include-nontraversable", "make-interesting-traversable"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Collection"}) //nolint:errcheck
 	}
-	for _, name := range []string{"output-format", "temp-dir", "zip-dir", "file-size-limit",
-		"log-per-target", "memory-threshold", "size-update-interval"} {
-		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output / Storage"}) //nolint:errcheck
+	for _, name := range []string{"linked-timeout", "workers", "file-size-limit",
+		"memory-threshold", "size-update-interval"} {
+		rootCmd.Flags().SetAnnotation(name, "group", []string{"Performance"}) //nolint:errcheck
+	}
+	for _, name := range []string{"output-format", "temp-dir", "zip-dir", "log-per-target"} {
+		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output"}) //nolint:errcheck
 	}
 	for _, name := range []string{"bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"BloodHound Upload"}) //nolint:errcheck
-	}
-	for _, name := range []string{"verbose", "debug", "proxy"} {
-		rootCmd.PersistentFlags().SetAnnotation(name, "group", []string{"Diagnostics"}) //nolint:errcheck
 	}
 
 	// Shared grouped usage display used by both --help and error usage
 	groupOrder := []string{
 		"Authentication",
-		"Domain / LDAP",
-		"Target Selection",
 		"Collection",
-		"Output / Storage",
+		"Performance",
+		"Output",
 		"BloodHound Upload",
-		"Diagnostics",
 	}
 	printUsage := func(cmd *cobra.Command, out interface{ Write([]byte) (int, error) }) {
 		fmt.Fprintf(out, "Usage:\n  %s\n\n", cmd.UseLine())
@@ -280,11 +275,25 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--kerberos and --nt-hash are mutually exclusive")
 	}
 
+	// Smart server target detection: file path, comma-separated list, or single instance
+	serverInstance, serverListFile, serverList := classifyTarget(serverInstance)
+
+	// Auto-resolve domain controller from domain if not explicitly specified
+	if dc == "" && domain != "" {
+		if _, addrs, srvErr := net.DefaultResolver.LookupSRV(context.Background(), "ldap", "tcp", domain); srvErr == nil && len(addrs) > 0 {
+			dc = strings.TrimSuffix(addrs[0].Target, ".")
+			logger.Info("Auto-resolved domain controller via SRV", "dc", dc)
+		} else if ips, lookupErr := net.DefaultResolver.LookupHost(context.Background(), domain); lookupErr == nil && len(ips) > 0 {
+			dc = domain
+			logger.Info("Auto-resolved domain controller from domain name", "dc", dc)
+		}
+	}
+
 	// Configure DNS resolver if specified
-	// If --dc-ip is specified but --dns-resolver is not, use dc-ip as the resolver
+	// If --dc is specified but --dns-resolver is not, use dc as the resolver
 	resolver := dnsResolver
-	if resolver == "" && dcIP != "" {
-		resolver = dcIP
+	if resolver == "" && dc != "" {
+		resolver = dc
 	}
 
 	if resolver != "" {
@@ -358,7 +367,7 @@ func run(cmd *cobra.Command, args []string) error {
 		Krb5KeytabFile:                  krb5KeytabFile,
 		Krb5Realm:                       krb5Realm,
 		Domain:                          strings.ToUpper(domain),
-		DCIP:                            dcIP,
+		DC:                              dc,
 		DNSResolver:                     dnsResolver,
 		LDAPUser:                        effectiveLDAPUser,
 		LDAPPassword:                    effectiveLDAPPassword,
@@ -395,7 +404,7 @@ func run(cmd *cobra.Command, args []string) error {
 		logger.Info("SOCKS5 proxy configured", "addr", proxyAddr)
 		logger.Info("SQL Browser (UDP) resolution is not supported through SOCKS5. Named instances must include an explicit port (e.g., host\\instance:1433).")
 		if resolver == "" {
-			logger.Warn("No DNS resolver specified. DNS will resolve locally, not through the proxy. Consider using --dns-resolver or --dc-ip for remote DNS resolution.")
+			logger.Warn("No DNS resolver specified. DNS will resolve locally, not through the proxy. Consider using --dns-resolver or --dc for remote DNS resolution.")
 		}
 	}
 
@@ -405,4 +414,22 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return c.Run()
+}
+
+// classifyTarget determines how to interpret the -t/--targets value.
+// Returns (serverInstance, serverListFile, serverList).
+func classifyTarget(target string) (string, string, string) {
+	if target == "" {
+		return "", "", ""
+	}
+	// If it's an existing file, treat as server list file
+	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		return "", target, ""
+	}
+	// If it contains commas, treat as comma-separated list
+	if strings.Contains(target, ",") {
+		return "", "", target
+	}
+	// Otherwise it's a single server instance (host, host:port, host\instance, SPN)
+	return target, "", ""
 }

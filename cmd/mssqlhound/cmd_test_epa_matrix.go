@@ -73,8 +73,8 @@ func runTestEPAMatrix(cmd *cobra.Command, args []string) error {
 
 	// Configure DNS resolver (same logic as root command)
 	resolver := dnsResolver
-	if resolver == "" && dcIP != "" {
-		resolver = dcIP
+	if resolver == "" && dc != "" {
+		resolver = dc
 	}
 	if resolver != "" {
 		logger.Info("Using DNS resolver", "resolver", resolver)

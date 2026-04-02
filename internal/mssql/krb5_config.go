@@ -1,5 +1,5 @@
 // Package mssql - Kerberos configuration helpers.
-// Auto-generates a minimal krb5.conf when --domain and --dc-ip are provided
+// Auto-generates a minimal krb5.conf when --domain and --dc are provided
 // but no explicit krb5.conf path is given. This avoids requiring users to
 // manually create /etc/krb5.conf on systems where it doesn't exist.
 package mssql
