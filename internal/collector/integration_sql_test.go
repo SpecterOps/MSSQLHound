@@ -198,6 +198,20 @@ CLOSE login_cursor;
 DEALLOCATE login_cursor;
 GO
 
+-- Drop BUILTIN\Administrators login only if we created it during setup
+IF EXISTS (SELECT * FROM sys.extended_properties WHERE name = N'MSSQLHound_CreatedBuiltinAdmins')
+BEGIN
+    BEGIN TRY
+        DROP LOGIN [BUILTIN\Administrators];
+        PRINT 'Dropped login: BUILTIN\Administrators';
+    END TRY
+    BEGIN CATCH
+        PRINT 'Could not drop login: BUILTIN\Administrators - ' + ERROR_MESSAGE();
+    END CATCH
+    EXEC sp_dropextendedproperty @name = N'MSSQLHound_CreatedBuiltinAdmins';
+END
+GO
+
 -- Drop credentials
 IF EXISTS (SELECT * FROM sys.credentials WHERE name LIKE 'EdgeTest_%')
 BEGIN
@@ -1678,14 +1692,14 @@ IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'MAYYHEM\EdgeTes
     CREATE LOGIN [MAYYHEM\EdgeTestNoConnect] FROM WINDOWS;
 DENY CONNECT SQL TO [MAYYHEM\EdgeTestNoConnect];
 
--- Create local group login (best-effort: BUILTIN groups may not exist in CI/Linux environments)
-BEGIN TRY
-    IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'BUILTIN\Remote Desktop Users')
-        CREATE LOGIN [BUILTIN\Remote Desktop Users] FROM WINDOWS;
-END TRY
-BEGIN CATCH
-    PRINT 'Skipping BUILTIN\Remote Desktop Users login (group not available): ' + ERROR_MESSAGE();
-END CATCH;
+-- Create BUILTIN\Administrators login if it doesn't already exist.
+-- Track whether we created it so cleanup knows to drop it.
+IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'BUILTIN\Administrators')
+BEGIN
+    CREATE LOGIN [BUILTIN\Administrators] FROM WINDOWS;
+    -- Mark that we created this login (cleanup checks for this)
+    EXEC sp_addextendedproperty @name = N'MSSQLHound_CreatedBuiltinAdmins', @value = N'1';
+END
 
 -- Create SQL login (negative test - not a domain account)
 CREATE LOGIN [HasLoginTest_SQLLogin] WITH PASSWORD = 'EdgeTestP@ss123!';

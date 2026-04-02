@@ -478,7 +478,7 @@ var hasLoginTestCases = []edgeTestCase{
 	{EdgeType: "MSSQL_HasLogin", Description: "Second domain user has SQL login", SourcePattern: "S-1-5-21*", TargetPattern: "*\\EdgeTestDomainUser2@*"},
 	{EdgeType: "MSSQL_HasLogin", Description: "Domain group has SQL login", SourcePattern: "S-1-5-21*", TargetPattern: "*\\EdgeTestDomainGroup@*"},
 	{EdgeType: "MSSQL_HasLogin", Description: "Computer account has SQL login", SourcePattern: "S-1-5-21-*", TargetPattern: "*\\TestComputer$@*"},
-	{EdgeType: "MSSQL_HasLogin", Description: "Local group has SQL login", SourcePattern: "*-S-1-5-32-555", TargetPattern: "BUILTIN\\Remote Desktop Users@*"},
+	{EdgeType: "MSSQL_HasLogin", Description: "Local group has SQL login", SourcePattern: "*-S-1-5-32-544", TargetPattern: "BUILTIN\\Administrators@*"},
 	{EdgeType: "MSSQL_HasLogin", Description: "Disabled login does not create edge", SourcePattern: "S-1-5-21-*", TargetPattern: "*\\EdgeTestDisabledUser@*", Negative: true, Reason: "Login is disabled"},
 	{EdgeType: "MSSQL_HasLogin", Description: "Login with CONNECT SQL denied does not create edge", SourcePattern: "S-1-5-21-*", TargetPattern: "*\\EdgeTestNoConnect@*", Negative: true, Reason: "CONNECT SQL permission is denied"},
 	{EdgeType: "MSSQL_HasLogin", Description: "SQL login does not create HasLogin edge", SourcePattern: "*", TargetPattern: "HasLoginTest_SQLLogin@*", Negative: true, Reason: "SQL logins don't create HasLogin edges (only Windows logins)"},

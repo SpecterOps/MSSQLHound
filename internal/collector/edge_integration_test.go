@@ -355,6 +355,23 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 		})
 	}
 
+	// Print summary of failing tests at the very end for easy identification
+	var failedNames []string
+	for _, r := range run.Results {
+		if !r.Passed {
+			failedNames = append(failedNames, fmt.Sprintf("%s/%s", r.TestCase.EdgeType, r.TestCase.Description))
+		}
+	}
+	if len(failedNames) > 0 {
+		t.Logf("\n========================================")
+		t.Logf("FAILING TESTS (%d):", len(failedNames))
+		t.Logf("========================================")
+		for _, name := range failedNames {
+			t.Logf("  FAIL: %s", name)
+		}
+		t.Logf("========================================")
+	}
+
 	return run
 }
 
