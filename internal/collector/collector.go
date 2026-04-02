@@ -1311,7 +1311,7 @@ connected:
 
 	// Warn if no service account could be resolved by any method
 	if len(serverInfo.ServiceAccounts) == 0 {
-		log.Warn("Could not determine service account (DMV, registry, and SPN lookup all failed)")
+		log.Warn("Could not determine service account (sys.dm_server_services, registry, and SPN lookup all failed)")
 	}
 
 	// Create a shared AD client for all LDAP resolution calls within this server.

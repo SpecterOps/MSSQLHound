@@ -237,10 +237,15 @@ All queries are **read-only**. No data is written to any target server.
 
 ### Service Accounts
 
-| Query | Purpose |
-|-------|---------|
-| `SELECT ... FROM sys.dm_server_services` | Discover SQL Server service accounts (SQL 2008 R2+) |
-| `EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'SYSTEM\CurrentControlSet\Services\...', N'ObjectName'` | Fallback: read service account from registry |
+MSSQLHound uses a three-tier resolution strategy to identify the domain account running the SQL Server service:
+
+| # | Method | Query / Action | Works On | Conditions |
+|---|--------|----------------|----------|------------|
+| 1 | `sys.dm_server_services` | `SELECT servicename, service_account, startup_type_desc FROM sys.dm_server_services WHERE servicename LIKE 'SQL Server%' AND servicename NOT LIKE 'SQL Server Agent%'` | Windows | SQL 2008 R2+. On Linux this view typically returns only the Agent row, so no engine service account is found. |
+| 2 | Registry | `EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'SYSTEM\CurrentControlSet\Services\...', N'ObjectName'` | Windows | Fallback when `sys.dm_server_services` returns no rows or the user lacks permission. Not available on Linux. |
+| 3 | AD SPN lookup | LDAP search for `(servicePrincipalName=MSSQLSvc/<host>*)` | Windows & Linux | Fallback when both SQL query methods fail. Resolves the service account from the AD object that owns the MSSQLSvc SPN for the target host. Requires LDAP connectivity to a domain controller. |
+
+If all three methods fail, a warning is logged: `Could not determine service account (sys.dm_server_services, registry, and SPN lookup all failed)`.
 
 ### Encryption and EPA Settings
 
