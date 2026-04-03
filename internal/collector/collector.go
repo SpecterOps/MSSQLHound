@@ -87,8 +87,9 @@ type Config struct {
 	BloodHoundURL string // BloodHound CE instance URL
 	TokenID       string // API token ID
 	TokenKey      string // API token key
-	UploadSchema  bool   // Upload schema definitions (SCHEMA.json)
-	UploadResults bool   // Upload results after collection
+	UploadSchema   bool // Upload schema definitions (SCHEMA.json)
+	UploadResults  bool // Upload results after collection
+	SkipCollection bool // Skip data collection (upload-only mode)
 }
 
 // Collector handles the data collection process
@@ -259,89 +260,94 @@ func (c *Collector) newMSSQLClient(serverInstance, userID, password string, log 
 func (c *Collector) Run() error {
 	runStart := time.Now()
 
-	// Create proxy dialer if configured
-	if c.config.ProxyAddr != "" {
-		pd, err := proxydialer.New(c.config.ProxyAddr)
-		if err != nil {
-			return fmt.Errorf("failed to create proxy dialer: %w", err)
-		}
-		c.proxyDialer = pd
-	}
-
 	// Setup temp directory
 	if err := c.setupTempDir(); err != nil {
 		return fmt.Errorf("failed to setup temp directory: %w", err)
 	}
 	c.config.Logger.Info("Temporary output directory", "path", c.tempDir)
 
-	// Build list of servers to process
-	if err := c.buildServerList(); err != nil {
-		return fmt.Errorf("failed to build server list: %w", err)
-	}
+	var zipPath string
 
-	if len(c.serversToProcess) == 0 {
-		return fmt.Errorf("no servers to process")
-	}
-
-	c.config.Logger.Info("Processing SQL Servers", "count", len(c.serversToProcess))
-	c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Memory usage", "usage", c.getMemoryUsage())
-
-	// Track all processed servers to avoid duplicates
-	processedServers := make(map[string]bool)
-
-	// Process servers (concurrently if workers > 0)
-	if c.config.Workers > 0 {
-		c.processServersConcurrently()
-		// Mark all initial servers as processed
-		for _, server := range c.serversToProcess {
-			processedServers[strings.ToLower(server.Hostname)] = true
+	if !c.config.SkipCollection {
+		// Create proxy dialer if configured
+		if c.config.ProxyAddr != "" {
+			pd, err := proxydialer.New(c.config.ProxyAddr)
+			if err != nil {
+				return fmt.Errorf("failed to create proxy dialer: %w", err)
+			}
+			c.proxyDialer = pd
 		}
-	} else {
-		// Sequential processing
-		for i, server := range c.serversToProcess {
-			log := c.config.Logger.With("target", server.ConnectionString)
-			log.Info("Processing server", "progress", fmt.Sprintf("%d/%d", i+1, len(c.serversToProcess)))
-			processedServers[strings.ToLower(server.Hostname)] = true
 
-			if err := c.processServer(server); err != nil {
-				log.Warn("Failed to process server", "error", err)
-				// Continue with other servers
+		// Build list of servers to process
+		if err := c.buildServerList(); err != nil {
+			return fmt.Errorf("failed to build server list: %w", err)
+		}
+
+		if len(c.serversToProcess) == 0 {
+			return fmt.Errorf("no servers to process")
+		}
+
+		c.config.Logger.Info("Processing SQL Servers", "count", len(c.serversToProcess))
+		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Memory usage", "usage", c.getMemoryUsage())
+
+		// Track all processed servers to avoid duplicates
+		processedServers := make(map[string]bool)
+
+		// Process servers (concurrently if workers > 0)
+		if c.config.Workers > 0 {
+			c.processServersConcurrently()
+			// Mark all initial servers as processed
+			for _, server := range c.serversToProcess {
+				processedServers[strings.ToLower(server.Hostname)] = true
+			}
+		} else {
+			// Sequential processing
+			for i, server := range c.serversToProcess {
+				log := c.config.Logger.With("target", server.ConnectionString)
+				log.Info("Processing server", "progress", fmt.Sprintf("%d/%d", i+1, len(c.serversToProcess)))
+				processedServers[strings.ToLower(server.Hostname)] = true
+
+				if err := c.processServer(server); err != nil {
+					log.Warn("Failed to process server", "error", err)
+					// Continue with other servers
+				}
 			}
 		}
-	}
 
-	// Process linked servers recursively if enabled
-	if c.config.CollectFromLinkedServers {
-		c.processLinkedServersQueue(processedServers)
-	}
-
-	// Write accumulated AD nodes to separate files (computers.json, users.json, groups.json)
-	if !c.config.SkipADNodeCreation {
-		if err := c.writeADFiles(); err != nil {
-			return fmt.Errorf("failed to write AD files: %w", err)
+		// Process linked servers recursively if enabled
+		if c.config.CollectFromLinkedServers {
+			c.processLinkedServersQueue(processedServers)
 		}
-	}
 
-	// Create zip file
-	var zipPath string
-	if len(c.outputFiles) > 0 {
-		var err error
-		zipPath, err = c.createZipFile()
-		if err != nil {
-			return fmt.Errorf("failed to create zip file: %w", err)
+		// Write accumulated AD nodes to separate files (computers.json, users.json, groups.json)
+		if !c.config.SkipADNodeCreation {
+			if err := c.writeADFiles(); err != nil {
+				return fmt.Errorf("failed to write AD files: %w", err)
+			}
 		}
-		c.config.Logger.Info("Output written", "path", zipPath)
+
+		// Create zip file
+		if len(c.outputFiles) > 0 {
+			var err error
+			zipPath, err = c.createZipFile()
+			if err != nil {
+				return fmt.Errorf("failed to create zip file: %w", err)
+			}
+			c.config.Logger.Info("Output written", "path", zipPath)
+		} else {
+			c.config.Logger.Info("No data collected - no output file created")
+		}
+
+		// Create separate zip for per-target log files
+		if c.config.LogPerTarget && len(c.logFiles) > 0 {
+			logsZipPath, err := c.createLogsZipFile()
+			if err != nil {
+				return fmt.Errorf("failed to create logs zip file: %w", err)
+			}
+			c.config.Logger.Info("Per-target logs written", "path", logsZipPath)
+		}
 	} else {
-		c.config.Logger.Info("No data collected - no output file created")
-	}
-
-	// Create separate zip for per-target log files
-	if c.config.LogPerTarget && len(c.logFiles) > 0 {
-		logsZipPath, err := c.createLogsZipFile()
-		if err != nil {
-			return fmt.Errorf("failed to create logs zip file: %w", err)
-		}
-		c.config.Logger.Info("Per-target logs written", "path", logsZipPath)
+		c.config.Logger.Info("Skipping collection (--skip-collection)")
 	}
 
 	// Upload to BloodHound CE if configured
@@ -6257,19 +6263,15 @@ func (c *Collector) uploadToBloodHound(zipPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	// Upload schema (SCHEMA.json) if requested — this registers custom node/edge
-	// kinds with BloodHound CE, separate from the results zip.
+	// Upload schema if requested — registers custom node/edge kinds with
+	// BloodHound CE via PUT /api/v2/extensions.
 	if c.config.UploadSchema {
 		c.config.Logger.Info("Uploading schema to BloodHound...")
-		schemaPath := filepath.Join(c.tempDir, "SCHEMA.json")
-		if err := os.WriteFile(schemaPath, bloodhound.SeedDataJSON, 0o644); err != nil {
-			return fmt.Errorf("failed to write schema file: %w", err)
+		c.config.Logger.Debug("Schema PUT body", "body", string(bloodhound.SchemaJSON))
+		if err := u.Client.UploadSchema(ctx, bloodhound.SchemaJSON); err != nil {
+			return fmt.Errorf("schema upload failed: %w", err)
 		}
-
-		summary := u.UploadFiles(ctx, []string{schemaPath})
-		if summary.FilesFailed > 0 {
-			return fmt.Errorf("schema upload failed")
-		}
+		c.config.Logger.Info("Schema uploaded successfully")
 	}
 
 	// Upload results zip

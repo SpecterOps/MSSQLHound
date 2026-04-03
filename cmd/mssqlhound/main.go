@@ -67,6 +67,7 @@ var (
 	tokenKey         string
 	uploadSchema     bool
 	uploadResults    bool
+	skipCollection   bool
 )
 
 var (
@@ -142,12 +143,13 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().IntVarP(&workers, "workers", "w", 0, "Number of concurrent workers (0 = sequential processing)")
 
 	// BloodHound upload flags (uses local DNS, bypasses --proxy)
-	rootCmd.Flags().StringVarP(&bloodhoundUpload, "bloodhound", "B", "", "Upload to BloodHound CE: <token-id>:<token_key>@<bloodhound_url> (uploads schema + results)")
+	rootCmd.Flags().StringVarP(&bloodhoundUpload, "bloodhound", "B", "", "BloodHound CE credentials: <token-id>:<token_key>@<bloodhound_url> (requires --upload-schema and/or --upload-results)")
 	rootCmd.Flags().StringVar(&bloodhoundURL, "bloodhound-url", "", "BloodHound CE instance URL, uses local DNS (env: BLOODHOUND_URL)")
 	rootCmd.Flags().StringVar(&tokenID, "token-id", "", "BloodHound API token ID (env: BLOODHOUND_TOKEN_ID)")
 	rootCmd.Flags().StringVar(&tokenKey, "token-key", "", "BloodHound API token key (env: BLOODHOUND_TOKEN_KEY)")
-	rootCmd.Flags().BoolVar(&uploadSchema, "upload-schema", false, "Upload schema definitions (SCHEMA.json) to BloodHound")
+	rootCmd.Flags().BoolVar(&uploadSchema, "upload-schema", false, "Upload schema definitions to BloodHound (PUT /api/v2/extensions)")
 	rootCmd.Flags().BoolVar(&uploadResults, "upload-results", false, "Upload collection results to BloodHound after collection")
+	rootCmd.Flags().BoolVar(&skipCollection, "skip-collection", false, "Skip data collection (use with --upload-schema to only upload schema)")
 
 	// Annotate flags with display groups for --help output
 	for _, name := range []string{"user", "password", "nt-hash", "ldap-user", "ldap-password",
@@ -169,7 +171,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	for _, name := range []string{"output-format", "temp-dir", "zip-dir", "log-per-target"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output"}) //nolint:errcheck
 	}
-	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema"} {
+	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema", "skip-collection"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"BloodHound Upload"}) //nolint:errcheck
 	}
 
@@ -367,8 +369,6 @@ func run(cmd *cobra.Command, args []string) error {
 		tokenID = credentials[:colonIdx]
 		tokenKey = credentials[colonIdx+1:]
 		bloodhoundURL = url
-		uploadSchema = true
-		uploadResults = true
 	}
 
 	// Apply environment variable defaults for BloodHound upload options
@@ -380,6 +380,11 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	if tokenKey == "" {
 		tokenKey = os.Getenv("BLOODHOUND_TOKEN_KEY")
+	}
+
+	// Validate that at least one upload action is specified when credentials are provided
+	if bloodhoundURL != "" && !uploadSchema && !uploadResults {
+		return fmt.Errorf("--upload-schema and/or --upload-results must be specified with BloodHound credentials")
 	}
 
 	// Build configuration from flags
@@ -427,6 +432,7 @@ func run(cmd *cobra.Command, args []string) error {
 		TokenKey:                        tokenKey,
 		UploadSchema:                    uploadSchema,
 		UploadResults:                   uploadResults,
+		SkipCollection:                  skipCollection,
 	}
 
 	if proxyAddr != "" {

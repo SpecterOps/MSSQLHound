@@ -43,6 +43,9 @@ const (
 	// uploadFilePath is the BH CE API endpoint to upload a file to a job.
 	// The {job_id} placeholder must be replaced.
 	uploadFilePath = "/api/v2/file-upload/%s"
+
+	// extensionsPath is the BH CE API endpoint for custom schema/type definitions.
+	extensionsPath = "/api/v2/extensions"
 )
 
 // Client communicates with the BloodHound CE file upload API.
@@ -151,6 +154,22 @@ func (c *Client) UploadFile(ctx context.Context, jobID, filePath string) error {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		return c.readError(resp, fmt.Sprintf("upload file %s", filepath.Base(filePath)))
+	}
+
+	return nil
+}
+
+// UploadSchema uploads custom schema/type definitions to BloodHound CE.
+// PUT /api/v2/extensions
+func (c *Client) UploadSchema(ctx context.Context, data []byte) error {
+	resp, err := c.doRequest(ctx, http.MethodPut, extensionsPath, data, "application/json")
+	if err != nil {
+		return fmt.Errorf("failed to upload schema: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return c.readError(resp, "upload schema")
 	}
 
 	return nil

@@ -14,6 +14,9 @@ import (
 //go:embed seed_data.json
 var SeedDataJSON []byte
 
+//go:embed schema.json
+var SchemaJSON []byte
+
 // Node represents a BloodHound graph node
 type Node struct {
 	ID         string                 `json:"id"`
