@@ -27,8 +27,7 @@ func TestEdgeCreation(t *testing.T) {
 
 	// Create collector with minimal config
 	config := &Config{
-		TempDir:                    tmpDir,
-		IncludeNontraversableEdges: true,
+		TempDir: tmpDir,
 	}
 	c, _ := New(config)
 
@@ -710,9 +709,6 @@ func TestEdgeProperties(t *testing.T) {
 			if props["linuxAbuse"] == nil {
 				t.Error("Expected 'linuxAbuse' property to be set")
 			}
-			if props["traversable"] == nil {
-				t.Error("Expected 'traversable' property to be set")
-			}
 		})
 	}
 }
@@ -784,9 +780,7 @@ func TestOutputFormat(t *testing.T) {
 		Start: bloodhound.EdgeEndpoint{Value: "source-1"},
 		End:   bloodhound.EdgeEndpoint{Value: "target-1"},
 		Kind:  "MSSQL_Contains",
-		Properties: map[string]interface{}{
-			"traversable": true,
-		},
+		Properties: map[string]interface{}{},
 	}
 	if err := writer.WriteEdge(edge); err != nil {
 		t.Fatalf("Failed to write edge: %v", err)
@@ -847,9 +841,8 @@ func TestCoerceAndRelayEdge(t *testing.T) {
 
 	// Create collector with a domain specified (needed for CoerceAndRelay)
 	config := &Config{
-		TempDir:                    tmpDir,
-		Domain:                     "domain.com",
-		IncludeNontraversableEdges: true,
+		TempDir: tmpDir,
+		Domain:  "domain.com",
 	}
 	c, _ := New(config)
 
@@ -939,9 +932,6 @@ func TestLinkedAsAdminEdgeProperties(t *testing.T) {
 
 	props := bloodhound.GetEdgeProperties(bloodhound.EdgeKinds.LinkedAsAdmin, ctx)
 
-	if props["traversable"] != true {
-		t.Error("Expected LinkedAsAdmin to be traversable")
-	}
 	if props["general"] == nil || props["general"] == "" {
 		t.Error("Expected 'general' property to be set")
 	}
@@ -962,9 +952,6 @@ func TestCoerceAndRelayEdgeProperties(t *testing.T) {
 
 	props := bloodhound.GetEdgeProperties(bloodhound.EdgeKinds.CoerceAndRelayTo, ctx)
 
-	if props["traversable"] != true {
-		t.Error("Expected MSSQL_CoerceAndRelayToMSSQL to be traversable")
-	}
 	if props["general"] == nil || props["general"] == "" {
 		t.Error("Expected 'general' property to be set")
 	}

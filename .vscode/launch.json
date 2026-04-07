@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug MSSQLHound",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/mssqlhound",
+            "args": [
+                "-d", "mayyhem.com",
+                "-u", "domainadmin@mayyhem.com",
+                "--dc", "dc.mayyhem.com",
+                "-v",
+                "-B", "057e8a0c-2294-4908-acbe-8f0e61540bd7:4KVQGG2KCV5EweLh09BTVZyoVJDqIzpl3zZawOYYRm4BzRwi2YLvQA==@http://bloodhound.localhost:8080",
+                "-k",
+                "--upload-schema-only",
+                "--skip-collection"
+            ]
+        }
+    ]
+}

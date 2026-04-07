@@ -17,6 +17,43 @@ var SeedDataJSON []byte
 //go:embed schema.json
 var SchemaJSON []byte
 
+// PossibleEdgeKinds are edges that represent possible (not guaranteed) attack paths.
+// These are traversable by default but can be disabled with --disable-possible-edges.
+var PossibleEdgeKinds = []string{
+	EdgeKinds.LinkedTo,
+	EdgeKinds.IsTrustedBy,
+	EdgeKinds.ServiceAccountFor,
+	EdgeKinds.HasDBScopedCred,
+	EdgeKinds.HasMappedCred,
+	EdgeKinds.HasProxyCred,
+}
+
+// SchemaJSONWithDisabledPossibleEdges returns a copy of SchemaJSON with
+// the possible edges set to is_traversable: false.
+func SchemaJSONWithDisabledPossibleEdges() ([]byte, error) {
+	var schema map[string]interface{}
+	if err := json.Unmarshal(SchemaJSON, &schema); err != nil {
+		return nil, fmt.Errorf("failed to parse schema JSON: %w", err)
+	}
+
+	disabled := make(map[string]bool, len(PossibleEdgeKinds))
+	for _, k := range PossibleEdgeKinds {
+		disabled[k] = true
+	}
+
+	if rels, ok := schema["relationship_kinds"].([]interface{}); ok {
+		for _, r := range rels {
+			if rel, ok := r.(map[string]interface{}); ok {
+				if name, ok := rel["name"].(string); ok && disabled[name] {
+					rel["is_traversable"] = false
+				}
+			}
+		}
+	}
+
+	return json.MarshalIndent(schema, "", "  ")
+}
+
 // Node represents a BloodHound graph node
 type Node struct {
 	ID         string                 `json:"id"`

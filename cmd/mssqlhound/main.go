@@ -51,8 +51,8 @@ var (
 	skipPrivateAddress              bool
 	scanAllComputers                bool
 	skipADNodeCreation              bool
-	includeNontraversableEdges      bool
-	makeInterestingEdgesTraversable bool
+	disableNontraversableEdges      bool
+	disablePossibleEdges bool
 
 	linkedServerTimeout    int
 	memoryThresholdPercent int
@@ -60,13 +60,13 @@ var (
 	workers                int
 
 	// BloodHound upload options
-	bloodhoundUpload string // -B shorthand: <token-id>:<token_key>@<bloodhound_url>
-	bloodhoundURL    string
-	tokenID          string
-	tokenKey         string
-	uploadSchema     bool
-	uploadResults    bool
-	skipCollection   bool
+	bloodhoundUpload  string // -B shorthand: <token-id>:<token_key>@<bloodhound_url>
+	bloodhoundURL     string
+	tokenID           string
+	tokenKey          string
+	uploadSchemaOnly  bool
+	uploadResultsOnly bool
+	skipCollection    bool
 )
 
 var (
@@ -133,21 +133,21 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolVar(&skipPrivateAddress, "skip-private-address", false, "Skip private IP check when resolving domains")
 	rootCmd.Flags().BoolVarP(&scanAllComputers, "scan-all-computers", "A", false, "Scan all domain computers, not just those with SPNs")
 	rootCmd.Flags().BoolVar(&skipADNodeCreation, "skip-ad-nodes", false, "Skip creating User, Group, Computer nodes")
-	rootCmd.Flags().BoolVar(&includeNontraversableEdges, "include-nontraversable", false, "Include non-traversable edges")
-	rootCmd.Flags().BoolVar(&makeInterestingEdgesTraversable, "make-interesting-traversable", true, "Make interesting edges traversable")
+	rootCmd.Flags().BoolVar(&disableNontraversableEdges, "disable-nontraversable-edges", false, "Disable non-traversable edges")
+	rootCmd.Flags().BoolVar(&disablePossibleEdges, "disable-possible-edges", false, "Disable possible edges (makes them non-traversable in schema and edge data)")
 	rootCmd.Flags().IntVar(&linkedServerTimeout, "linked-timeout", 300, "Linked server enumeration timeout (seconds)")
 	rootCmd.Flags().IntVar(&memoryThresholdPercent, "memory-threshold", 90, "Stop when memory exceeds this percentage")
 	rootCmd.Flags().IntVar(&fileSizeUpdateInterval, "size-update-interval", 5, "Interval for file size updates (seconds)")
 	rootCmd.Flags().IntVarP(&workers, "workers", "w", 0, "Number of concurrent workers (0 = sequential processing)")
 
 	// BloodHound upload flags (uses local DNS, bypasses --proxy)
-	rootCmd.Flags().StringVarP(&bloodhoundUpload, "bloodhound", "B", "", "BloodHound CE credentials: <token-id>:<token_key>@<bloodhound_url> (requires --upload-schema and/or --upload-results)")
+	rootCmd.Flags().StringVarP(&bloodhoundUpload, "bloodhound", "B", "", "BloodHound CE credentials: <token-id>:<token_key>@<bloodhound_url> (uploads both schema and results by default)")
 	rootCmd.Flags().StringVar(&bloodhoundURL, "bloodhound-url", "", "BloodHound CE instance URL, uses local DNS (env: BLOODHOUND_URL)")
 	rootCmd.Flags().StringVar(&tokenID, "token-id", "", "BloodHound API token ID (env: BLOODHOUND_TOKEN_ID)")
 	rootCmd.Flags().StringVar(&tokenKey, "token-key", "", "BloodHound API token key (env: BLOODHOUND_TOKEN_KEY)")
-	rootCmd.Flags().BoolVar(&uploadSchema, "upload-schema", false, "Upload schema definitions to BloodHound (PUT /api/v2/extensions)")
-	rootCmd.Flags().BoolVar(&uploadResults, "upload-results", false, "Upload collection results to BloodHound after collection")
-	rootCmd.Flags().BoolVar(&skipCollection, "skip-collection", false, "Skip data collection (use with --upload-schema to only upload schema)")
+	rootCmd.Flags().BoolVar(&uploadSchemaOnly, "upload-schema-only", false, "Only upload schema definitions to BloodHound (skip results upload)")
+	rootCmd.Flags().BoolVar(&uploadResultsOnly, "upload-results-only", false, "Only upload collection results to BloodHound (skip schema upload)")
+	rootCmd.Flags().BoolVar(&skipCollection, "skip-collection", false, "Skip data collection (use with -B to only upload schema)")
 
 	// Annotate flags with display groups for --help output
 	for _, name := range []string{"user", "password", "nt-hash", "ldap-user", "ldap-password",
@@ -159,7 +159,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	}
 	for _, name := range []string{"scan-all-computers", "skip-private-address",
 		"domain-enum-only", "skip-linked-servers", "collect-from-linked",
-		"skip-ad-nodes", "include-nontraversable", "make-interesting-traversable"} {
+		"skip-ad-nodes", "include-nontraversable", "disable-possible-edges"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Collection"}) //nolint:errcheck
 	}
 	for _, name := range []string{"linked-timeout", "workers", "file-size-limit",
@@ -169,7 +169,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	for _, name := range []string{"temp-dir", "zip-dir", "log-per-target"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output"}) //nolint:errcheck
 	}
-	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema", "skip-collection"} {
+	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results-only", "upload-schema-only", "skip-collection"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"BloodHound Upload"}) //nolint:errcheck
 	}
 
@@ -380,9 +380,18 @@ func run(cmd *cobra.Command, args []string) error {
 		tokenKey = os.Getenv("BLOODHOUND_TOKEN_KEY")
 	}
 
-	// Validate that at least one upload action is specified when credentials are provided
-	if bloodhoundURL != "" && !uploadSchema && !uploadResults {
-		return fmt.Errorf("--upload-schema and/or --upload-results must be specified with BloodHound credentials")
+	// Validate mutually exclusive upload-only flags
+	if uploadSchemaOnly && uploadResultsOnly {
+		return fmt.Errorf("--upload-schema-only and --upload-results-only are mutually exclusive")
+	}
+
+	// Determine what to upload: default is both schema and results
+	uploadSchema := true
+	uploadResults := true
+	if uploadSchemaOnly {
+		uploadResults = false
+	} else if uploadResultsOnly {
+		uploadSchema = false
 	}
 
 	// Build configuration from flags
@@ -414,8 +423,8 @@ func run(cmd *cobra.Command, args []string) error {
 		SkipPrivateAddress:              skipPrivateAddress,
 		ScanAllComputers:                scanAllComputers,
 		SkipADNodeCreation:              skipADNodeCreation,
-		IncludeNontraversableEdges:      includeNontraversableEdges,
-		MakeInterestingEdgesTraversable: makeInterestingEdgesTraversable,
+		DisableNontraversableEdges:      disableNontraversableEdges,
+		DisablePossibleEdges: disablePossibleEdges,
 		LinkedServerTimeout:             linkedServerTimeout,
 		MemoryThresholdPercent:          memoryThresholdPercent,
 		FileSizeUpdateInterval:          fileSizeUpdateInterval,

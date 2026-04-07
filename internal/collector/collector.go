@@ -63,8 +63,8 @@ type Config struct {
 	SkipPrivateAddress              bool
 	ScanAllComputers                bool
 	SkipADNodeCreation              bool
-	IncludeNontraversableEdges      bool
-	MakeInterestingEdgesTraversable bool
+	DisableNontraversableEdges bool
+	DisablePossibleEdges       bool
 
 	// Timeouts and limits
 	LinkedServerTimeout    int
@@ -6237,8 +6237,7 @@ func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWr
 }
 
 // createEdge creates a BloodHound edge with properties.
-// Returns nil if the edge is non-traversable and IncludeNontraversableEdges is false,
-// matching PowerShell's Add-Edge behavior which drops non-traversable edges entirely.
+// Returns nil if the edge is non-traversable and DisableNontraversableEdges is true.
 func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.EdgeContext) *bloodhound.Edge {
 	// Auto-set SourceID and TargetID from parameters so callers don't need to
 	if ctx != nil {
@@ -6247,8 +6246,11 @@ func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.
 	}
 	props := bloodhound.GetEdgeProperties(kind, ctx)
 
-	// Apply MakeInterestingEdgesTraversable overrides before filtering
-	if c.config.MakeInterestingEdgesTraversable {
+	// Determine traversability from schema-aligned function
+	traversable := bloodhound.IsTraversableEdge(kind)
+
+	// Apply --disable-possible-edges: make possible edges non-traversable
+	if c.config.DisablePossibleEdges {
 		switch kind {
 		case bloodhound.EdgeKinds.LinkedTo,
 			bloodhound.EdgeKinds.IsTrustedBy,
@@ -6256,17 +6258,13 @@ func (c *Collector) createEdge(sourceID, targetID, kind string, ctx *bloodhound.
 			bloodhound.EdgeKinds.HasDBScopedCred,
 			bloodhound.EdgeKinds.HasMappedCred,
 			bloodhound.EdgeKinds.HasProxyCred:
-			props["traversable"] = true
+			traversable = false
 		}
 	}
 
-	// Drop non-traversable edges when IncludeNontraversableEdges is false
-	// This matches PowerShell's Add-Edge behavior which returns early (drops the edge)
-	// when the edge is non-traversable and IncludeNontraversableEdges is disabled
-	if !c.config.IncludeNontraversableEdges {
-		if traversable, ok := props["traversable"].(bool); ok && !traversable {
-			return nil
-		}
+	// Drop non-traversable edges when DisableNontraversableEdges is true
+	if c.config.DisableNontraversableEdges && !traversable {
+		return nil
 	}
 
 	return &bloodhound.Edge{
@@ -6362,8 +6360,16 @@ func (c *Collector) uploadToBloodHound(zipPath string) error {
 	// BloodHound CE via PUT /api/v2/extensions.
 	if c.config.UploadSchema {
 		c.config.Logger.Info("Uploading schema to BloodHound...")
-		c.config.Logger.Debug("Schema PUT body", "body", string(bloodhound.SchemaJSON))
-		if err := u.Client.UploadSchema(ctx, bloodhound.SchemaJSON); err != nil {
+		schemaData := bloodhound.SchemaJSON
+		if c.config.DisablePossibleEdges {
+			modified, err := bloodhound.SchemaJSONWithDisabledPossibleEdges()
+			if err != nil {
+				return fmt.Errorf("failed to modify schema for disabled possible edges: %w", err)
+			}
+			schemaData = modified
+		}
+		c.config.Logger.Debug("Schema PUT body", "body", string(schemaData))
+		if err := u.Client.UploadSchema(ctx, schemaData); err != nil {
 			return fmt.Errorf("schema upload failed: %w", err)
 		}
 		c.config.Logger.Info("Schema uploaded successfully")

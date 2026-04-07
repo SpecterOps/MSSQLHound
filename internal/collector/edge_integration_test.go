@@ -293,7 +293,7 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 		LDAPPassword:              cfg.LDAPPassword,
 		TempDir:                   tempDir,
 		Verbose:                   true,
-		IncludeNontraversableEdges: includeNontraversable,
+		DisableNontraversableEdges: !includeNontraversable,
 		SkipLinkedServerEnum:      false,
 	}
 

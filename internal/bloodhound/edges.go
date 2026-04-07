@@ -8,7 +8,6 @@ import (
 
 // EdgeProperties contains the documentation and metadata for an edge
 type EdgeProperties struct {
-	Traversable  bool   `json:"traversable"`
 	General      string `json:"general"`
 	WindowsAbuse string `json:"windowsAbuse"`
 	LinuxAbuse   string `json:"linuxAbuse"`
@@ -59,13 +58,11 @@ func GetEdgeProperties(kind string, ctx *EdgeContext) map[string]interface{} {
 	generator, ok := edgePropertyGenerators[kind]
 	if !ok {
 		// Default properties for unknown edge types
-		props["traversable"] = true
 		props["general"] = "Relationship exists between source and target."
 		return props
 	}
 
 	edgeProps := generator(ctx)
-	props["traversable"] = edgeProps.Traversable
 
 	// Only set non-empty string properties (matches PS1 Add-Edge filtering)
 	if edgeProps.General != "" {
@@ -110,17 +107,11 @@ func IsTraversableEdge(kind string) bool {
 		EdgeKinds.Connect,
 		EdgeKinds.ConnectAnyDatabase,
 		EdgeKinds.TakeOwnership,
-		EdgeKinds.HasDBScopedCred,
-		EdgeKinds.HasMappedCred,
-		EdgeKinds.HasProxyCred,
 		EdgeKinds.AlterDB,
 		EdgeKinds.AlterDBRole,
 		EdgeKinds.AlterServerRole,
 		EdgeKinds.ImpersonateDBUser,
-		EdgeKinds.ImpersonateLogin,
-		EdgeKinds.LinkedTo,
-		EdgeKinds.IsTrustedBy,
-		EdgeKinds.ServiceAccountFor:
+		EdgeKinds.ImpersonateLogin:
 		return false
 	default:
 		return true
@@ -132,7 +123,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.MemberOf: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The " + ctx.SourceType + " is a member of the " + ctx.TargetType + ". This membership grants all permissions associated with the target role to the source principal.",
 			WindowsAbuse: "When connected to the server/database as " + ctx.SourceName + ", you have all permissions granted to the " + ctx.TargetName + " role.",
 			LinuxAbuse:   "When connected to the server/database as " + ctx.SourceName + ", you have all permissions granted to the " + ctx.TargetName + " role.",
@@ -162,7 +152,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.IsMappedTo: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The server login " + ctx.SourceName + " is mapped to the " + ctx.DatabaseName + " database user " + ctx.TargetName + ".",
 			WindowsAbuse: "Connect as the login and use the database: USE " + ctx.DatabaseName + "; ",
 			LinuxAbuse:   "Connect as the login and use the database: USE " + ctx.DatabaseName + "; ",
@@ -173,7 +162,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.Contains: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The " + ctx.SourceType + " contains the " + ctx.TargetType + ". This is a structural relationship showing that the target exists within the scope of the source.",
 			WindowsAbuse: "This is a structural relationship and cannot be directly abused. Control of " + ctx.SourceType + " implies control of " + ctx.TargetType + ".",
 			LinuxAbuse:   "This is a structural relationship and cannot be directly abused. Control of " + ctx.SourceType + " implies control of " + ctx.TargetType + ".",
@@ -215,7 +203,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 			linuxAbuse = windowsAbuse
 		}
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The " + ctx.SourceType + " owns the " + ctx.TargetType + ". Ownership provides full control over the object, including the ability to grant permissions, change properties, and in most cases, impersonate or control access.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -228,7 +215,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ControlServer: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The CONTROL SERVER permission on a server allows the source " + ctx.SourceType + " to conduct any action in the instance of SQL Server that is not explicitly denied. An exception is for members of the sysadmin server role, in which case explicit denies are ignored.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"SELECT * FROM sys.sql_logins; -- dump hashes ",
@@ -244,7 +230,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ControlDB: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The CONTROL permission on a database grants the source " + ctx.SourceType + " all defined permissions on the database and its descendent objects. This includes the ability to impersonate any database user, add members to any role, change ownership of objects, and execute any action within the database. WARNING: This includes the ability to change application role passwords, which will break applications using those roles and cause an outage.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statements:\n" +
 				"USE " + ctx.TargetName + "; \n" +
@@ -300,7 +285,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 				"Log events are not generated for login impersonation by default."
 		}
 		return EdgeProperties{
-			Traversable:  false, // Non-traversable (matches PowerShell); MSSQL_ExecuteAs is the traversable counterpart
 			General:      "The IMPERSONATE permission on a securable object effectively grants the source " + ctx.SourceType + " the ability to impersonate the target object.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -313,7 +297,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ImpersonateAnyLogin: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The IMPERSONATE ANY LOGIN permission on the server object effectively grants the source " + ctx.SourceType + " the ability to impersonate any server login.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"EXECUTE AS LOGIN = 'sa' \n" +
@@ -355,7 +338,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 				"- https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/default-trace-enabled-server-configuration-option?view=sql-server-ver17"
 		}
 		return EdgeProperties{
-			Traversable:  true,
 			General:      general,
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -392,7 +374,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 				"- https://learn.microsoft.com/en-us/sql/relational-databases/security/auditing/sql-server-audit-database-engine?view=sql-server-ver16"
 		}
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The source " + ctx.SourceType + " can add members to this " + ctx.TargetType + ", granting the new member the permissions assigned to the role.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -444,7 +425,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 			// Other server-level types return empty strings
 		}
 		return EdgeProperties{
-			Traversable:  false,
 			General:      "The ALTER permission on a securable object allows the source " + ctx.SourceType + " to change properties, except ownership, of a particular securable object.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -532,7 +512,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 			}
 		}
 		return EdgeProperties{
-			Traversable:  false,
 			General:      "The CONTROL permission on a securable object effectively grants the source " + ctx.SourceType + " all defined permissions on the securable object and its descendent objects. CONTROL at a particular scope includes CONTROL on all securable objects under that scope (e.g., CONTROL on a database includes control of all permissions on the database as well as all permissions on all assemblies, schemas, and other objects within all schemas in the database).",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -558,7 +537,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 				"ALTER AUTHORIZATION ON ROLE::[" + ctx.TargetName + "] TO [user]; "
 		}
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The source " + ctx.SourceType + " can change the owner of this " + ctx.TargetType + " or descendent objects in its scope.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -572,7 +550,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.AlterAnyLogin: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
 			General:     "The ALTER ANY LOGIN permission on a server allows the source " + ctx.SourceType + " to change the password for any SQL login (as opposed to Windows login) that is not the fixed sa account. If the target has sysadmin or CONTROL SERVER, the principal making the change must also have sysadmin or CONTROL SERVER.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"ALTER LOGIN [login] WITH PASSWORD = 'password'; ",
@@ -587,7 +564,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.AlterAnyServerRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
 			General:     "The ALTER ANY SERVER ROLE permission allows the source " + ctx.SourceType + " to add members to any user-defined server role as well as add members to fixed server roles that the source " + ctx.SourceType + " is a member of.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"EXEC sp_addsrvrolemember @loginame = 'login', @rolename = 'role' ",
@@ -605,7 +581,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.LinkedTo: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false, // Base is non-traversable; MakeInterestingEdgesTraversable overrides to true
 			General:      "The source SQL Server has a linked server connection to the target SQL Server. The actual privileges available through this link depend on the authentication configuration and remote user mapping.",
 			WindowsAbuse: "Query the linked server: SELECT * FROM [LinkedServerName].[Database].[Schema].[Table]; or execute commands: EXEC ('sp_configure ''show advanced options'', 1; RECONFIGURE;') AT [LinkedServerName]; ",
 			LinuxAbuse:   "Query the linked server: SELECT * FROM [LinkedServerName].[Database].[Schema].[Table]; or execute commands: EXEC ('sp_configure ''show advanced options'', 1; RECONFIGURE;') AT [LinkedServerName]; ",
@@ -616,7 +591,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ExecuteAsOwner: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The source " + ctx.SourceType + " can escalate privileges to the server level by creating or modifying database objects (stored procedures, functions, or CLR assemblies) that use EXECUTE AS OWNER. Since the database is TRUSTWORTHY and owned by a highly privileged login, code executing as the owner will have those elevated server privileges.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statements:\n" +
 				"USE " + ctx.DatabaseName + "; \n" +
@@ -666,7 +640,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.IsTrustedBy: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false, // Base is non-traversable; MakeInterestingEdgesTraversable overrides to true
 			General:      "The database " + ctx.SourceName + " has the TRUSTWORTHY property set to ON. This means that SQL Server trusts this database, allowing code within it to execute with the privileges of the database owner at the server level.",
 			WindowsAbuse: "This relationship may allow privilege escalation when combined with the ability to execute code within the database if the owner has high privileges at the server level. See MSSQL_ExecuteAsOwner edges from this database for exploitation paths.",
 			LinuxAbuse:   "This relationship enables privilege escalation when combined with the ability to execute code within the database if the owner has high privileges at the server level. See MSSQL_ExecuteAsOwner edges from this database for exploitation paths.",
@@ -678,7 +651,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ServiceAccountFor: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false, // Base is non-traversable; MakeInterestingEdgesTraversable overrides to true
 			General:      "The " + ctx.SourceType + " is the service account running the SQL Server service for " + ctx.TargetName + ".",
 			WindowsAbuse: "Compromise of the service account grants access to the SQL Server process and potentially to stored credentials and data.",
 			LinuxAbuse:   "Compromise of the service account grants access to the SQL Server process and potentially to stored credentials and data.",
@@ -689,7 +661,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.HostFor: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The computer " + ctx.SourceName + " hosts the target SQL Server instance " + ctx.TargetName + ".",
 			WindowsAbuse: "With admin access to the host, you can access the SQL instance: \n" +
 				"If the SQL instance is running as a built-in account (Local System, Local Service, or Network Service), it can be accessed with a SYSTEM context with sqlcmd. \n" +
@@ -704,7 +675,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ExecuteOnHost: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "Control of a SQL Server instance allows xp_cmdshell or other OS command execution capabilities to be used to access the host computer in the context of the account running the SQL server.",
 			WindowsAbuse: "Enable and use xp_cmdshell: EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE; EXEC xp_cmdshell 'whoami'; ",
 			LinuxAbuse:   "Enable and use xp_cmdshell: EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE; EXEC xp_cmdshell 'whoami'; ",
@@ -715,7 +685,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.GrantAnyPermission: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The securityadmin fixed server role can grant any server-level permission to any login, including CONTROL SERVER. This effectively allows members to grant themselves or others full control of the SQL Server instance.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as a member of securityadmin (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statements:\n" +
 				"-- Grant CONTROL SERVER to yourself or another login \n" +
@@ -741,7 +710,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.GrantAnyDBPermission: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The db_securityadmin fixed database role db_securityadmin can create roles, manage role memberships, and grant all database permissions, effectively granting full database control.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as a member of db_securityadmin (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statements:\n" +
 				"USE " + ctx.TargetName + "; \n" +
@@ -795,7 +763,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 			linuxAbuse = "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using impacket mssqlclient.py or proxied Windows tooling such as sqlcmd, mssql-cli, or SQL Server Management Studio) and authenticate with valid credentials for a server login, then connect to the " + ctx.TargetName + " database by executing USE " + ctx.TargetName + "; GO; "
 		}
 		return EdgeProperties{
-			Traversable:  false,
 			General:      general,
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -819,7 +786,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 			linuxAbuse = "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using impacket mssqlclient.py or proxied Windows tooling such as sqlcmd, mssql-cli, or SQL Server Management Studio) and authenticate with valid credentials for a server login, then connect to the " + ctx.TargetName + " database by executing USE " + ctx.TargetName + "; GO; "
 		}
 		return EdgeProperties{
-			Traversable:  false,
 			General:      general,
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -833,7 +799,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.AlterAnyAppRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false,
 			General:      "WARNING: DO NOT execute this attack, as it will immediately break the application that relies on this application role to access this database and WILL cause an outage. The ALTER ANY APPLICATION ROLE permission on a database allows the source " + ctx.SourceType + " to change the password for an application role, activate the application role with the new password, and execute actions with the application role's permissions.",
 			WindowsAbuse: "WARNING: DO NOT execute this attack, as it will immediately break the application that relies on this application role to access this database and WILL cause an outage.",
 			LinuxAbuse:   "WARNING: DO NOT execute this attack, as it will immediately break the application that relies on this application role to access this database and WILL cause an outage.",
@@ -844,7 +809,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.AlterAnyDBRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
 			General:     "The ALTER ANY ROLE permission on a database allows the source " + ctx.SourceType + " to add members to any user-defined database role. Note that only members of the db_owner fixed database role can add members to fixed database roles.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"USE " + ctx.DatabaseName + ";\n" +
@@ -865,7 +829,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.HasDBScopedCred: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false,
 			General:      "The database contains a database-scoped credential that authenticates as the target domain account when accessing external resources, although there is no guarantee the credentials are currently valid. Unlike server-level credentials, these are contained within the database and portable with database backups.",
 			WindowsAbuse: "The credential could be crackable if it has a weak password and is used automatically when accessing external data sources from this database. Specific abuse for database-scoped credentials required further research.",
 			LinuxAbuse:   "The credential is used automatically when accessing external data sources from this database. Specific abuse for database-scoped credentials required further research.",
@@ -877,7 +840,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.HasMappedCred: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false,
 			General:      "This SQL login has a mapped credential that allows it to authenticate as the target domain account when accessing external resources outside of SQL Server, including over the network and at the host OS level. However, there is no guarantee the credentials are currently valid. SQL Server Agent must be running (could potentially be started via xp_cmdshell if service account has permission) and the login must have permission to add a credential proxy, grant the proxy access to a subsystem such as CmdExec or PowerShell, and add/start a job using the proxy to traverse this edge.",
 			WindowsAbuse: "The credential could be crackable if it has a weak password and is used automatically when the login accesses certain external resources",
 			LinuxAbuse: " -- SQL Server Agent must be running/started (or access box via xp_cmdshell first, then start, which requires admin)\n" +
@@ -931,7 +893,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.HasProxyCred: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
 			General:     "The SQL principal is authorized to use SQL Agent proxy '" + ctx.ProxyName + "' that runs job steps as " + ctx.CredentialIdentity + ". This proxy can be used with subsystems: " + ctx.Subsystems + ". There is no guarantee the credentials are currently valid.",
 			WindowsAbuse: "Create and execute a SQL Agent job using the proxy:\n" +
 				"-- Create job \n" +
@@ -973,7 +934,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ServiceAccountFor: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  false, // Base is non-traversable; MakeInterestingEdgesTraversable overrides to true
 			General:      "This domain account runs the SQL Server service.",
 			WindowsAbuse: "The service account context determines SQL Server's access to network resources and local system privileges.",
 			LinuxAbuse:   "The service account context determines SQL Server's access to system resources and file permissions.",
@@ -984,7 +944,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.HasLogin: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The domain account has a SQL Server login that is enabled and can connect to the SQL Server. This allows authentication to SQL Server using the account's credentials.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server and authenticate as " + ctx.TargetName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py)",
 			LinuxAbuse:   "Connect to the " + ctx.SQLServerName + " SQL server and authenticate as " + ctx.TargetName + " (e.g., using impacket mssqlclient.py or proxied Windows tooling such as sqlcmd, mssql-cli, or SQL Server Management Studio)",
@@ -996,7 +955,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.GetTGS: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The SQL Server service account can request Kerberos service tickets for domain accounts that have a login on this SQL Server.",
 			WindowsAbuse: "From a domain-joined machine as the service account (or with valid credentials):\n" +
 				"# List SPNs for the SQL Server to find target accounts: \n" +
@@ -1024,7 +982,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.GetAdminTGS: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The SQL Server service account can request Kerberos service tickets for domain accounts that have administrative privileges on this SQL Server.",
 			WindowsAbuse: "From a domain-joined machine as the service account (or with valid credentials):\n" +
 				"# List SPNs for the SQL Server to find target accounts: \n" +
@@ -1052,7 +1009,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.LinkedAsAdmin: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The source SQL Server has a linked server connection to the target with administrative privileges (sysadmin, securityadmin, CONTROL SERVER, or IMPERSONATE ANY LOGIN). This allows full control of the remote SQL Server including privilege escalation.",
 			WindowsAbuse: "Execute commands with admin privileges on the linked server:\n" +
 				"-- Enable xp_cmdshell on remote server \n" +
@@ -1072,7 +1028,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.CoerceAndRelayTo: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The computer account has a SQL Server login and the SQL Server has Extended Protection disabled. This allows coercing the computer account authentication and relaying it to SQL Server to gain access.",
 			WindowsAbuse: "Coerce and relay authentication to SQL Server:\n" +
 				"# 1. Set up NTLM relay targeting SQL Server \n" +
@@ -1107,7 +1062,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 	// Database-level permission edges
 	EdgeKinds.AlterDB: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The ALTER permission on a database grants the source " + ctx.SourceType + " effective permissions ALTER ANY ROLE and ALTER ANY APPLICATION ROLE. ALTER ANY ROLE permission allows the principal to add members to any user-defined database role. Note that only members of the db_owner fixed database role can add members to fixed server roles. The ALTER ANY APPLICATION ROLE permission on a database allows the source " + ctx.SourceType + " to change the password for an application role, activate the application role with the new password, and execute actions with the application role's permissions. WARNING: DO NOT execute this attack, as it will immediately break the application that relies on this application role to access this database and WILL cause an outage.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"Alter database role: EXEC sp_addrolemember 'rolename', 'user' \n" +
@@ -1127,7 +1081,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.AlterDBRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The ALTER permission on a database role allows the source " + ctx.SourceType + " to add members to the database role. Only members of the db_owner fixed database role can add members to fixed database roles.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"USE " + ctx.DatabaseName + ";\n" +
@@ -1148,7 +1101,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.AlterServerRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The ALTER permission on a user-defined server role allows the source " + ctx.SourceType + " to add members to the server role. Principals cannot be granted ALTER permission on fixed server roles.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"EXEC sp_addsrvrolemember 'login', '" + ctx.TargetName + "';",
@@ -1166,7 +1118,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ControlDBRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The CONTROL permission on a database role grants the source " + ctx.SourceType + " all defined permissions on the role. This includes the ability to add members to the role and change its ownership.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statements:\n" +
 				"USE " + ctx.DatabaseName + "; \n" +
@@ -1190,7 +1141,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ControlDBUser: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The CONTROL permission on a database user grants the source " + ctx.SourceType + " the ability to impersonate that user and execute actions with their permissions.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"USE " + ctx.DatabaseName + "; \n" +
@@ -1212,7 +1162,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ControlLogin: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The CONTROL permission on a server login allows the source " + ctx.SourceType + " to impersonate the target login.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"EXECUTE AS LOGIN = '" + ctx.TargetName + "' \n" +
@@ -1231,7 +1180,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ControlServerRole: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The CONTROL permission on a user-defined server role allows the source " + ctx.SourceType + " to take ownership of, add members to, or change the owner of the server role. Principals cannot be granted CONTROL permission on fixed server roles.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement: \n" +
 				"Add member: EXEC sp_addsrvrolemember 'login', '" + ctx.TargetName + "' \n" +
@@ -1252,7 +1200,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.DBTakeOwnership: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: true,
 			General:     "The source " + ctx.SourceType + " can change the owner of this " + ctx.TargetType + " or descendent objects in its scope.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"ALTER AUTHORIZATION ON ROLE::[" + ctx.TargetName + "] TO [user]; ",
@@ -1268,7 +1215,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ImpersonateDBUser: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
 			General:     "The IMPERSONATE permission on a securable object effectively grants the source " + ctx.SourceType + " the ability to impersonate the target object.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"USE " + ctx.DatabaseName + "; \n" +
@@ -1290,7 +1236,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.ImpersonateLogin: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
 			General:     "The IMPERSONATE permission on a securable object effectively grants the source " + ctx.SourceType + " the ability to impersonate the target object.",
 			WindowsAbuse: "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" +
 				"EXECUTE AS LOGIN = '" + ctx.TargetName + "' \n" +
@@ -1319,7 +1264,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 		windowsAbuse = "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using sqlcmd, SQL Server Management Studio, mssql-cli, or proxied Linux tooling such as impacket mssqlclient.py) and execute the following SQL statement:\n" + sqlSuffix
 		linuxAbuse = "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " (e.g., using impacket mssqlclient.py or proxied Windows tooling such as sqlcmd, mssql-cli, or SQL Server Management Studio) and execute the following SQL statement:\n" + sqlSuffix
 		return EdgeProperties{
-			Traversable:  false,
 			General:      "The source " + ctx.SourceType + " can change the owner of this " + ctx.TargetType + " or descendent objects in its scope.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,
@@ -1361,7 +1305,6 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 				"Log events are not generated for login impersonation by default."
 		}
 		return EdgeProperties{
-			Traversable:  true,
 			General:      "The IMPERSONATE or CONTROL permission on a server login or database user allows the source " + ctx.SourceType + " to impersonate the target principal.",
 			WindowsAbuse: windowsAbuse,
 			LinuxAbuse:   linuxAbuse,

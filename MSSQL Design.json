@@ -324,16 +324,6 @@
       }
     },
     {
-      "id": "n1",
-      "fromId": "n3",
-      "toId": "n2",
-      "type": "MSSQL_ConnectSQL",
-      "properties": {},
-      "style": {
-        "arrow-color": "#f44e3b"
-      }
-    },
-    {
       "id": "n2",
       "fromId": "n4",
       "toId": "n1",
@@ -537,20 +527,6 @@
       "type": "MSSQL_Control",
       "properties": {},
       "style": {
-        "arrow-color": "#f44e3b"
-      }
-    },
-    {
-      "id": "n21",
-      "fromId": "n4",
-      "toId": "n2",
-      "type": "MSSQL_ConnectSQL",
-      "properties": {},
-      "style": {
-        "attachment-start": "top",
-        "attachment-end": "top",
-        "margin-start": 38,
-        "margin-end": 27,
         "arrow-color": "#f44e3b"
       }
     },

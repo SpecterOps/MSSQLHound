@@ -25,7 +25,7 @@ type edgeTestCase struct {
 	TargetPattern  string                 // Wildcard or exact-match pattern for edge end value
 	Negative       bool                   // If true, this edge must NOT exist
 	Reason         string                 // Explanation for negative tests
-	EdgeProperties map[string]interface{} // Property assertions (e.g. traversable)
+	EdgeProperties map[string]interface{} // Property assertions
 	ExpectedCount  int                    // If >0, assert exactly N matching edges
 }
 
@@ -226,7 +226,7 @@ func runEdgeCreation(t *testing.T, serverInfo *types.ServerInfo, includeNontrave
 	config := &Config{
 		TempDir:                    tmpDir,
 		Domain:                     "domain.com",
-		IncludeNontraversableEdges: includeNontraversable,
+		DisableNontraversableEdges: !includeNontraversable,
 	}
 	c, _ := New(config)
 
