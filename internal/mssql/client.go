@@ -22,7 +22,7 @@ import (
 	"github.com/SpecterOps/MSSQLHound/internal/types"
 	mssqldb "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/integratedauth"
-	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register Kerberos auth provider
+	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5" // Register Kerberos auth provider (fallback)
 	"github.com/microsoft/go-mssqldb/msdsn"
 )
 
@@ -755,24 +755,23 @@ func (c *Client) connectNative(ctx context.Context) error {
 			}
 		}
 
-		// When Kerberos is enabled, inject krb5 authenticator parameters.
+		// When Kerberos is enabled, use our custom krb5 provider which builds
+		// SPNEGO tokens with empty GSS flags (no Integ/Conf). go-mssqldb's
+		// built-in krb5 provider hardcodes ContextFlagInteg+ContextFlagConf
+		// which can cause "untrusted domain" errors with TLS or EPA.
 		if c.useKerberos {
 			if config.Parameters == nil {
 				config.Parameters = make(map[string]string)
 			}
-			config.Parameters["authenticator"] = "krb5"
-			if c.krb5ConfigFile != "" {
-				config.Parameters["krb5-configfile"] = c.krb5ConfigFile
-			}
-			if c.krb5CCacheFile != "" {
-				config.Parameters["krb5-credcachefile"] = c.krb5CCacheFile
-			}
-			if c.krb5KeytabFile != "" {
-				config.Parameters["krb5-keytabfile"] = c.krb5KeytabFile
-			}
-			if c.krb5Realm != "" {
-				config.Parameters["krb5-realm"] = c.krb5Realm
-			}
+			integratedauth.SetIntegratedAuthenticationProvider(krb5CustomProviderName, &krb5CustomProvider{
+				krb5ConfigFile: c.krb5ConfigFile,
+				krb5CCacheFile: c.krb5CCacheFile,
+				krb5KeytabFile: c.krb5KeytabFile,
+				krb5Realm:      c.krb5Realm,
+				verbose:        c.verbose,
+				logger:         c.logger,
+			})
+			config.Parameters["authenticator"] = krb5CustomProviderName
 		}
 
 		// When EPA auth is needed, inject our custom authenticator and add a

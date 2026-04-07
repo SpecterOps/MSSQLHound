@@ -39,7 +39,6 @@ var (
 	proxyAddr      string
 
 	// Collection-specific options (local to root command)
-	outputFormat string
 	tempDir        string
 	zipDir         string
 	fileSizeLimit  string
@@ -124,7 +123,6 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output (includes EPA/TLS/NTLM diagnostics)")
 
 	// Collection-specific flags (local to root command only)
-	rootCmd.Flags().StringVarP(&outputFormat, "output-format", "o", "BloodHound", "Output format: BloodHound, BHGeneric")
 	rootCmd.Flags().StringVar(&tempDir, "temp-dir", "", "Temporary directory for output files")
 	rootCmd.Flags().StringVar(&zipDir, "zip-dir", ".", "Directory for final zip file")
 	rootCmd.Flags().StringVar(&fileSizeLimit, "file-size-limit", "1GB", "Stop enumeration after files exceed this size")
@@ -168,7 +166,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 		"memory-threshold", "size-update-interval"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Performance"}) //nolint:errcheck
 	}
-	for _, name := range []string{"output-format", "temp-dir", "zip-dir", "log-per-target"} {
+	for _, name := range []string{"temp-dir", "zip-dir", "log-per-target"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output"}) //nolint:errcheck
 	}
 	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results", "upload-schema", "skip-collection"} {
@@ -405,7 +403,6 @@ func run(cmd *cobra.Command, args []string) error {
 		DNSResolver:                     dnsResolver,
 		LDAPUser:                        effectiveLDAPUser,
 		LDAPPassword:                    effectiveLDAPPassword,
-		OutputFormat:                    outputFormat,
 		TempDir:                         tempDir,
 		ZipDir:                          zipDir,
 		FileSizeLimit:                   fileSizeLimit,

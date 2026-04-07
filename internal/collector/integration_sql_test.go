@@ -931,9 +931,9 @@ GO
 
 PRINT 'MSSQL_ChangePassword test setup completed';
 `,
-	"CoerceAndRelayToMSSQL": `
+	"MSSQL_CoerceAndRelayToMSSQL": `
 -- =====================================================
--- SETUP FOR CoerceAndRelayToMSSQL EDGE TESTING
+-- SETUP FOR MSSQL_CoerceAndRelayToMSSQL EDGE TESTING
 -- =====================================================
 -- This edge is created from Authenticated Users (S-1-5-11) to computer accounts
 -- when the computer has a SQL login that is enabled with CONNECT SQL permission
@@ -970,7 +970,7 @@ IF NOT EXISTS (SELECT * FROM sys.server_principals WHERE name = 'CoerceTestSQLLo
 -- Note: Extended Protection is a server configuration setting, not set via T-SQL
 -- For testing, ensure Extended Protection is set to Off on the test server
 
-PRINT 'CoerceAndRelayToMSSQL test setup completed';
+PRINT 'MSSQL_CoerceAndRelayToMSSQL test setup completed';
 PRINT 'IMPORTANT: Ensure Extended Protection is set to Off on the SQL Server for this edge to be created';
 PRINT 'Edges will be created from Authenticated Users (S-1-5-11) to computer account SIDs';
 `,

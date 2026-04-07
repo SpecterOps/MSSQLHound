@@ -4,12 +4,17 @@
 package ad
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
+	"github.com/SpecterOps/MSSQLHound/internal/logging"
 	"github.com/go-ldap/ldap/v3"
+	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/credentials"
@@ -22,10 +27,21 @@ import (
 type gokrb5GSSAPIClient struct {
 	krb5Client   *client.Client
 	spnegoClient *spnego.SPNEGO
+	// overTLS indicates the LDAP connection is already TLS-protected (LDAPS or
+	// StartTLS). When true, InitSecContext omits the Integrity and Confidentiality
+	// GSS flags from the AP-REQ authenticator checksum so that Active Directory
+	// does not reject the bind with "Cannot bind using sign/seal on a connection
+	// on which TLS or SSL is in effect".
+	overTLS bool
+	// Optional logger for dumping Kerberos service tickets.
+	logger *slog.Logger
 }
 
 // newKerberosGSSAPIClient creates a GSSAPI client backed by gokrb5 for cross-platform Kerberos.
-func newKerberosGSSAPIClient(krb5ConfigFile, ccacheFile, keytabFile, realm, user, password string) (ldap.GSSAPIClient, func() error, error) {
+// If overTLS is true, the resulting client will not request signing/sealing in the
+// GSSAPI context, which is required when binding over LDAPS or LDAP+StartTLS.
+// If logger is non-nil, the base64-encoded SPNEGO token is logged at Info level.
+func newKerberosGSSAPIClient(krb5ConfigFile, ccacheFile, keytabFile, realm, user, password string, overTLS bool, logger *slog.Logger) (ldap.GSSAPIClient, func() error, error) {
 	cfg, err := loadKrb5Config(krb5ConfigFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading krb5 config: %w", err)
@@ -43,6 +59,8 @@ func newKerberosGSSAPIClient(krb5ConfigFile, ccacheFile, keytabFile, realm, user
 
 	gssClient := &gokrb5GSSAPIClient{
 		krb5Client: krb5Client,
+		overTLS:    overTLS,
+		logger:     logger,
 	}
 	// closeFn is a no-op: cleanup is handled by DeleteSecContext which is
 	// called by go-ldap's GSSAPIBind via defer. Destroying here would nil
@@ -133,19 +151,77 @@ func (c *gokrb5GSSAPIClient) InitSecContext(target string, token []byte) ([]byte
 		return nil, false, fmt.Errorf("Kerberos client has been destroyed")
 	}
 	if token == nil {
-		c.spnegoClient = spnego.SPNEGOClient(c.krb5Client, target)
-
-		spnegoToken, err := c.spnegoClient.InitSecContext()
+		// First call: create the initial SPNEGO token.
+		//
+		// When the LDAP connection is already TLS-protected, we must NOT include
+		// the Integrity (ContextFlagInteg) or Confidentiality (ContextFlagConf)
+		// GSS flags. Active Directory rejects GSSAPI SASL binds that request
+		// sign/seal over TLS with error "Cannot bind using sign/seal on a
+		// connection on which TLS or SSL is in effect".
+		//
+		// Over plain LDAP we request Integ+Conf so that GSSAPI provides its own
+		// signing/sealing to protect credentials on the wire.
+		tkt, key, err := c.krb5Client.GetServiceTicket(target)
 		if err != nil {
-			return nil, false, fmt.Errorf("InitSecContext: %w", err)
+			return nil, false, fmt.Errorf("GetServiceTicket: %w", err)
 		}
+
+		var flags []int
+		if c.overTLS {
+			// TLS already provides integrity and confidentiality; omit all GSS
+			// security flags so AD does not reject the bind with sign/seal errors.
+			flags = []int{}
+		} else {
+			// Plain LDAP: request signing and sealing for credential protection.
+			flags = []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf}
+		}
+
+		krb5Token, err := spnego.NewKRB5TokenAPREQ(c.krb5Client, tkt, key, flags, []int{})
+		if err != nil {
+			return nil, false, fmt.Errorf("creating KRB5 AP-REQ token: %w", err)
+		}
+
+		// Wrap in SPNEGO NegTokenInit
+		mechTokenBytes, err := krb5Token.Marshal()
+		if err != nil {
+			return nil, false, fmt.Errorf("marshalling KRB5 token: %w", err)
+		}
+
+		negInit := spnego.NegTokenInit{
+			MechTypes:      []asn1.ObjectIdentifier{gssapi.OIDKRB5.OID()},
+			MechTokenBytes: mechTokenBytes,
+		}
+
+		spnegoToken := &spnego.SPNEGOToken{
+			Init:         true,
+			NegTokenInit: negInit,
+		}
+
 		tokenBytes, err := spnegoToken.Marshal()
 		if err != nil {
 			return nil, false, fmt.Errorf("marshaling SPNEGO token: %w", err)
 		}
-		return tokenBytes, true, nil
+
+		if c.logger != nil {
+			c.logger.Log(context.Background(), logging.LevelVerbose, "Kerberos SPNEGO token",
+				"spn", target,
+				"token_b64", base64.StdEncoding.EncodeToString(tokenBytes),
+			)
+		}
+
+		// Over TLS without mutual auth, SPNEGO completes in one round trip:
+		// the server validates the AP-REQ and returns success immediately.
+		// Return needInit=false so go-ldap's loop can break when the server
+		// responds with resultCode=0. (Returning true would cause an infinite
+		// loop because go-ldap only breaks when !needInit && len(recvToken)==0.)
+		//
+		// Over plain LDAP, the server may send a NegTokenResp that requires
+		// another InitSecContext round, so we keep needInit=true.
+		needMore := !c.overTLS
+		return tokenBytes, needMore, nil
 	}
 
+	// Second call (plain LDAP only): process the server's SPNEGO NegTokenResp.
 	var resp spnego.SPNEGOToken
 	if err := resp.Unmarshal(token); err != nil {
 		return nil, false, fmt.Errorf("unmarshaling SPNEGO response: %w", err)

@@ -63,7 +63,7 @@ Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), T
      - [`MSSQL_ApplicationRole`](#application-role-mssql_applicationrole-node)
 - [MSSQL Edges Reference](#mssql-edges-reference)
    - [Edge Classes and Properties](#edge-classes-and-properties)
-     - [`CoerceAndRelayToMSSQL`](#coerceandrelaytomssql)
+     - [`MSSQL_CoerceAndRelayToMSSQL`](#mssql_coerceandrelaytomssql)
      - [`MSSQL_AddMember`](#mssql_addmember)
      - [`MSSQL_Alter`](#mssql_alter)
      - [`MSSQL_AlterAnyAppRole`](#mssql_alteranyapprole)
@@ -645,7 +645,6 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-o, --output-format` | `BloodHound` | Output format: `BloodHound`, `BHGeneric` |
 | `--temp-dir` | system temp | Temporary directory for output files |
 | `--zip-dir` | `.` | Directory for the final zip file |
 | `--file-size-limit` | `1GB` | Stop enumeration after output files exceed this size |
@@ -986,7 +985,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
 - DENY permissions
 - EXECUTE permission on xp_cmdshell
 - UNSAFE/EXTERNAL_ACCESS permission on assembly (impacted by TRUSTWORTHY)
-- Add this to CoerceAndRelayToMSSQL:
+- Add this to MSSQL_CoerceAndRelayToMSSQL:
     - Domain principal has CONNECT SQL (and EXECUTE on xp_dirtree or other stored procedures that will authenticate to a remote host)
     - Service account/Computer has a server login that is enabled on another SQL instance
     - EPA is not required on remote SQL instance
@@ -1238,8 +1237,8 @@ All edges based on permissions may contain the `With Grant` property, which mean
 
 | Edge Class<br>______________________________________________ | Properties<br>_______________________________________________________________________________________________ |
 |-----------------------------------------------|------------|
-<a id="coerceandrelaytomssql"></a>
-| **`CoerceAndRelayToMSSQL`**                     | • No unique edge properties |
+<a id="mssql_coerceandrelaytomssql"></a>
+| **`MSSQL_CoerceAndRelayToMSSQL`**               | • No unique edge properties |
 <a id="mssql_addmember"></a>
 | **`MSSQL_AddMember`**                           | • No unique edge properties |
 <a id="mssql_alter"></a>

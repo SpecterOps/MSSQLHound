@@ -44,13 +44,12 @@ type Config struct {
 	Krb5KeytabFile string // Path to Kerberos keytab file
 	Krb5Realm      string // Kerberos realm
 	Domain         string
-	DC           string // Domain controller hostname or IP address
+	DC             string // Domain controller hostname or IP address
 	DNSResolver    string // DNS resolver to use for lookups
 	LDAPUser       string
 	LDAPPassword   string
 
 	// Output options
-	OutputFormat  string
 	TempDir       string
 	ZipDir        string
 	FileSizeLimit string
@@ -84,12 +83,12 @@ type Config struct {
 	LogLevel     slog.Leveler // Shared log level for per-target file handlers
 
 	// BloodHound upload options
-	BloodHoundURL string // BloodHound CE instance URL
-	TokenID       string // API token ID
-	TokenKey      string // API token key
-	UploadSchema   bool // Upload schema definitions (SCHEMA.json)
-	UploadResults  bool // Upload results after collection
-	SkipCollection bool // Skip data collection (upload-only mode)
+	BloodHoundURL  string // BloodHound CE instance URL
+	TokenID        string // API token ID
+	TokenKey       string // API token key
+	UploadSchema   bool   // Upload schema definitions (SCHEMA.json)
+	UploadResults  bool   // Upload results after collection
+	SkipCollection bool   // Skip data collection (upload-only mode)
 }
 
 // Collector handles the data collection process
@@ -98,9 +97,9 @@ type Collector struct {
 	proxyDialer                proxydialer.ContextDialer
 	tempDir                    string
 	outputFiles                []string
-	outputFilesMu              sync.Mutex   // Protects outputFiles
-	logFiles                   []string     // Per-target log file paths (separate from outputFiles)
-	logFilesMu                 sync.Mutex   // Protects logFiles
+	outputFilesMu              sync.Mutex // Protects outputFiles
+	logFiles                   []string   // Per-target log file paths (separate from outputFiles)
+	logFilesMu                 sync.Mutex // Protects logFiles
 	serversToProcess           []*ServerToProcess
 	linkedServersToProcess     []*ServerToProcess        // Linked servers discovered during processing
 	linkedServersMu            sync.Mutex                // Protects linkedServersToProcess
@@ -210,6 +209,9 @@ func (c *Collector) newADClient(domain string) *ad.Client {
 	}
 	if c.config.UseKerberos {
 		adClient.SetKerberosConfig(c.config.Krb5ConfigFile, c.config.Krb5CCacheFile, c.config.Krb5KeytabFile, c.config.Krb5Realm)
+	}
+	if c.config.Verbose {
+		adClient.SetLogger(c.config.Logger)
 	}
 	if c.proxyDialer != nil {
 		adClient.SetProxyDialer(c.proxyDialer)
@@ -724,7 +726,67 @@ func (c *Collector) buildServerList() error {
 		}
 	}
 
+	// Deduplicate servers that resolve to the same IP (e.g. NetBIOS vs FQDN)
+	c.deduplicateByIP()
+
 	return nil
+}
+
+// deduplicateByIP removes servers whose hostnames resolve to the same IP address,
+// preferring entries with FQDNs over NetBIOS names.
+func (c *Collector) deduplicateByIP() {
+	type ipKey struct {
+		ip       string
+		port     int
+		instance string
+	}
+
+	c.config.Logger.Info("Deduplicating servers by resolved IP", "count", len(c.serversToProcess))
+
+	seen := make(map[ipKey]int) // ipKey -> index in deduplicated slice
+	var deduplicated []*ServerToProcess
+
+	resolver := net.DefaultResolver
+
+	for _, server := range c.serversToProcess {
+		// Resolve hostname to IP with a short timeout to avoid blocking on unresolvable hosts
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		addrs, err := resolver.LookupHost(ctx, server.Hostname)
+		cancel()
+		if err != nil || len(addrs) == 0 {
+			c.config.Logger.Log(context.Background(), logging.LevelVerbose, "DNS lookup failed, keeping server as-is",
+				"hostname", server.Hostname, "error", err)
+			deduplicated = append(deduplicated, server)
+			continue
+		}
+		ip := addrs[0]
+		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Resolved hostname",
+			"hostname", server.Hostname, "ip", ip)
+
+		key := ipKey{ip: ip, port: server.Port, instance: strings.ToUpper(server.InstanceName)}
+		if idx, exists := seen[key]; exists {
+			existing := deduplicated[idx]
+			// Prefer FQDN over NetBIOS
+			isFQDN := strings.Contains(server.Hostname, ".")
+			existingIsFQDN := strings.Contains(existing.Hostname, ".")
+			if isFQDN && !existingIsFQDN {
+				c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Dedup by IP: replacing",
+					"old", existing.Hostname, "new", server.Hostname, "ip", ip)
+				deduplicated[idx] = server
+			} else {
+				c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Dedup by IP: skipping duplicate",
+					"skipped", server.Hostname, "kept", existing.Hostname, "ip", ip)
+			}
+			continue
+		}
+		seen[key] = len(deduplicated)
+		deduplicated = append(deduplicated, server)
+	}
+
+	if removed := len(c.serversToProcess) - len(deduplicated); removed > 0 {
+		c.config.Logger.Info("Deduplicated servers by resolved IP", "removed", removed)
+	}
+	c.serversToProcess = deduplicated
 }
 
 // tryResolveSID attempts to resolve the computer SID for a server.
@@ -2639,10 +2701,10 @@ func (c *Collector) createADNodes(serverInfo *types.ServerInfo) error {
 		createdNodes[serverInfo.ComputerSID] = true
 	}
 
-	// Track if we need to create Authenticated Users node for CoerceAndRelayToMSSQL
+	// Track if we need to create Authenticated Users node for MSSQL_CoerceAndRelayToMSSQL
 	needsAuthUsersNode := false
 
-	// Check for computer accounts with EPA disabled (CoerceAndRelayToMSSQL condition)
+	// Check for computer accounts with EPA disabled (MSSQL_CoerceAndRelayToMSSQL condition)
 	if serverInfo.ExtendedProtection == "Off" {
 		for _, principal := range serverInfo.ServerPrincipals {
 			if principal.IsActiveDirectoryPrincipal &&
@@ -3493,9 +3555,9 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 	// AD PRINCIPAL RELATIONSHIP EDGES
 	// =========================================================================
 
-	// Create HasLogin and CoerceAndRelayToMSSQL edges from AD principals to their SQL logins
+	// Create HasLogin and MSSQL_CoerceAndRelayToMSSQL edges from AD principals to their SQL logins
 	// Match PowerShell logic: iterate enabledDomainPrincipalsWithConnectSQL
-	// CoerceAndRelayToMSSQL is checked BEFORE the S-1-5-21 filter and dedup (matching PS ordering)
+	// MSSQL_CoerceAndRelayToMSSQL is checked BEFORE the S-1-5-21 filter and dedup (matching PS ordering)
 	// HasLogin is only created for S-1-5-21-* SIDs with dedup
 	principalsWithLogin := make(map[string]bool)
 	for _, principal := range serverInfo.ServerPrincipals {
@@ -3530,7 +3592,7 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 			continue
 		}
 
-		// CoerceAndRelayToMSSQL edge if conditions are met:
+		// MSSQL_CoerceAndRelayToMSSQL edge if conditions are met:
 		// - Extended Protection (EPA) is Off
 		// - Login is for a computer account (name ends with $)
 		// This is checked BEFORE the S-1-5-21 filter and dedup, matching PowerShell ordering
@@ -3556,6 +3618,39 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 					SecurityIdentifier: principal.SecurityIdentifier,
 				},
 			)
+			if edge != nil {
+				// Add coercion victim and relay target pair so users can see
+				// which computer to coerce and which SQL server to relay to
+				computerName := principal.Name
+				if idx := strings.LastIndex(computerName, "\\"); idx >= 0 {
+					computerName = computerName[idx+1:]
+				}
+				computerName = strings.TrimSuffix(computerName, "$")
+
+				victimHost := strings.ToLower(computerName)
+				domainSuffix := ""
+				if serverInfo.FQDN != "" {
+					if idx := strings.Index(serverInfo.FQDN, "."); idx >= 0 {
+						domainSuffix = serverInfo.FQDN[idx:]
+					}
+				}
+				if domainSuffix == "" && c.config.Domain != "" {
+					domainSuffix = "." + c.config.Domain
+				}
+				if domainSuffix != "" {
+					victimHost = victimHost + domainSuffix
+				}
+
+				relayHost := serverInfo.FQDN
+				if relayHost == "" {
+					relayHost = serverInfo.Hostname
+				}
+				relayTarget := fmt.Sprintf("%s:%d", relayHost, serverInfo.Port)
+
+				edge.Properties["coercionVictimAndRelayTargetPairs"] = []string{
+					fmt.Sprintf("Coerce %s, relay to %s", victimHost, relayTarget),
+				}
+			}
 			if err := writer.WriteEdge(edge); err != nil {
 				return err
 			}

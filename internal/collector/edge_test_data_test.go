@@ -273,16 +273,16 @@ var changePasswordTestCases = []edgeTestCase{
 }
 
 // ---------------------------------------------------------------------------
-// CoerceAndRelayToMSSQL
+// MSSQL_CoerceAndRelayToMSSQL
 // ---------------------------------------------------------------------------
 
 var coerceAndRelayTestCases = []edgeTestCase{
-	{EdgeType: "CoerceAndRelayToMSSQL", Description: "Authenticated Users can coerce and relay to computer with SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestEnabled1*"},
-	{EdgeType: "CoerceAndRelayToMSSQL", Description: "Authenticated Users can coerce and relay to second computer with SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestEnabled2*"},
-	{EdgeType: "CoerceAndRelayToMSSQL", Description: "No edge to computer with disabled SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestDisabled*", Negative: true, Reason: "Computer's SQL login is disabled"},
-	{EdgeType: "CoerceAndRelayToMSSQL", Description: "No edge to computer with CONNECT SQL denied", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestNoConnect*", Negative: true, Reason: "Computer's SQL login has CONNECT SQL denied"},
-	{EdgeType: "CoerceAndRelayToMSSQL", Description: "No edge for regular user account", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestUser*", Negative: true, Reason: "Target is not a computer account"},
-	{EdgeType: "CoerceAndRelayToMSSQL", Description: "No edge for SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestSQLLogin*", Negative: true, Reason: "Target is not a Windows login"},
+	{EdgeType: "MSSQL_CoerceAndRelayToMSSQL", Description: "Authenticated Users can coerce and relay to computer with SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestEnabled1*"},
+	{EdgeType: "MSSQL_CoerceAndRelayToMSSQL", Description: "Authenticated Users can coerce and relay to second computer with SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestEnabled2*"},
+	{EdgeType: "MSSQL_CoerceAndRelayToMSSQL", Description: "No edge to computer with disabled SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestDisabled*", Negative: true, Reason: "Computer's SQL login is disabled"},
+	{EdgeType: "MSSQL_CoerceAndRelayToMSSQL", Description: "No edge to computer with CONNECT SQL denied", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestNoConnect*", Negative: true, Reason: "Computer's SQL login has CONNECT SQL denied"},
+	{EdgeType: "MSSQL_CoerceAndRelayToMSSQL", Description: "No edge for regular user account", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestUser*", Negative: true, Reason: "Target is not a computer account"},
+	{EdgeType: "MSSQL_CoerceAndRelayToMSSQL", Description: "No edge for SQL login", SourcePattern: "*S-1-5-11", TargetPattern: "*CoerceTestSQLLogin*", Negative: true, Reason: "Target is not a Windows login"},
 }
 
 // ---------------------------------------------------------------------------

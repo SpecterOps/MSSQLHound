@@ -29,7 +29,6 @@ type coverageEntry struct {
 
 // knownEdgeTypes lists all edge types that MSSQLHound can produce.
 var knownEdgeTypes = []string{
-	"CoerceAndRelayToMSSQL",
 	"HasSession",
 	"MSSQL_AddMember",
 	"MSSQL_Alter",
@@ -39,6 +38,7 @@ var knownEdgeTypes = []string{
 	"MSSQL_AlterAnyServerRole",
 	"MSSQL_ChangeOwner",
 	"MSSQL_ChangePassword",
+	"MSSQL_CoerceAndRelayToMSSQL",
 	"MSSQL_Connect",
 	"MSSQL_ConnectAnyDatabase",
 	"MSSQL_Contains",
@@ -168,31 +168,31 @@ func analyzeMissingTests() missingTestsResult {
 
 // testReport is the JSON report structure.
 type testReport struct {
-	Timestamp      time.Time            `json:"timestamp"`
-	ServerInstance string               `json:"serverInstance"`
-	Domain         string               `json:"domain"`
-	TestRuns       []testRunSummary     `json:"testRuns"`
-	Coverage       []coverageEntry      `json:"coverage"`
-	MissingTests   missingTestsResult   `json:"missingTests"`
-	Summary        testReportSummary    `json:"summary"`
+	Timestamp      time.Time          `json:"timestamp"`
+	ServerInstance string             `json:"serverInstance"`
+	Domain         string             `json:"domain"`
+	TestRuns       []testRunSummary   `json:"testRuns"`
+	Coverage       []coverageEntry    `json:"coverage"`
+	MissingTests   missingTestsResult `json:"missingTests"`
+	Summary        testReportSummary  `json:"summary"`
 }
 
 type testRunSummary struct {
-	TotalTests  int    `json:"totalTests"`
-	Passed      int    `json:"passed"`
-	Failed      int    `json:"failed"`
-	PassRate    string `json:"passRate"`
-	EdgeCount   int    `json:"edgeCount"`
-	NodeCount   int    `json:"nodeCount"`
+	TotalTests int    `json:"totalTests"`
+	Passed     int    `json:"passed"`
+	Failed     int    `json:"failed"`
+	PassRate   string `json:"passRate"`
+	EdgeCount  int    `json:"edgeCount"`
+	NodeCount  int    `json:"nodeCount"`
 }
 
 type testReportSummary struct {
-	TotalEdgeTypes    int `json:"totalEdgeTypes"`
-	CoveredEdgeTypes  int `json:"coveredEdgeTypes"`
-	MissingEdgeTypes  int `json:"missingEdgeTypes"`
-	TotalTests        int `json:"totalTests"`
-	TotalPassed       int `json:"totalPassed"`
-	TotalFailed       int `json:"totalFailed"`
+	TotalEdgeTypes   int `json:"totalEdgeTypes"`
+	CoveredEdgeTypes int `json:"coveredEdgeTypes"`
+	MissingEdgeTypes int `json:"missingEdgeTypes"`
+	TotalTests       int `json:"totalTests"`
+	TotalPassed      int `json:"totalPassed"`
+	TotalFailed      int `json:"totalFailed"`
 }
 
 // runIntegrationReport generates JSON and HTML reports.
@@ -238,12 +238,12 @@ func runIntegrationReport(t *testing.T, cfg *integrationConfig) {
 		}
 
 		report.TestRuns = append(report.TestRuns, testRunSummary{
-			TotalTests:  total,
-			Passed:      passed,
-			Failed:      failed,
-			PassRate:    passRate,
-			EdgeCount:   len(run.Edges),
-			NodeCount:   len(run.Nodes),
+			TotalTests: total,
+			Passed:     passed,
+			Failed:     failed,
+			PassRate:   passRate,
+			EdgeCount:  len(run.Edges),
+			NodeCount:  len(run.Nodes),
 		})
 
 		totalTests += total

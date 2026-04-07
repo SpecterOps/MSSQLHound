@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"runtime"
 	"strings"
@@ -42,6 +43,9 @@ type Client struct {
 
 	// Set after a successful bind; describes transport + auth method used
 	authMethod string
+
+	// Optional logger for verbose output (e.g. Kerberos ticket dumping)
+	logger *slog.Logger
 }
 
 // NewClient creates a new AD client
@@ -122,8 +126,8 @@ func (c *Client) Connect() error {
 //   2. LDAP:389 + StartTLS (RFC 4511 sec 4.14: upgrade plaintext to TLS)
 //      -> NTLM bind  -> SimpleBind  -> GSSAPI (Kerberos)
 //
-//   3. Plain LDAP:389 + NTLM only (no TLS, but NTLM provides its own
-//      signing/sealing via NTLMSSP, so credentials are not sent in cleartext)
+//   3. Plain LDAP:389 + NTLM or GSSAPI only (no TLS, but both NTLM and GSSAPI
+//      provide their own signing/sealing, so credentials are not sent in cleartext)
 //
 // LDAPS is attempted before StartTLS because direct TLS is more reliable
 // than an in-band upgrade -- StartTLS can fail if a middlebox strips the
@@ -140,22 +144,22 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 	// Kerberos: only GSSAPI. NT hash: only NTLM. Password: NTLM -> SimpleBind -> GSSAPI.
 	type bindMethod struct {
 		name string
-		fn   func(conn *ldap.Conn, dc string) error
+		fn   func(conn *ldap.Conn, dc string, overTLS bool) error
 	}
 	var bindMethods []bindMethod
 	if c.useKerberos {
 		bindMethods = []bindMethod{
-			{"GSSAPI", func(conn *ldap.Conn, dc string) error { return c.gssapiBind(conn, dc) }},
+			{"GSSAPI", func(conn *ldap.Conn, dc string, overTLS bool) error { return c.gssapiBind(conn, dc, overTLS) }},
 		}
 	} else if c.ntHash != "" {
 		bindMethods = []bindMethod{
-			{"NTLM", func(conn *ldap.Conn, _ string) error { return c.ntlmBind(conn) }},
+			{"NTLM", func(conn *ldap.Conn, _ string, _ bool) error { return c.ntlmBind(conn) }},
 		}
 	} else {
 		bindMethods = []bindMethod{
-			{"NTLM", func(conn *ldap.Conn, _ string) error { return c.ntlmBind(conn) }},
-			{"SimpleBind", func(conn *ldap.Conn, _ string) error { return c.simpleBind(conn) }},
-			{"GSSAPI", func(conn *ldap.Conn, dc string) error { return c.gssapiBind(conn, dc) }},
+			{"NTLM", func(conn *ldap.Conn, _ string, _ bool) error { return c.ntlmBind(conn) }},
+			{"SimpleBind", func(conn *ldap.Conn, _ string, _ bool) error { return c.simpleBind(conn) }},
+			{"GSSAPI", func(conn *ldap.Conn, dc string, overTLS bool) error { return c.gssapiBind(conn, dc, overTLS) }},
 		}
 	}
 
@@ -175,20 +179,19 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 		// LDAP + StartTLS (port 389) - upgrade to TLS
 		{"LDAP:389+StartTLS", "ldap", "389", nil, true},
 	}
-	// Plain LDAP with NTLM only (NTLM provides its own signing/sealing)
-	if !c.useKerberos {
-		transports = append(transports, transportConfig{
-			"LDAP:389", "ldap", "389", nil, false,
-		})
-	}
+	// Plain LDAP with NTLM or GSSAPI only (both provide their own signing/sealing)
+	transports = append(transports, transportConfig{
+		"LDAP:389", "ldap", "389", nil, false,
+	})
 
 	// Try each transport+bind combination with a fresh connection per attempt.
 	// A failed bind (especially NTLM) can leave the connection in a broken
 	// state, so we must not reuse a connection after a bind failure.
 	for _, t := range transports {
 		for _, m := range bindMethods {
-			// Plain LDAP (no TLS, no StartTLS) only allows NTLM (has built-in encryption)
-			if !t.startTLS && t.tls == nil && m.name != "NTLM" {
+			// Plain LDAP (no TLS, no StartTLS) only allows NTLM and GSSAPI
+			// (both provide their own signing/sealing, so credentials are protected)
+			if !t.startTLS && t.tls == nil && m.name != "NTLM" && m.name != "GSSAPI" {
 				continue
 			}
 
@@ -207,7 +210,8 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 				}
 			}
 
-			if bindErr := m.fn(conn, dc); bindErr == nil {
+			overTLS := t.tls != nil || t.startTLS
+			if bindErr := m.fn(conn, dc, overTLS); bindErr == nil {
 				c.conn = conn
 				c.baseDN = domainToDN(c.domain)
 				c.authMethod = fmt.Sprintf("%s %s", t.label, m.name)
@@ -241,7 +245,7 @@ func (c *Client) connectWithCurrentUser(dc, serverName string) error {
 	})
 	if err == nil {
 		conn.SetTimeout(30 * time.Second)
-		bindErr := c.gssapiBind(conn, dc)
+		bindErr := c.gssapiBind(conn, dc, true)
 		if bindErr == nil {
 			c.conn = conn
 			c.baseDN = domainToDN(c.domain)
@@ -260,7 +264,7 @@ func (c *Client) connectWithCurrentUser(dc, serverName string) error {
 		conn.SetTimeout(30 * time.Second)
 		tlsErr := c.startTLS(conn, dc)
 		if tlsErr == nil {
-			bindErr2 := c.gssapiBind(conn, dc)
+			bindErr2 := c.gssapiBind(conn, dc, true)
 			if bindErr2 == nil {
 				c.conn = conn
 				c.baseDN = domainToDN(c.domain)
@@ -280,7 +284,7 @@ func (c *Client) connectWithCurrentUser(dc, serverName string) error {
 	conn, err = c.dialLDAP("ldap", dc, "389", nil)
 	if err == nil {
 		conn.SetTimeout(30 * time.Second)
-		bindErr3 := c.gssapiBind(conn, dc)
+		bindErr3 := c.gssapiBind(conn, dc, false)
 		if bindErr3 == nil {
 			c.conn = conn
 			c.baseDN = domainToDN(c.domain)
@@ -397,13 +401,13 @@ func (c *Client) simpleBind(conn *ldap.Conn) error {
 	return conn.Bind(username, c.ldapPassword)
 }
 
-func (c *Client) gssapiBind(conn *ldap.Conn, dc string) error {
+func (c *Client) gssapiBind(conn *ldap.Conn, dc string, overTLS bool) error {
 	var gssClient ldap.GSSAPIClient
 	var closeFn func() error
 	var err error
 
 	if c.useKerberos {
-		gssClient, closeFn, err = newKerberosGSSAPIClient(c.krb5ConfigFile, c.krb5CCacheFile, c.krb5KeytabFile, c.krb5Realm, c.ldapUser, c.ldapPassword)
+		gssClient, closeFn, err = newKerberosGSSAPIClient(c.krb5ConfigFile, c.krb5CCacheFile, c.krb5KeytabFile, c.krb5Realm, c.ldapUser, c.ldapPassword, overTLS, c.logger)
 	} else {
 		gssClient, closeFn, err = newGSSAPIClient(c.domain, c.ldapUser, c.ldapPassword)
 	}
@@ -460,6 +464,11 @@ func (c *Client) startTLS(conn *ldap.Conn, dc string) error {
 // SetNTHash sets the NT hash (hex string) for pass-the-hash LDAP authentication.
 func (c *Client) SetNTHash(hash string) {
 	c.ntHash = hash
+}
+
+// SetLogger sets an optional structured logger for verbose output.
+func (c *Client) SetLogger(l *slog.Logger) {
+	c.logger = l
 }
 
 // SetKerberosConfig sets Kerberos authentication parameters for LDAP GSSAPI bind.

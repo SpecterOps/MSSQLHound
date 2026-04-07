@@ -291,7 +291,6 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 		DNSResolver:               cfg.DC, // Use DC as DNS resolver when no explicit resolver is set
 		LDAPUser:                  cfg.LDAPUser,
 		LDAPPassword:              cfg.LDAPPassword,
-		OutputFormat:              "BloodHound",
 		TempDir:                   tempDir,
 		Verbose:                   true,
 		IncludeNontraversableEdges: includeNontraversable,

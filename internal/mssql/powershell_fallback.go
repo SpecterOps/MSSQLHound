@@ -281,5 +281,6 @@ func IsAuthError(err error) bool {
 	return strings.Contains(errStr, "login failed") ||
 		strings.Contains(errStr, "untrusted domain") ||
 		strings.Contains(errStr, "cannot be used with windows authentication") ||
-		strings.Contains(errStr, "cannot be used with integrated authentication")
+		strings.Contains(errStr, "cannot be used with integrated authentication") ||
+		strings.Contains(errStr, "no user credentials available")
 }

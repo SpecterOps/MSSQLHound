@@ -877,8 +877,8 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 
 	EdgeKinds.HasMappedCred: func(ctx *EdgeContext) EdgeProperties {
 		return EdgeProperties{
-			Traversable: false,
-			General:     "This SQL login has a mapped credential that allows it to authenticate as the target domain account when accessing external resources outside of SQL Server, including over the network and at the host OS level. However, there is no guarantee the credentials are currently valid. SQL Server Agent must be running (could potentially be started via xp_cmdshell if service account has permission) and the login must have permission to add a credential proxy, grant the proxy access to a subsystem such as CmdExec or PowerShell, and add/start a job using the proxy to traverse this edge.",
+			Traversable:  false,
+			General:      "This SQL login has a mapped credential that allows it to authenticate as the target domain account when accessing external resources outside of SQL Server, including over the network and at the host OS level. However, there is no guarantee the credentials are currently valid. SQL Server Agent must be running (could potentially be started via xp_cmdshell if service account has permission) and the login must have permission to add a credential proxy, grant the proxy access to a subsystem such as CmdExec or PowerShell, and add/start a job using the proxy to traverse this edge.",
 			WindowsAbuse: "The credential could be crackable if it has a weak password and is used automatically when the login accesses certain external resources",
 			LinuxAbuse: " -- SQL Server Agent must be running/started (or access box via xp_cmdshell first, then start, which requires admin)\n" +
 				"\n" +
@@ -1444,6 +1444,6 @@ var edgeCompositionGenerators = map[string]func(*EdgeContext) string{
 	},
 
 	EdgeKinds.CoerceAndRelayTo: func(ctx *EdgeContext) string {
-		return "MATCH \n(source {objectid: '" + strings.ToUpper(ctx.SourceID) + "'}), \n(server:MSSQL_Server {objectid: '" + escapeAndUpper(ctx.SQLServerID) + "'}), \n(target:MSSQL_Login {objectid: '" + escapeAndUpper(ctx.TargetID) + "'}),\n(coercionvictim:Computer {objectid: '" + strings.ToUpper(ctx.SecurityIdentifier) + "'})\nMATCH p0 = (source)-[:CoerceAndRelayToMSSQL]->(target)\nMATCH p1 = (server)-[:MSSQL_Contains]->(target)\nMATCH p2 = (coercionvictim)-[:MSSQL_HasLogin]->(target)\nMATCH p3 = (target)-[:MSSQL_Connect]->(server)\nRETURN p0, p1, p2, p3"
+		return "MATCH \n(source {objectid: '" + strings.ToUpper(ctx.SourceID) + "'}), \n(server:MSSQL_Server {objectid: '" + escapeAndUpper(ctx.SQLServerID) + "'}), \n(target:MSSQL_Login {objectid: '" + escapeAndUpper(ctx.TargetID) + "'}),\n(coercionvictim:Computer {objectid: '" + strings.ToUpper(ctx.SecurityIdentifier) + "'})\nMATCH p0 = (source)-[:MSSQL_CoerceAndRelayToMSSQL]->(target)\nMATCH p1 = (server)-[:MSSQL_Contains]->(target)\nMATCH p2 = (coercionvictim)-[:MSSQL_HasLogin]->(target)\nMATCH p3 = (target)-[:MSSQL_Connect]->(server)\nRETURN p0, p1, p2, p3"
 	},
 }

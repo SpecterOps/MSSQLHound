@@ -389,7 +389,7 @@ func createMockServerInfo() *types.ServerInfo {
 }
 
 // createMockServerInfoWithComputerLogin creates a mock ServerInfo with a computer account login
-// for testing CoerceAndRelayToMSSQL edge
+// for testing MSSQL_CoerceAndRelayToMSSQL edge
 func createMockServerInfoWithComputerLogin() *types.ServerInfo {
 	info := createMockServerInfo()
 	serverOID := info.ObjectIdentifier
@@ -889,24 +889,37 @@ func TestCoerceAndRelayEdge(t *testing.T) {
 		t.Fatalf("Failed to read output: %v", err)
 	}
 
-	// Check for CoerceAndRelayToMSSQL edge
+	// Check for MSSQL_CoerceAndRelayToMSSQL edge
 	found := false
 	for _, edge := range edges {
 		if edge.Kind == bloodhound.EdgeKinds.CoerceAndRelayTo {
 			found = true
 			// Verify it's from Authenticated Users to the computer login
 			if !strings.Contains(edge.Start.Value, "S-1-5-11") {
-				t.Errorf("Expected CoerceAndRelayToMSSQL source to be Authenticated Users SID, got %s", edge.Start.Value)
+				t.Errorf("Expected MSSQL_CoerceAndRelayToMSSQL source to be Authenticated Users SID, got %s", edge.Start.Value)
 			}
 			if !strings.Contains(edge.End.Value, "WORKSTATION1$") {
-				t.Errorf("Expected CoerceAndRelayToMSSQL target to be computer login, got %s", edge.End.Value)
+				t.Errorf("Expected MSSQL_CoerceAndRelayToMSSQL target to be computer login, got %s", edge.End.Value)
+			}
+			// Verify coercionVictimAndRelayTargetPairs property
+			// JSON deserialization produces []interface{} rather than []string
+			pairs, ok := edge.Properties["coercionVictimAndRelayTargetPairs"].([]interface{})
+			if !ok {
+				t.Errorf("Expected coercionVictimAndRelayTargetPairs property to be a slice, got %T", edge.Properties["coercionVictimAndRelayTargetPairs"])
+			} else if len(pairs) != 1 {
+				t.Errorf("Expected 1 coercion pair, got %d", len(pairs))
+			} else {
+				expected := "Coerce workstation1.domain.com, relay to testserver.domain.com:1433"
+				if pairs[0] != expected {
+					t.Errorf("Expected coercion pair %q, got %q", expected, pairs[0])
+				}
 			}
 			break
 		}
 	}
 
 	if !found {
-		t.Error("Expected CoerceAndRelayToMSSQL edge for computer login with EPA Off, got none")
+		t.Error("Expected MSSQL_CoerceAndRelayToMSSQL edge for computer login with EPA Off, got none")
 		t.Logf("Edges found: %d", len(edges))
 		for _, edge := range edges {
 			t.Logf("  %s: %s -> %s", edge.Kind, edge.Start.Value, edge.End.Value)
@@ -937,7 +950,7 @@ func TestLinkedAsAdminEdgeProperties(t *testing.T) {
 	}
 }
 
-// TestCoerceAndRelayEdgeProperties tests that CoerceAndRelayToMSSQL edge properties are correctly set
+// TestCoerceAndRelayEdgeProperties tests that MSSQL_CoerceAndRelayToMSSQL edge properties are correctly set
 func TestCoerceAndRelayEdgeProperties(t *testing.T) {
 	ctx := &bloodhound.EdgeContext{
 		SourceName:    "AUTHENTICATED USERS",
@@ -950,7 +963,7 @@ func TestCoerceAndRelayEdgeProperties(t *testing.T) {
 	props := bloodhound.GetEdgeProperties(bloodhound.EdgeKinds.CoerceAndRelayTo, ctx)
 
 	if props["traversable"] != true {
-		t.Error("Expected CoerceAndRelayToMSSQL to be traversable")
+		t.Error("Expected MSSQL_CoerceAndRelayToMSSQL to be traversable")
 	}
 	if props["general"] == nil || props["general"] == "" {
 		t.Error("Expected 'general' property to be set")
@@ -958,4 +971,58 @@ func TestCoerceAndRelayEdgeProperties(t *testing.T) {
 	if props["windowsAbuse"] == nil {
 		t.Error("Expected 'windowsAbuse' property to be set")
 	}
+}
+
+func TestDeduplicateByIP(t *testing.T) {
+	config := &Config{}
+	c, _ := New(config)
+
+	t.Run("same IP different hostnames prefers FQDN", func(t *testing.T) {
+		// Both "localhost" and "127.0.0.1" resolve to 127.0.0.1
+		c.serversToProcess = []*ServerToProcess{
+			{Hostname: "localhost", Port: 1433, ConnectionString: "localhost"},
+			{Hostname: "127.0.0.1", Port: 1433, ConnectionString: "127.0.0.1"},
+		}
+		c.deduplicateByIP()
+
+		if len(c.serversToProcess) != 1 {
+			t.Fatalf("expected 1 server after dedup, got %d", len(c.serversToProcess))
+		}
+	})
+
+	t.Run("same IP different ports kept", func(t *testing.T) {
+		c.serversToProcess = []*ServerToProcess{
+			{Hostname: "localhost", Port: 1433, ConnectionString: "localhost:1433"},
+			{Hostname: "localhost", Port: 1434, ConnectionString: "localhost:1434"},
+		}
+		c.deduplicateByIP()
+
+		if len(c.serversToProcess) != 2 {
+			t.Fatalf("expected 2 servers (different ports), got %d", len(c.serversToProcess))
+		}
+	})
+
+	t.Run("unresolvable hostname kept", func(t *testing.T) {
+		c.serversToProcess = []*ServerToProcess{
+			{Hostname: "this-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "unresolvable"},
+			{Hostname: "localhost", Port: 1433, ConnectionString: "localhost"},
+		}
+		c.deduplicateByIP()
+
+		if len(c.serversToProcess) != 2 {
+			t.Fatalf("expected 2 servers (one unresolvable), got %d", len(c.serversToProcess))
+		}
+	})
+
+	t.Run("same IP different instances kept", func(t *testing.T) {
+		c.serversToProcess = []*ServerToProcess{
+			{Hostname: "localhost", Port: 1433, InstanceName: "INST1", ConnectionString: "localhost\\INST1"},
+			{Hostname: "localhost", Port: 1433, InstanceName: "INST2", ConnectionString: "localhost\\INST2"},
+		}
+		c.deduplicateByIP()
+
+		if len(c.serversToProcess) != 2 {
+			t.Fatalf("expected 2 servers (different instances), got %d", len(c.serversToProcess))
+		}
+	})
 }
