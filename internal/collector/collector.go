@@ -65,11 +65,11 @@ type Config struct {
 	SkipADNodeCreation              bool
 	DisableNontraversableEdges bool
 	DisablePossibleEdges       bool
+	SkipIPDedupe               bool // Skip DNS-based IP deduplication of targets
 
 	// Timeouts and limits
 	LinkedServerTimeout    int
 	MemoryThresholdPercent int
-	FileSizeUpdateInterval int
 
 	// Concurrency
 	Workers int // Number of concurrent workers (0 = sequential)
@@ -353,7 +353,7 @@ func (c *Collector) Run() error {
 	}
 
 	// Upload to BloodHound CE if configured
-	if c.config.UploadSchema || (c.config.UploadResults && zipPath != "") {
+	if c.config.BloodHoundURL != "" && (c.config.UploadSchema || (c.config.UploadResults && zipPath != "")) {
 		if err := c.uploadToBloodHound(zipPath); err != nil {
 			c.config.Logger.Warn("BloodHound upload failed", "error", err)
 		}
@@ -727,7 +727,11 @@ func (c *Collector) buildServerList() error {
 	}
 
 	// Deduplicate servers that resolve to the same IP (e.g. NetBIOS vs FQDN)
-	c.deduplicateByIP()
+	if !c.config.SkipIPDedupe {
+		c.deduplicateByIP()
+	} else {
+		c.config.Logger.Info("Skipping IP-based deduplication (--skip-ip-dedupe)")
+	}
 
 	return nil
 }

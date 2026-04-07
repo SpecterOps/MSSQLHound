@@ -537,8 +537,8 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
 ### Possible Edge Options
 
 ```bash
-# Disable non-traversable edges (shows only attack paths, not all permission paths)
-./mssqlhound -t sql.contoso.com --disable-nontraversable-edges
+# Include non-traversable edges (shows all permission paths, not just attack paths)
+./mssqlhound -t sql.contoso.com --include-nontraversable
 
 # Disable possible edges (stricter pathfinding, fewer false positives)
 ./mssqlhound -t sql.contoso.com --disable-possible-edges
@@ -637,7 +637,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `--collect-from-linked` | false | Perform full collection on discovered linked servers |
 | `--linked-timeout` | 300 | Linked server enumeration timeout (seconds) |
 | `--skip-ad-nodes` | false | Skip creating `User`, `Group`, `Computer` nodes |
-| `--disable-nontraversable-edges` | false | Disable non-traversable edges |
+| `--include-nontraversable` | false | Include non-traversable edges |
 | `--disable-possible-edges` | false | Disable possible edges (makes them non-traversable in schema and edge data) |
 | `-w, --workers` | 0 | Number of concurrent workers (0 = sequential processing) |
 
@@ -661,7 +661,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `--token-id` | `BLOODHOUND_TOKEN_ID` | BloodHound API token ID |
 | `--token-key` | `BLOODHOUND_TOKEN_KEY` | BloodHound API token key |
 | `--upload-results` | | Upload collection results to BloodHound after collection |
-| `--upload-schema` | | Upload schema definitions to BloodHound (modified by `--disable-possible-edges`) |
+| `--upload-schema` | | Upload schema definitions (`SCHEMA.json`) to BloodHound |
 
 ### Diagnostics
 
@@ -918,7 +918,7 @@ To populate the MSSQL node glyphs in BloodHound, execute `MSSQLHound.ps1 -Output
 }
 ```
 
-There are several "possible" edges that are traversable by default but are not abusable 100% of the time, including when:
+There are several new edges that have to be non-traversable because they are not abusable 100% of the time, including when:
 - the stored AD credentials might be stale/invalid, but maybe they are!
     - MSSQL_HasMappedCred
     - MSSQL_HasDBScopedCred
@@ -931,9 +931,9 @@ There are several "possible" edges that are traversable by default but are not a
     - MSSQL_ServiceAccountFor
     - It would be unusual, but not impossible, for the MSSQL Server instance to run in the context of a domain service account and have no logins for domain users. If you can infer that certain domain users have access to a particular MSSQL Server instance or discover that information through other means (e.g., naming conventions, OSINT, organizational documentation, internal communications, etc.), you can request service tickets for those users to the MSSQL Server if you have control of the service account (e.g., by cracking weak passwords for Kerberoastable service principals).
       
-Want stricter pathfinding with fewer false positives? Use the `--disable-possible-edges` flag to make these edges non-traversable in both the edge data and the uploaded schema.
+Want to be a bit more aggressive with your pathfinding queries? You can make these edges traversable using the `-MakeInterestingEdgesTraversable` flag.
 
-Non-traversable edges are now included by default so you can understand what permissions on which objects allow the traversable edges to be created. If you want to exclude them for cleaner attack-path-only output, use the `--disable-nontraversable-edges` flag. This is still a work in progress, but look out for the “Composition” item in the edge entity panel for each traversable edges to grab a pastable cypher query to identify the offending permissions.
+I also recommend conducting a collection with the `-IncludeNontraversableEdges` flag enabled at some point if you need to understand what permissions on which objects allow the traversable edges to be created. By default, non-traversable edges are skipped to make querying the data for valid attack paths easier. This is still a work in progress, but look out for the “Composition” item in the edge entity panel for each traversable edges to grab a pastable cypher query to identify the offending permissions.
 
 If the [prebuilt Cypher queries](saved_queries) are returning `failed to translate kinds: unable to map kinds:` errors, upload [seed_data.json](internal/bloodhound/seed_data.json) to populate a single fake instance of each new edge class so they can be queried.
 
@@ -957,7 +957,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
 | **-Domain** `<string>` | • Specify a **domain** to use for name and SID resolution |
 | **-DomainController** `<string>` | • Specify a **domain controller** FQDN/IP to use for name and SID resolution |
 | **-IncludeNontraversableEdges** (switch) | • **On**: • Collect both **traversable and non-traversable edges**<br>• **Off (default)**: Collect **only traversable edges** (good for offensive engagements until Pathfinding supports OpenGraph edges) |
-| **-MakeInterestingEdgesTraversable** (switch) | • **On**: Make the following edges traversable (useful for offensive engagements but prone to false positive edges that may not be abusable):<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasDBScopedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasMappedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasProxyCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_IsTrustedBy**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_LinkedTo**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_ServiceAccountFor**<br>• **Off (default)**: The edges above are non-traversable<br>• **Go equivalent**: `--disable-possible-edges` (inverted: Go makes these edges traversable by default; use `--disable-possible-edges` to disable them) |
+| **-MakeInterestingEdgesTraversable** (switch) | • **On**: Make the following edges traversable (useful for offensive engagements but prone to false positive edges that may not be abusable):<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasDBScopedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasMappedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasProxyCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_IsTrustedBy**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_LinkedTo**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_ServiceAccountFor**<br>• **Off (default)**: The edges above are non-traversable |
 | **-SkipLinkedServerEnum** (switch) | • **On**: Don't enumerate linked servers<br>• **Off (default)**: Enumerate linked servers |
 | **-CollectFromLinkedServers** (switch) | • **On**: If linked servers are found, try and perform a full MSSQL collection against each server<br>• **Off (default)**: If linked servers are found, **don't** try and perform a full MSSQL collection against each server |
 | **-DomainEnumOnly** (switch) | • **On**: If SPNs are found, **don't** try and perform a full MSSQL collection against each server<br>• **Off (default)**: If SPNs are found, try and perform a full MSSQL collection against each server |

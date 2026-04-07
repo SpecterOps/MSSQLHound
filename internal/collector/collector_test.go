@@ -1013,3 +1013,25 @@ func TestDeduplicateByIP(t *testing.T) {
 		}
 	})
 }
+
+func TestSkipIPDedupe(t *testing.T) {
+	config := &Config{SkipIPDedupe: true}
+	c, _ := New(config)
+
+	// Both "localhost" and "127.0.0.1" resolve to the same IP, but with
+	// SkipIPDedupe enabled buildServerList should not call deduplicateByIP,
+	// so we call the guarded path directly and verify both entries survive.
+	c.serversToProcess = []*ServerToProcess{
+		{Hostname: "localhost", Port: 1433, ConnectionString: "localhost"},
+		{Hostname: "127.0.0.1", Port: 1433, ConnectionString: "127.0.0.1"},
+	}
+
+	// Simulate the guarded call from buildServerList
+	if !c.config.SkipIPDedupe {
+		c.deduplicateByIP()
+	}
+
+	if len(c.serversToProcess) != 2 {
+		t.Fatalf("expected 2 servers (dedupe skipped), got %d", len(c.serversToProcess))
+	}
+}

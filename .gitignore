@@ -1,5 +1,5 @@
 .claude/settings.json
-mssql-bloodhound-*.zip
+mssql-bloodhound-*
 mssqlhound
 mssqlhound.exe
 .vscode/

@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "source_kind": "MSSQL_Seed"
+    "source_kind": "MSSQL"
   },
   "graph": {
     "nodes": [
