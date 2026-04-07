@@ -65,7 +65,7 @@
   ],
   "relationship_kinds": [
     {
-      "name": "CoerceAndRelayToMSSQL",
+      "name": "MSSQL_CoerceAndRelayToMSSQL",
       "description": "",
       "is_traversable": true
     },
