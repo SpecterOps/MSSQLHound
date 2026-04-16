@@ -1,6 +1,6 @@
 {
   "schema": {
-    "name": "MSSQLHound",
+    "name": "MSSQL",
     "display_name": "MSSQL (MSSQLHound)",
     "version": "v0.0.1",
     "namespace": "MSSQL"

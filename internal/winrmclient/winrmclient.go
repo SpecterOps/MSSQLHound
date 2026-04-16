@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf16"
 
@@ -98,4 +100,98 @@ func encodePowerShellCommand(script string) string {
 		b[i*2+1] = byte(r >> 8)
 	}
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// DiscoverConfig holds non-transport WinRM parameters for auto-discovery.
+// Discover() cycles through transport combinations to find a working one.
+type DiscoverConfig struct {
+	Host     string
+	Username string
+	Password string
+	Timeout  time.Duration // operational timeout for the returned client
+}
+
+// probeConfig defines one transport combination to try during discovery.
+type probeConfig struct {
+	useHTTPS bool
+	port     int
+	useBasic bool
+	label    string // human-readable label for logging, e.g. "HTTP+NTLM:5985"
+}
+
+// Discover tries multiple WinRM transport configurations and returns the first
+// working client. It probes in order: HTTP+NTLM:5985, HTTPS+NTLM:5986,
+// HTTP+Basic:5985, HTTPS+Basic:5986. Each probe runs a lightweight PowerShell
+// command with a short timeout. The returned client uses the full operational
+// timeout from cfg.Timeout.
+func Discover(ctx context.Context, cfg DiscoverConfig, log *slog.Logger) (*Client, Config, error) {
+	probes := []probeConfig{
+		{useHTTPS: false, port: 5985, useBasic: false, label: "HTTP+NTLM:5985"},
+		{useHTTPS: true, port: 5986, useBasic: false, label: "HTTPS+NTLM:5986"},
+		{useHTTPS: false, port: 5985, useBasic: true, label: "HTTP+Basic:5985"},
+		{useHTTPS: true, port: 5986, useBasic: true, label: "HTTPS+Basic:5986"},
+	}
+
+	const probeTimeout = 10 * time.Second
+	var failures []string
+
+	for _, p := range probes {
+		log.Info("Trying WinRM configuration", "transport", p.label, "host", cfg.Host)
+
+		probeCfg := Config{
+			Host:     cfg.Host,
+			Port:     p.port,
+			Username: cfg.Username,
+			Password: cfg.Password,
+			UseHTTPS: p.useHTTPS,
+			UseBasic: p.useBasic,
+			Timeout:  probeTimeout,
+		}
+
+		probeClient, err := New(probeCfg)
+		if err != nil {
+			log.Debug("WinRM probe failed", "transport", p.label, "error", err)
+			failures = append(failures, fmt.Sprintf("  %s — %v", p.label, err))
+			continue
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		stdout, _, err := probeClient.RunPowerShell(probeCtx, "Write-Output 'OK'")
+		cancel()
+
+		if err != nil {
+			log.Debug("WinRM probe failed", "transport", p.label, "error", err)
+			failures = append(failures, fmt.Sprintf("  %s — %v", p.label, err))
+			continue
+		}
+
+		if !strings.Contains(stdout, "OK") {
+			msg := fmt.Sprintf("unexpected probe output: %q", strings.TrimSpace(stdout))
+			log.Debug("WinRM probe failed", "transport", p.label, "error", msg)
+			failures = append(failures, fmt.Sprintf("  %s — %s", p.label, msg))
+			continue
+		}
+
+		// Probe succeeded — create operational client with full timeout
+		log.Info("WinRM auto-discovery succeeded", "transport", p.label)
+		finalCfg := Config{
+			Host:     cfg.Host,
+			Port:     p.port,
+			Username: cfg.Username,
+			Password: cfg.Password,
+			UseHTTPS: p.useHTTPS,
+			UseBasic: p.useBasic,
+			Timeout:  cfg.Timeout,
+		}
+		client, err := New(finalCfg)
+		if err != nil {
+			return nil, Config{}, fmt.Errorf("create operational WinRM client after discovery: %w", err)
+		}
+		return client, finalCfg, nil
+	}
+
+	return nil, Config{}, fmt.Errorf(
+		"tried %d configurations on host %q, none succeeded:\n%s",
+		len(probes), cfg.Host, strings.Join(failures, "\n"),
+	)
 }

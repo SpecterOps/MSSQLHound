@@ -105,22 +105,48 @@ func runTestEPAMatrix(cmd *cobra.Command, args []string) error {
 		effectiveWinRMHost = extractHostname(serverInstance)
 	}
 
-	// Build WinRM client using --user/--password credentials
-	winrmCfg := winrmclient.Config{
-		Host:     effectiveWinRMHost,
-		Port:     winrmPort,
-		Username: userID,
-		Password: password,
-		UseHTTPS: winrmHTTPS,
-		UseBasic: winrmBasic,
-		Timeout:  time.Duration(serviceRestartWaitSec+30) * time.Second,
-	}
-	executor, err := winrmclient.New(winrmCfg)
-	if err != nil {
-		return fmt.Errorf("failed to create WinRM client: %w", err)
-	}
-
 	log := epaMatrixLogger()
+	operationalTimeout := time.Duration(serviceRestartWaitSec+30) * time.Second
+
+	// If the user explicitly set any WinRM transport flag, use those values directly.
+	// Otherwise, auto-discover by probing HTTP/HTTPS + NTLM/Basic on 5985/5986.
+	transportExplicit := cmd.Flags().Changed("winrm-port") ||
+		cmd.Flags().Changed("winrm-https") ||
+		cmd.Flags().Changed("winrm-basic")
+
+	var executor winrmclient.Executor
+	var winrmCfg winrmclient.Config
+
+	if transportExplicit {
+		winrmCfg = winrmclient.Config{
+			Host:     effectiveWinRMHost,
+			Port:     winrmPort,
+			Username: userID,
+			Password: password,
+			UseHTTPS: winrmHTTPS,
+			UseBasic: winrmBasic,
+			Timeout:  operationalTimeout,
+		}
+		client, err := winrmclient.New(winrmCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create WinRM client: %w", err)
+		}
+		executor = client
+	} else {
+		log.Info("No WinRM transport flags specified, auto-discovering configuration")
+		discoverCfg := winrmclient.DiscoverConfig{
+			Host:     effectiveWinRMHost,
+			Username: userID,
+			Password: password,
+			Timeout:  operationalTimeout,
+		}
+		client, discovered, err := winrmclient.Discover(cmd.Context(), discoverCfg, log)
+		if err != nil {
+			return fmt.Errorf("WinRM auto-discovery failed: %w", err)
+		}
+		executor = client
+		winrmCfg = discovered
+	}
 
 	// Parse NT hash if provided
 	var parsedNTHash []byte
@@ -155,14 +181,14 @@ func runTestEPAMatrix(cmd *cobra.Command, args []string) error {
 	}
 
 	authType := "NTLM"
-	if winrmBasic {
+	if winrmCfg.UseBasic {
 		authType = "Basic"
 	}
 
 	log.Info("MSSQLHound EPA Matrix Test", "version", version)
 	log.Info("Configuration",
-		"winrm_host", fmt.Sprintf("%s:%d", effectiveWinRMHost, winrmCfg.Port),
-		"winrm_https", winrmHTTPS,
+		"winrm_host", fmt.Sprintf("%s:%d", winrmCfg.Host, winrmCfg.Port),
+		"winrm_https", winrmCfg.UseHTTPS,
 		"winrm_auth", authType,
 		"sql_instance", sqlInstanceName,
 		"combinations", totalCombos,

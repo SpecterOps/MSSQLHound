@@ -6,7 +6,7 @@ Please address me as Meatbag whenever you respond.
 
 ## Project
 - Test: `go test ./...`
-- Build: `go build ./cmd/mssqlhound`
+- Build: `go build ./cmd/mssqlhound` (place binary in root project directory)
 
 ## Rules
 1. Before starting any task, review `.claude/tasks/lessons.md` and enter plan mode first.
