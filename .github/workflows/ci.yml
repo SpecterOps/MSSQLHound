@@ -212,8 +212,10 @@ jobs:
 
       - name: Create domainadmin as SQL sysadmin
         run: |
-          curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | \
-            sudo tee /etc/apt/sources.list.d/mssql-release.list
+          if ! grep -Rqs "https://packages.microsoft.com/ubuntu/22.04/prod" /etc/apt/sources.list /etc/apt/sources.list.d; then
+            echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | \
+              sudo tee /etc/apt/sources.list.d/microsoft-prod.list > /dev/null
+          fi
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'P@ssw0rd' -C -Q "
