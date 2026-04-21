@@ -6,6 +6,7 @@ A collector for adding MSSQL attack paths to [BloodHound](https://github.com/Spe
 Introductory blog posts:
 - https://specterops.io/blog/2025/08/04/adding-mssql-to-bloodhound-with-opengraph/
 - https://specterops.io/blog/2026/01/20/updates-to-the-mssqlhound-opengraph-collector-for-bloodhound/
+- https://specterops.io/blog/2026/04/23/mssqlhound-now-available-in-go/
 
 Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), Twitter ([@_Mayyhem](https://x.com/_Mayyhem)), or open an issue if you have any questions I can help with!
 
@@ -270,7 +271,7 @@ If all three methods fail, a warning is logged: `Could not determine service acc
 | Query | Purpose |
 |-------|---------|
 | `SELECT ... FROM sys.servers JOIN sys.linked_logins` | Enumerate linked servers and login mappings |
-| `SELECT ... FROM OPENQUERY([LinkedServer], '...')` | Recursive linked server traversal (up to 10 levels deep) |
+| `SELECT ... FROM OPENQUERY([LinkedServer], '...')` | Linked server relationship discovery across chained links (up to 10 levels deep) |
 
 ## Files Created
 
@@ -322,7 +323,7 @@ The original MSSQLHound PowerShell script is an excellent tool for SQL Server se
 - **Compiled Binary**: No PowerShell interpreter overhead, faster startup and execution
 
 ### Portability
-- **Cross-Platform**: Runs on Windows, Linux, and macOS (Windows authentication requires Windows)
+- **Cross-Platform**: Runs on Windows, Linux, and macOS (implicit SSPI is Windows-only; explicit Kerberos with `-k` works cross-platform)
 - **Single Binary**: No dependencies, easy to deploy and run
 - **No PowerShell Required**: Can run on systems without PowerShell installed
 
@@ -519,26 +520,26 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 export BLOODHOUND_URL=https://bloodhound.contoso.com
 export BLOODHOUND_TOKEN_ID=<token-id>
 export BLOODHOUND_TOKEN_KEY=<token-key>
-./mssqlhound -t sql.contoso.com -u sa -p password --upload-results
+./mssqlhound -t sql.contoso.com -u sa -p password --upload-results-only
 
 # Explicit long flags
 ./mssqlhound -t sql.contoso.com -u sa -p password \
   --bloodhound-url https://bloodhound.contoso.com \
   --token-id <id> --token-key <key> \
-  --upload-results
+  --upload-results-only
 
 # Upload the MSSQL schema once to register edge/node types in BloodHound
 ./mssqlhound \
   --bloodhound-url https://bloodhound.contoso.com \
   --token-id <id> --token-key <key> \
-  --upload-schema
+  --upload-schema-only --skip-collection
 ```
 
 ### Possible Edge Options
 
 ```bash
-# Include non-traversable edges (shows all permission paths, not just attack paths)
-./mssqlhound -t sql.contoso.com --include-nontraversable
+# Disable non-traversable edges (attack-path-focused output)
+./mssqlhound -t sql.contoso.com --disable-nontraversable-edges
 
 # Disable possible edges (stricter pathfinding, fewer false positives)
 ./mssqlhound -t sql.contoso.com --disable-possible-edges
@@ -553,7 +554,7 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
 # Skip linked server enumeration (faster, less noisy)
 ./mssqlhound -t sql.contoso.com --skip-linked-servers
 
-# Perform full collection on each discovered linked server
+# Queue discovered linked servers as additional direct targets for later collection passes
 ./mssqlhound -t sql.contoso.com --collect-from-linked
 
 # Reduce linked server timeout from the default 300s
@@ -617,8 +618,8 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `-d, --domain` | Domain to use for name and SID resolution |
 | `--dc` | Domain controller hostname or IP (auto-resolved from `--domain` if omitted; used for LDAP and as DNS resolver if `--dns-resolver` not specified) |
 | `--dns-resolver` | DNS resolver IP address for domain lookups |
-| `--ldap-user` | LDAP user (`DOMAIN\user` or `user@domain`) for GSSAPI/Kerberos bind |
-| `--ldap-password` | LDAP password for GSSAPI/Kerberos bind |
+| `--ldap-user` | Domain user (`DOMAIN\user` or `user@domain`) for LDAP queries and EPA testing; not used for SQL login |
+| `--ldap-password` | Password for `--ldap-user`; used for LDAP bind and EPA NTLM, not for SQL login |
 
 ### Target Selection
 
@@ -634,10 +635,10 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 |------|---------|-------------|
 | `--domain-enum-only` | false | Only enumerate SPNs/computers, skip MSSQL collection |
 | `--skip-linked-servers` | false | Don't enumerate linked servers |
-| `--collect-from-linked` | false | Perform full collection on discovered linked servers |
+| `--collect-from-linked` | false | Queue discovered linked servers as additional direct targets and collect them in later passes |
 | `--linked-timeout` | 300 | Linked server enumeration timeout (seconds) |
 | `--skip-ad-nodes` | false | Skip creating `User`, `Group`, `Computer` nodes |
-| `--include-nontraversable` | false | Include non-traversable edges |
+| `--disable-nontraversable-edges` | false | Disable non-traversable edges |
 | `--disable-possible-edges` | false | Disable possible edges (makes them non-traversable in schema and edge data) |
 | `-w, --workers` | 0 | Number of concurrent workers (0 = sequential processing) |
 
@@ -650,7 +651,6 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `--file-size-limit` | `1GB` | Stop enumeration after output files exceed this size |
 | `--log-per-target` | false | Save per-target log files in a separate zip archive |
 | `--memory-threshold` | 90 | Stop when memory usage exceeds this percentage |
-| `--size-update-interval` | 5 | Interval for file size updates (seconds) |
 
 ### BloodHound Upload
 
@@ -660,8 +660,9 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `--bloodhound-url` | `BLOODHOUND_URL` | BloodHound CE instance URL |
 | `--token-id` | `BLOODHOUND_TOKEN_ID` | BloodHound API token ID |
 | `--token-key` | `BLOODHOUND_TOKEN_KEY` | BloodHound API token key |
-| `--upload-results` | | Upload collection results to BloodHound after collection |
-| `--upload-schema` | | Upload schema definitions (`SCHEMA.json`) to BloodHound |
+| `--upload-schema-only` | | Only upload schema definitions to BloodHound (skip results upload) |
+| `--upload-results-only` | | Only upload collection results to BloodHound (skip schema upload) |
+| `--skip-collection` | | Skip data collection (use with schema upload or upload-only workflows) |
 
 ### Diagnostics
 
@@ -744,9 +745,9 @@ Checks if the SQL Server version is vulnerable to CVE-2025-49758 and reports the
 
 ## Known Limitations and Issues (Go)
 
-### Windows Authentication on Non-Windows Platforms
+### Implicit Windows Authentication on Non-Windows Platforms
 
-Windows Integrated Authentication (SSPI/Kerberos) is only available when running on Windows. On Linux/macOS, use SQL authentication instead.
+Native Windows SSPI is only available on Windows. On Linux/macOS, use SQL authentication or explicit Kerberos material with `-k` (for example `KRB5CCNAME`, `--krb5-credcachefile`, or `--krb5-keytabfile`).
 
 ### GSSAPI/Kerberos Authentication Issues
 
@@ -854,13 +855,15 @@ LDAP:389 GSSAPI: <error>
 This helps identify whether the issue is TLS-related or authentication-related.
 
 # PowerShell Usage
+The PowerShell collector is the legacy implementation. Current development is focused on the Go binary above, and the script now lives at `powershell_deprecated/MSSQLHound.ps1`.
+
 Run MSSQLHound from a box where you aren’t highly concerned about resource consumption. While there are guardrails in place to stop the script if resource consumption is too high, it’s probably a good idea to be careful and run it on a workstation instead of directly on a critical database server, just in case.
 
 If you don't already have a specific target or targets in mind, start by running the script with the `-DomainEnumOnly` flag set to see just how many servers you’re dealing with in Active Directory. Then, use the `-ServerInstance` option to run it again for a single server or add all of the servers that look interesting to a file and run it again with the `-ServerListFile` option. 
 
 If you don't do a dry run first and collect from all SQL servers with SPNs in the domain (the default action), expect the script to take a very long time to finish and eat up a ton of disk space if there ar a lot of servers in the environment. Based on limited testing in client environments, the file size for each server before they are all zipped ranges significantly from 2MB to 50MB+, depending on how many objects are on the server.
 
-To populate the MSSQL node glyphs in BloodHound, execute `MSSQLHound.ps1 -OutputFormat BloodHound-customnodes` (or copy the following) and use the API Explorer page to submit the JSON to the `custom-nodes` endpoint.
+To populate the MSSQL node glyphs in BloodHound, execute `powershell_deprecated/MSSQLHound.ps1 -OutputFormat BloodHound-customnodes` (or copy the following) and use the API Explorer page to submit the JSON to the `custom-nodes` endpoint.
 
 ```
 {
@@ -931,14 +934,14 @@ There are several new edges that have to be non-traversable because they are not
     - MSSQL_ServiceAccountFor
     - It would be unusual, but not impossible, for the MSSQL Server instance to run in the context of a domain service account and have no logins for domain users. If you can infer that certain domain users have access to a particular MSSQL Server instance or discover that information through other means (e.g., naming conventions, OSINT, organizational documentation, internal communications, etc.), you can request service tickets for those users to the MSSQL Server if you have control of the service account (e.g., by cracking weak passwords for Kerberoastable service principals).
       
-Want to be a bit more aggressive with your pathfinding queries? You can make these edges traversable using the `-MakeInterestingEdgesTraversable` flag.
+In the deprecated PowerShell script as currently shipped, these edges are effectively traversable by default because `-MakeInterestingEdgesTraversable` is initialized on. If you modify the script or explicitly pass the switch as false, that setting controls whether they remain non-traversable.
 
 I also recommend conducting a collection with the `-IncludeNontraversableEdges` flag enabled at some point if you need to understand what permissions on which objects allow the traversable edges to be created. By default, non-traversable edges are skipped to make querying the data for valid attack paths easier. This is still a work in progress, but look out for the “Composition” item in the edge entity panel for each traversable edges to grab a pastable cypher query to identify the offending permissions.
 
 If the [prebuilt Cypher queries](saved_queries) are returning `failed to translate kinds: unable to map kinds:` errors, upload [seed_data.json](internal/bloodhound/seed_data.json) to populate a single fake instance of each new edge class so they can be queried.
 
 # PowerShell Command Line Options
-For the latest and most reliable information, please execute MSSQLHound with the `-Help` flag.
+For the latest and most reliable information, please execute `powershell_deprecated/MSSQLHound.ps1 -Help`.
 
 | Option<br>______________________________________________ | Values<br>_______________________________________________________________________________________________ |
 |--------|--------|
@@ -957,9 +960,9 @@ For the latest and most reliable information, please execute MSSQLHound with the
 | **-Domain** `<string>` | • Specify a **domain** to use for name and SID resolution |
 | **-DomainController** `<string>` | • Specify a **domain controller** FQDN/IP to use for name and SID resolution |
 | **-IncludeNontraversableEdges** (switch) | • **On**: • Collect both **traversable and non-traversable edges**<br>• **Off (default)**: Collect **only traversable edges** (good for offensive engagements until Pathfinding supports OpenGraph edges) |
-| **-MakeInterestingEdgesTraversable** (switch) | • **On**: Make the following edges traversable (useful for offensive engagements but prone to false positive edges that may not be abusable):<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasDBScopedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasMappedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasProxyCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_IsTrustedBy**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_LinkedTo**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_ServiceAccountFor**<br>• **Off (default)**: The edges above are non-traversable |
+| **-MakeInterestingEdgesTraversable** (switch) | • **On**: Make the following edges traversable (useful for offensive engagements but prone to false positive edges that may not be abusable):<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasDBScopedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasMappedCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_HasProxyCred**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_IsTrustedBy**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_LinkedTo**<br>&nbsp;&nbsp;&nbsp;&nbsp;• **MSSQL_ServiceAccountFor**<br>• **Current shipped default**: effectively **On** in the deprecated script |
 | **-SkipLinkedServerEnum** (switch) | • **On**: Don't enumerate linked servers<br>• **Off (default)**: Enumerate linked servers |
-| **-CollectFromLinkedServers** (switch) | • **On**: If linked servers are found, try and perform a full MSSQL collection against each server<br>• **Off (default)**: If linked servers are found, **don't** try and perform a full MSSQL collection against each server |
+| **-CollectFromLinkedServers** (switch) | • **On**: Queue discovered linked servers as additional direct targets and collect them in later passes<br>• **Off (default)**: Discover linked server relationships, but **don't** add those servers to the processing queue |
 | **-DomainEnumOnly** (switch) | • **On**: If SPNs are found, **don't** try and perform a full MSSQL collection against each server<br>• **Off (default)**: If SPNs are found, try and perform a full MSSQL collection against each server |
 | **-InstallADModule** (switch) | • **On**: Try to install the ActiveDirectory module for PowerShell if it is not already installed<br>• **Off (default)**: Do not try to install the ActiveDirectory module for PowerShell if it is not already installed. Rely on DirectoryServices, ADSISearcher, DirectorySearcher, and NTAccount.Translate() for object resolution. |
 | **-LinkedServerTimeout** `<uint>` | • Give up enumerating linked servers after `X` seconds<br>• Default: `300` seconds (5 minutes) |
@@ -968,16 +971,14 @@ For the latest and most reliable information, please execute MSSQLHound with the
 | **-Version** `<switch>` | • Display version information and exit |
 
 # Limitations
-- MSSQLHound can’t currently collect nodes and edges from linked servers over the link, although I’d like to add more linked server collection functionality in the future.
-- MSSQLHound doesn’t check DENY permissions. Because permissions are denied by default unless explicitly granted, it is assumed that use of DENY permissions is rare. One exception is the CONNECT SQL permission, for which the DENY permission is checked to see if the principal can remotely log in to the MSSQL instance at all. 
-- MSSQLHound stops enumerating at the database level. It could be modified to go deeper (to the table/stored procedure or even column level), but that would degrade performance, especially when merging with the AD graph.
-- EPA enumeration without a login or Remote Registry access is not yet supported (but will be soon)
-- Separate collections in domains that can’t reach each other for principal SID resolution may not merge correctly when they are ingested (i.e., more than one MSSQL_Server node may represent the same server, one labelled with the SID, one with the name).
+- MSSQLHound can discover linked servers and queue them as additional direct targets, but it still does not perform a full node-and-edge collection through an existing linked-server session.
+- MSSQLHound doesn’t check `DENY` permissions broadly. One exception is `DENY CONNECT SQL`, which is checked to determine whether a principal can remotely log in to the instance at all.
+- MSSQLHound stops enumerating at the database level. It does not descend into tables, stored procedures, or columns.
+- Separate collections in domains that can’t resolve each other’s principals may not merge cleanly when ingested (for example, one `MSSQL_Server` node identified by SID and another by hostname may represent the same server).
 
 # Future Development:
-- Unprivileged EPA collection (in the works)
 - Option to zip after every server (to save disk space)
-- Collection from linked servers
+- Full collection through existing linked-server sessions
 - Collect across domains and trusts
 - Azure extension for SQL Server
 - AZUser/Groups for server logins / database users
@@ -985,11 +986,7 @@ For the latest and most reliable information, please execute MSSQLHound with the
 - DENY permissions
 - EXECUTE permission on xp_cmdshell
 - UNSAFE/EXTERNAL_ACCESS permission on assembly (impacted by TRUSTWORTHY)
-- Add this to MSSQL_CoerceAndRelayToMSSQL:
-    - Domain principal has CONNECT SQL (and EXECUTE on xp_dirtree or other stored procedures that will authenticate to a remote host)
-    - Service account/Computer has a server login that is enabled on another SQL instance
-    - EPA is not required on remote SQL instance
- 
+
 # MSSQL Graph Model
 <img width="4562" height="2356" alt="MSSQL Red Green (1)" src="https://github.com/user-attachments/assets/ddf897ef-6531-44e0-8911-73f5adc3dcdd" />
 
@@ -1126,7 +1123,7 @@ A type of database principal that is not associated with a user but instead is a
 
 
 # MSSQL Edges Reference
-This section includes explanations for edges that have their own unique properties. Please refer to the `$script:EdgePropertyGenerators` variable in `MSSQLHound.ps1` for the following details:
+This section includes explanations for edges that have their own unique properties. Please refer to the `$script:EdgePropertyGenerators` variable in `powershell_deprecated/MSSQLHound.ps1` for the following details:
 - Source and target node classes (all combinations)
 - Requirements
 - Default fixed roles with the permission
@@ -1220,7 +1217,7 @@ This section includes explanations for edges that have their own unique properti
 | **Uses Impersonation**: bool                  | • Does the linked server attempt to use the current user's Windows credentials to authenticate to the remote server?<br>• For SQL Server authentication, a login with the exact same name and password must exist on the remote server.<br>• For Windows logins, the login must be a valid login on the linked server.<br>• This requires Kerberos delegation to be properly configured<br>• The user's actual Windows identity is passed through to the remote server |
 
 ### Remaining Edges
-Please refer to the `$script:EdgePropertyGenerators` variable in `MSSQLHound.ps1` for the following details:
+Please refer to the `$script:EdgePropertyGenerators` variable in `powershell_deprecated/MSSQLHound.ps1` for the following details:
 - Source and target node classes (all combinations)
 - Requirements
 - Default fixed roles with the permission
