@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "source_kind": "MSSQL_Seed"
+    "source_kind": "MSSQL"
   },
   "graph": {
     "nodes": [
@@ -11,7 +11,6 @@
       }
     ],
     "edges": [
-      { "kind": "CoerceAndRelayToMSSQL", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_AddMember", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_Alter", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_AlterAnyAppRole", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
@@ -20,6 +19,7 @@
       { "kind": "MSSQL_AlterAnyServerRole", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_ChangeOwner", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_ChangePassword", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
+      { "kind": "MSSQL_CoerceAndRelayToMSSQL", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_Connect", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_ConnectAnyDatabase", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },
       { "kind": "MSSQL_Contains", "start": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" }, "end": { "value": "9c3a1f7a-1d6b-4d87-b61b-1c3b7a9e4f01" } },

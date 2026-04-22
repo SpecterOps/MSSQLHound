@@ -1,0 +1,256 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [go]
+  # pull_request:
+  #   branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run unit tests
+        run: go test -v -count=1 -timeout 10m ./...
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Start Samba AD DC
+        run: |
+          # Stop systemd-resolved to free port 53 for the Samba DC DNS
+          sudo systemctl stop systemd-resolved
+          sudo rm -f /etc/resolv.conf
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+
+          # Use --network host so all Samba services (DNS/53, LDAP/389,
+          # Kerberos/88, etc.) bind directly to localhost. No port publishing
+          # or NAT needed — eliminates DNS forwarding issues.
+          docker run -d --privileged \
+            --name dc --hostname DC \
+            --network host \
+            -e REALM='MAYYHEM.COM' \
+            -e DOMAIN='MAYYHEM' \
+            -e ADMIN_PASS='P@ssw0rd' \
+            -e DNS_FORWARDER='8.8.8.8' \
+            diegogslomp/samba-ad-dc
+
+      - name: Wait for Samba AD DC
+        run: |
+          echo "Waiting for Samba provisioning and startup..."
+          for i in $(seq 1 90); do
+            if docker exec dc bash -c "echo > /dev/tcp/127.0.0.1/389" 2>/dev/null; then
+              echo "LDAP port is up, verifying domain info..."
+              if docker exec dc samba-tool domain info 127.0.0.1 2>/dev/null | grep -q "Domain"; then
+                echo "Samba AD DC is ready"
+                docker exec dc samba-tool domain info 127.0.0.1
+                exit 0
+              fi
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "Timed out waiting for Samba AD DC"
+              docker logs dc
+              exit 1
+            fi
+            echo "Waiting for Samba AD DC... ($i/90)"
+            sleep 3
+          done
+
+      - name: Create AD accounts and keytab
+        run: |
+          # Create domainadmin
+          docker exec dc samba-tool user create domainadmin 'P@ssw0rd' --use-username-as-cn
+          docker exec dc samba-tool group addmembers "Domain Admins" domainadmin
+          # Create SQL Server service account
+          docker exec dc samba-tool user create sccmsqlsvc 'P@ssw0rd' --use-username-as-cn
+          HOSTNAME=$(hostname)
+          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com sccmsqlsvc
+          docker exec dc samba-tool spn add MSSQLSvc/${HOSTNAME}.mayyhem.com:1433 sccmsqlsvc
+          # Export keytab
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab --principal=sccmsqlsvc
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
+            --principal=MSSQLSvc/${HOSTNAME}.mayyhem.com
+          docker exec dc samba-tool domain exportkeytab /tmp/mssql.keytab \
+            --principal=MSSQLSvc/${HOSTNAME}.mayyhem.com:1433
+          docker cp dc:/tmp/mssql.keytab /tmp/mssql.keytab
+
+      - name: Configure DNS and Kerberos
+        run: |
+          HOSTNAME=$(hostname)
+          echo "127.0.0.1 dc.mayyhem.com dc mayyhem.com ${HOSTNAME}.mayyhem.com" | sudo tee -a /etc/hosts
+          # Point resolv.conf at the Samba DC DNS (now on localhost via host networking)
+          echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user
+
+          cat > /tmp/krb5.conf <<'KRBEOF'
+          [libdefaults]
+              default_realm = MAYYHEM.COM
+              dns_lookup_realm = false
+              dns_lookup_kdc = false
+              rdns = false
+          [realms]
+              MAYYHEM.COM = {
+                  kdc = 127.0.0.1
+                  admin_server = 127.0.0.1
+                  default_domain = mayyhem.com
+              }
+          [domain_realm]
+              .mayyhem.com = MAYYHEM.COM
+              mayyhem.com = MAYYHEM.COM
+          KRBEOF
+          sed 's/^          //' /tmp/krb5.conf | sudo tee /etc/krb5.conf > /dev/null
+
+          echo "--- krb5.conf ---"
+          cat /etc/krb5.conf
+
+      - name: Install SQL Server 2022
+        run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | \
+            sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list | \
+            sudo tee /etc/apt/sources.list.d/mssql-server-2022.list
+          sudo apt-get update
+          sudo apt-get install -y mssql-server
+          sudo MSSQL_SA_PASSWORD='P@ssw0rd' MSSQL_PID='Developer' \
+            /opt/mssql/bin/mssql-conf setup accept-eula
+
+      - name: Register hostname in AD DNS
+        run: |
+          HOSTNAME=$(hostname)
+          # Register A record in Samba DC DNS (custom resolver bypasses /etc/hosts)
+          docker exec dc samba-tool dns add 127.0.0.1 mayyhem.com $HOSTNAME A 127.0.0.1 \
+            -U Administrator --password='P@ssw0rd'
+          # Export FQDN for use in later env blocks
+          echo "RUNNER_FQDN=${HOSTNAME}.mayyhem.com" >> $GITHUB_ENV
+
+      - name: Verify host-to-DC connectivity
+        run: |
+          echo "Testing services on localhost (host network)..."
+          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/389' && echo "LDAP OK" || echo "LDAP FAILED"
+          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/636' && echo "LDAPS OK" || echo "LDAPS FAILED"
+          timeout 5 bash -c 'echo > /dev/tcp/127.0.0.1/88' && echo "Kerberos OK" || echo "Kerberos FAILED"
+          echo "Testing DNS resolution via Samba DC..."
+          nslookup mayyhem.com 127.0.0.1
+          nslookup $(hostname).mayyhem.com 127.0.0.1 || true
+          dig mayyhem.com @127.0.0.1 +short || true
+
+      - name: Join host to Samba AD domain
+        run: |
+          # SQL Server on Linux needs the host to be domain-joined so it can
+          # resolve Windows accounts for CREATE LOGIN ... FROM WINDOWS.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y realmd sssd \
+            sssd-tools adcli packagekit samba-common-bin
+          echo 'P@ssw0rd' | sudo realm join mayyhem.com -U Administrator --verbose
+          sudo systemctl start sssd
+          # Verify domain join
+          id Administrator@mayyhem.com || true
+          realm list
+
+      - name: Configure SQL Server for AD auth
+        run: |
+          # Verify domain account is resolvable after domain join
+          id sccmsqlsvc@mayyhem.com || echo "WARNING: domain account not yet resolvable via SSSD"
+
+          # Grant the domain account ownership of SQL Server directories
+          sudo chown -R sccmsqlsvc@mayyhem.com /var/opt/mssql
+          sudo chown -R sccmsqlsvc@mayyhem.com /opt/mssql
+
+          # Override systemd unit to run SQL Server as the domain account
+          sudo mkdir -p /etc/systemd/system/mssql-server.service.d
+          cat <<'EOF' | sudo tee /etc/systemd/system/mssql-server.service.d/override.conf
+          [Service]
+          User=sccmsqlsvc@mayyhem.com
+          Group=domain users@mayyhem.com
+          EOF
+          sudo sed -i 's/^          //' /etc/systemd/system/mssql-server.service.d/override.conf
+          sudo systemctl daemon-reload
+
+          sudo mkdir -p /var/opt/mssql/secrets
+          sudo cp /tmp/mssql.keytab /var/opt/mssql/secrets/mssql.keytab
+          sudo chown sccmsqlsvc@mayyhem.com /var/opt/mssql/secrets/mssql.keytab
+          sudo chmod 400 /var/opt/mssql/secrets/mssql.keytab
+          sudo /opt/mssql/bin/mssql-conf set network.kerberoskeytabfile /var/opt/mssql/secrets/mssql.keytab
+          sudo /opt/mssql/bin/mssql-conf set network.privilegedadaccount sccmsqlsvc
+          echo "Restarting SQL Server as MAYYHEM\\sccmsqlsvc (timeout 60s)..."
+          sudo systemctl restart mssql-server &
+          RESTART_PID=$!
+          for i in $(seq 1 12); do
+            if ! kill -0 $RESTART_PID 2>/dev/null; then
+              break
+            fi
+            sleep 5
+            echo "Waiting for SQL Server restart... ($((i*5))s)"
+          done
+          sleep 3
+          systemctl status mssql-server --no-pager || true
+          # Confirm SQL Server is running as the domain account
+          ps -eo user,pid,comm | grep sqlservr || true
+          echo "SQL Server error log (last 30 lines):"
+          sudo tail -30 /var/opt/mssql/log/errorlog || true
+
+      - name: Create domainadmin as SQL sysadmin
+        run: |
+          if ! grep -Rqs "https://packages.microsoft.com/ubuntu/22.04/prod" /etc/apt/sources.list /etc/apt/sources.list.d; then
+            echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | \
+              sudo tee /etc/apt/sources.list.d/microsoft-prod.list > /dev/null
+          fi
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'P@ssw0rd' -C -Q "
+            CREATE LOGIN [MAYYHEM\domainadmin] FROM WINDOWS;
+            ALTER SERVER ROLE [sysadmin] ADD MEMBER [MAYYHEM\domainadmin];
+          "
+
+      - name: Verify AD auth
+        run: |
+          echo 'P@ssw0rd' | kinit Administrator@MAYYHEM.COM
+          klist
+
+      - name: Verify SQL Server service account
+        run: |
+          echo "=== sys.dm_server_services ==="
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'P@ssw0rd' -C -Q "
+            SELECT servicename, service_account, startup_type_desc
+            FROM sys.dm_server_services;
+          "
+          echo ""
+          echo "=== OS process owner ==="
+          ps -eo user,pid,comm | grep sqlservr || true
+
+      - name: Run integration tests
+        env:
+          MSSQL_SERVER: ${{ env.RUNNER_FQDN }}
+          MSSQL_USER: sa
+          MSSQL_PASSWORD: P@ssw0rd
+          MSSQL_DOMAIN: mayyhem.com
+          MSSQL_DC: dc.mayyhem.com
+          LDAP_USER: Administrator@mayyhem.com
+          LDAP_PASSWORD: P@ssw0rd
+          MSSQL_SKIP_DOMAIN: "false"
+          MSSQL_ACTION: all
+          MSSQL_SKIP_HTML: "true"
+        run: |
+          go test -v -count=1 -tags integration -timeout 30m \
+            -run TestIntegrationAll ./internal/collector/...
