@@ -777,9 +777,9 @@ func TestOutputFormat(t *testing.T) {
 
 	// Write a test edge
 	edge := &bloodhound.Edge{
-		Start: bloodhound.EdgeEndpoint{Value: "source-1"},
-		End:   bloodhound.EdgeEndpoint{Value: "target-1"},
-		Kind:  "MSSQL_Contains",
+		Start:      bloodhound.EdgeEndpoint{Value: "source-1"},
+		End:        bloodhound.EdgeEndpoint{Value: "target-1"},
+		Kind:       "MSSQL_Contains",
 		Properties: map[string]interface{}{},
 	}
 	if err := writer.WriteEdge(edge); err != nil {
@@ -1033,5 +1033,41 @@ func TestSkipIPDedupe(t *testing.T) {
 
 	if len(c.serversToProcess) != 2 {
 		t.Fatalf("expected 2 servers (dedupe skipped), got %d", len(c.serversToProcess))
+	}
+}
+
+func TestRunDomainEnumOnlySkipsCollection(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	config := &Config{
+		TempDir:        tmpDir,
+		ServerInstance: "sql.example.com",
+		DomainEnumOnly: true,
+		SkipIPDedupe:   true,
+	}
+
+	c, err := New(config)
+	if err != nil {
+		t.Fatalf("failed to create collector: %v", err)
+	}
+
+	if err := c.Run(); err != nil {
+		t.Fatalf("expected domain-enum-only run to succeed, got error: %v", err)
+	}
+
+	if len(c.serversToProcess) != 1 {
+		t.Fatalf("expected 1 discovered server, got %d", len(c.serversToProcess))
+	}
+
+	if len(c.outputFiles) != 0 {
+		t.Fatalf("expected no output files when domain-enum-only is enabled, got %d", len(c.outputFiles))
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to read temp dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no files to be created, found %d", len(entries))
 	}
 }

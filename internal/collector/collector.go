@@ -57,12 +57,12 @@ type Config struct {
 	Debug         bool
 
 	// Collection options
-	DomainEnumOnly                  bool
-	SkipLinkedServerEnum            bool
-	CollectFromLinkedServers        bool
-	SkipPrivateAddress              bool
-	ScanAllComputers                bool
-	SkipADNodeCreation              bool
+	DomainEnumOnly             bool
+	SkipLinkedServerEnum       bool
+	CollectFromLinkedServers   bool
+	SkipPrivateAddress         bool
+	ScanAllComputers           bool
+	SkipADNodeCreation         bool
 	DisableNontraversableEdges bool
 	DisablePossibleEdges       bool
 	SkipIPDedupe               bool // Skip DNS-based IP deduplication of targets
@@ -289,64 +289,74 @@ func (c *Collector) Run() error {
 			return fmt.Errorf("no servers to process")
 		}
 
-		c.config.Logger.Info("Processing SQL Servers", "count", len(c.serversToProcess))
-		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Memory usage", "usage", c.getMemoryUsage())
-
-		// Track all processed servers to avoid duplicates
-		processedServers := make(map[string]bool)
-
-		// Process servers (concurrently if workers > 0)
-		if c.config.Workers > 0 {
-			c.processServersConcurrently()
-			// Mark all initial servers as processed
+		if c.config.DomainEnumOnly {
+			sort.Slice(c.serversToProcess, func(i, j int) bool {
+				return strings.ToLower(c.serversToProcess[i].ConnectionString) < strings.ToLower(c.serversToProcess[j].ConnectionString)
+			})
+			c.config.Logger.Info("Domain enumeration only enabled; skipping MSSQL collection", "count", len(c.serversToProcess))
 			for _, server := range c.serversToProcess {
-				processedServers[strings.ToLower(server.Hostname)] = true
+				c.config.Logger.Info("Discovered server", "server", server.ConnectionString, "objectID", server.ObjectIdentifier)
 			}
 		} else {
-			// Sequential processing
-			for i, server := range c.serversToProcess {
-				log := c.config.Logger.With("target", server.ConnectionString)
-				log.Info("Processing server", "progress", fmt.Sprintf("%d/%d", i+1, len(c.serversToProcess)))
-				processedServers[strings.ToLower(server.Hostname)] = true
+			c.config.Logger.Info("Processing SQL Servers", "count", len(c.serversToProcess))
+			c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Memory usage", "usage", c.getMemoryUsage())
 
-				if err := c.processServer(server); err != nil {
-					log.Warn("Failed to process server", "error", err)
-					// Continue with other servers
+			// Track all processed servers to avoid duplicates
+			processedServers := make(map[string]bool)
+
+			// Process servers (concurrently if workers > 0)
+			if c.config.Workers > 0 {
+				c.processServersConcurrently()
+				// Mark all initial servers as processed
+				for _, server := range c.serversToProcess {
+					processedServers[strings.ToLower(server.Hostname)] = true
+				}
+			} else {
+				// Sequential processing
+				for i, server := range c.serversToProcess {
+					log := c.config.Logger.With("target", server.ConnectionString)
+					log.Info("Processing server", "progress", fmt.Sprintf("%d/%d", i+1, len(c.serversToProcess)))
+					processedServers[strings.ToLower(server.Hostname)] = true
+
+					if err := c.processServer(server); err != nil {
+						log.Warn("Failed to process server", "error", err)
+						// Continue with other servers
+					}
 				}
 			}
-		}
 
-		// Process linked servers recursively if enabled
-		if c.config.CollectFromLinkedServers {
-			c.processLinkedServersQueue(processedServers)
-		}
-
-		// Write accumulated AD nodes to separate files (computers.json, users.json, groups.json)
-		if !c.config.SkipADNodeCreation {
-			if err := c.writeADFiles(); err != nil {
-				return fmt.Errorf("failed to write AD files: %w", err)
+			// Process linked servers recursively if enabled
+			if c.config.CollectFromLinkedServers {
+				c.processLinkedServersQueue(processedServers)
 			}
-		}
 
-		// Create zip file
-		if len(c.outputFiles) > 0 {
-			var err error
-			zipPath, err = c.createZipFile()
-			if err != nil {
-				return fmt.Errorf("failed to create zip file: %w", err)
+			// Write accumulated AD nodes to separate files (computers.json, users.json, groups.json)
+			if !c.config.SkipADNodeCreation {
+				if err := c.writeADFiles(); err != nil {
+					return fmt.Errorf("failed to write AD files: %w", err)
+				}
 			}
-			c.config.Logger.Info("Output written", "path", zipPath)
-		} else {
-			c.config.Logger.Info("No data collected - no output file created")
-		}
 
-		// Create separate zip for per-target log files
-		if c.config.LogPerTarget && len(c.logFiles) > 0 {
-			logsZipPath, err := c.createLogsZipFile()
-			if err != nil {
-				return fmt.Errorf("failed to create logs zip file: %w", err)
+			// Create zip file
+			if len(c.outputFiles) > 0 {
+				var err error
+				zipPath, err = c.createZipFile()
+				if err != nil {
+					return fmt.Errorf("failed to create zip file: %w", err)
+				}
+				c.config.Logger.Info("Output written", "path", zipPath)
+			} else {
+				c.config.Logger.Info("No data collected - no output file created")
 			}
-			c.config.Logger.Info("Per-target logs written", "path", logsZipPath)
+
+			// Create separate zip for per-target log files
+			if c.config.LogPerTarget && len(c.logFiles) > 0 {
+				logsZipPath, err := c.createLogsZipFile()
+				if err != nil {
+					return fmt.Errorf("failed to create logs zip file: %w", err)
+				}
+				c.config.Logger.Info("Per-target logs written", "path", logsZipPath)
+			}
 		}
 	} else {
 		c.config.Logger.Info("Skipping collection (--skip-collection)")
