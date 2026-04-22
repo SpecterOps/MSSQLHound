@@ -26,38 +26,17 @@ On Windows, use `.\mssqlhound.exe` instead of `./mssqlhound`.
 Run MSSQLHound with a few common collection patterns:
 
 ```bash
-# Windows integrated authentication
-./mssqlhound -t sql.contoso.com
+# Use Windows integrated authentication to query Active Directory for MSSQLSvc SPNs and collect from all discovered MSSQL server instances, ten at a time
+./mssqlhound -w 10
 
-# SQL authentication
+# Collect from a specific MSSQL server instance using SQL login credentials
 ./mssqlhound -t sql.contoso.com -u sa -p password
 
-# Typical domain-aware collection with explicit DC, concurrency, and verbose output
-./mssqlhound -t servers.txt -u "CONTOSO\sqlaudit" -p "password" \
-  -d contoso.com --dc dc01.contoso.com -w 20 --verbose
-```
+# Collect through a SOCKS proxy using specified domain controller IP for DNS and LDAP resolution and collect from all discovered MSSQL server instances, 20 at a time
+./mssqlhound -u "CONTOSO\sqlaudit" -p "password" -d contoso.com --dc 10.2.10.100 -w 20 --verbose --proxy 127.0.0.1:9050
 
-Upload the MSSQL schema to BloodHound once, then collect and upload results:
-
-```bash
-# Register MSSQL node and edge kinds in BloodHound
-./mssqlhound \
-  --bloodhound-url https://bloodhound.contoso.com \
-  --token-id <id> --token-key <key> \
-  --upload-schema-only --skip-collection
-
-# Collect from SQL Server and upload only the results
-./mssqlhound -t sql.contoso.com -u sa -p password \
-  --bloodhound-url https://bloodhound.contoso.com \
-  --token-id <id> --token-key <key> \
-  --upload-results-only
-```
-
-To do schema and results in one shot instead, use:
-
-```bash
-./mssqlhound -t 'sa:password@sql.contoso.com' \
-  -B '<token-id>:<token-key>@https://bloodhound.contoso.com'
+# Collect from all domain computers using Windows MSSQL login credentials, 25 at a time, then upload schema and results to BloodHound
+./mssqlhound -u "CONTOSO\sqlaudit" -p "password" -d contoso.com -w 25 --scan-all-computers -B '<token-id>:<token-key>@https://contoso.bloodhoundenterprise.io'
 ```
 
 # Table of Contents
@@ -161,6 +140,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
   - PowerShell 4.0 or higher
   - Target is running SQL Server 2005 or higher
   - BloodHound v8.0.0+ with Postgres backend (to use prebuilt Cypher queries): https://bloodhound.specterops.io/get-started/custom-installation#postgresql
+  - BloodHound v9.0.0+ to use pathfinding
   - **For Kerberos authentication (`-k`):** `krb5-user` package on Linux (`sudo apt install krb5-user`)
 
 ## Minimum Permissions:
