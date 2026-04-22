@@ -7,11 +7,8 @@ import (
 	"hash/fnv"
 	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
-
-	"golang.org/x/term"
 )
 
 // LevelVerbose sits between INFO and DEBUG for detailed progress messages.
@@ -54,9 +51,7 @@ func NewHandler(w io.Writer, opts *Options) *Handler {
 		h.level = slog.LevelInfo
 	}
 	if !h.noColor {
-		if f, ok := w.(*os.File); ok {
-			h.color = term.IsTerminal(int(f.Fd()))
-		}
+		h.color = colorEnabled(w)
 	}
 	return h
 }
@@ -209,8 +204,8 @@ func levelName(l slog.Level) string {
 
 // ANSI escape codes
 var (
-	resetCode      = []byte("\033[0m")
-	dimCode        = []byte("\033[2m")
+	resetCode = []byte("\033[0m")
+	dimCode   = []byte("\033[2m")
 
 	colorError   = []byte("\033[31m") // red
 	colorWarning = []byte("\033[33m") // yellow
