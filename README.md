@@ -10,8 +10,59 @@ Introductory blog posts:
 
 Please hit me up on the [BloodHound Slack](http://ghst.ly/BHSlack) (@Mayyhem), Twitter ([@_Mayyhem](https://x.com/_Mayyhem)), or open an issue if you have any questions I can help with!
 
+# Quick Start
+
+```bash
+# 1) Download the source
+git clone https://github.com/SpecterOps/MSSQLHound.git
+cd MSSQLHound
+
+# 2) Build the binary (Go 1.25+)
+go build -o mssqlhound ./cmd/mssqlhound
+```
+
+On Windows, use `.\mssqlhound.exe` instead of `./mssqlhound`.
+
+Run MSSQLHound with a few common collection patterns:
+
+```bash
+# Windows integrated authentication
+./mssqlhound -t sql.contoso.com
+
+# SQL authentication
+./mssqlhound -t sql.contoso.com -u sa -p password
+
+# Typical domain-aware collection with explicit DC, concurrency, and verbose output
+./mssqlhound -t servers.txt -u "CONTOSO\sqlaudit" -p "password" \
+  -d contoso.com --dc dc01.contoso.com -w 20 --verbose
+```
+
+Upload the MSSQL schema to BloodHound once, then collect and upload results:
+
+```bash
+# Register MSSQL node and edge kinds in BloodHound
+./mssqlhound \
+  --bloodhound-url https://bloodhound.contoso.com \
+  --token-id <id> --token-key <key> \
+  --upload-schema-only --skip-collection
+
+# Collect from SQL Server and upload only the results
+./mssqlhound -t sql.contoso.com -u sa -p password \
+  --bloodhound-url https://bloodhound.contoso.com \
+  --token-id <id> --token-key <key> \
+  --upload-results-only
+```
+
+To do schema and results in one shot instead, use:
+
+```bash
+./mssqlhound -t 'sa:password@sql.contoso.com' \
+  -B '<token-id>:<token-key>@https://bloodhound.contoso.com'
+```
+
 # Table of Contents
 
+- [Quick Start](#quick-start)
 - [Overview](#overview)
   - [System Requirements](#system-requirements)
   - [Minimum Permissions](#minimum-permissions)
