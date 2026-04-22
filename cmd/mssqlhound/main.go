@@ -159,7 +159,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	}
 	for _, name := range []string{"scan-all-computers", "skip-private-address",
 		"domain-enum-only", "skip-linked-servers", "collect-from-linked",
-		"skip-ad-nodes", "include-nontraversable", "disable-possible-edges", "skip-ip-dedupe"} {
+		"skip-ad-nodes", "disable-nontraversable-edges", "disable-possible-edges", "skip-ip-dedupe"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Collection"}) //nolint:errcheck
 	}
 	for _, name := range []string{"linked-timeout", "workers", "file-size-limit",

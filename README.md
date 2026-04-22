@@ -65,9 +65,10 @@ Run MSSQLHound with a few common collection patterns:
     - [Kerberos Authentication](#kerberos-authentication)
     - [Pass-the-Hash](#pass-the-hash)
     - [Domain Enum Only (Reconnaissance)](#domain-enum-only-reconnaissance)
+    - [Collection](#collection)
     - [Output and Storage Options](#output-and-storage-options)
     - [BloodHound Upload](#bloodhound-upload)
-    - [Interesting Edge Options](#interesting-edge-options)
+    - [Possible Edge Options](#possible-edge-options)
     - [Linked Server Options](#linked-server-options)
     - [test-epa-matrix Subcommand](#test-epa-matrix-subcommand)
     - [Shell Completion](#shell-completion)
@@ -140,7 +141,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
   - PowerShell 4.0 or higher
   - Target is running SQL Server 2005 or higher
   - BloodHound v8.0.0+ with Postgres backend (to use prebuilt Cypher queries): https://bloodhound.specterops.io/get-started/custom-installation#postgresql
-  - BloodHound v9.0.0+ to use pathfinding
+  - BloodHound v9.0.0+ with OpenGraph Extension Management enabled to use pathfinding
   - **For Kerberos authentication (`-k`):** `krb5-user` package on Linux (`sudo apt install krb5-user`)
 
 ## Minimum Permissions:
@@ -520,6 +521,13 @@ When `--ldap-user` and `--ldap-password` are not specified, the tool automatical
 ./mssqlhound --domain-enum-only --scan-all-computers --dc 10.0.0.1
 ```
 
+### Collection
+
+```bash
+# Disable non-traversable edges (attack-path-focused output)
+./mssqlhound -t sql.contoso.com --disable-nontraversable-edges
+```
+
 ### Output and Storage Options
 
 ```bash
@@ -569,9 +577,6 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
 ### Possible Edge Options
 
 ```bash
-# Disable non-traversable edges (attack-path-focused output)
-./mssqlhound -t sql.contoso.com --disable-nontraversable-edges
-
 # Disable possible edges (stricter pathfinding, fewer false positives)
 ./mssqlhound -t sql.contoso.com --disable-possible-edges
 
