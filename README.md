@@ -572,6 +572,21 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
   --bloodhound-url https://bloodhound.contoso.com \
   --token-id <id> --token-key <key> \
   --upload-schema-only --skip-collection
+
+# Install the bundled MSSQL Cypher saved queries (existing names PUT-updated, new ones POST-created)
+./mssqlhound \
+  -B '<token-id>:<token-key>@https://bloodhound.contoso.com' \
+  --upload-queries-only
+
+# Install bundled queries plus an operator's own JSON files from a directory (additive; same names override bundled)
+./mssqlhound \
+  -B '<token-id>:<token-key>@https://bloodhound.contoso.com' \
+  --upload-queries-only --queries-dir /opt/engagements/cypher
+
+# Collect, upload schema + results, but suppress saved-query upload
+./mssqlhound -t 'sa:password@sql.contoso.com' \
+  -B '<token-id>:<token-key>@https://bloodhound.contoso.com' \
+  --no-upload-queries
 ```
 
 ### Possible Edge Options
@@ -692,13 +707,17 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 | Flag | Env Var | Description |
 |------|---------|-------------|
-| `-B, --bloodhound` | | Upload to BloodHound CE: `<token-id>:<token-key>@<bloodhound_url>` (uploads schema + results) |
+| `-B, --bloodhound` | | Upload to BloodHound CE: `<token-id>:<token-key>@<bloodhound_url>` (uploads schema + results + bundled saved queries) |
 | `--bloodhound-url` | `BLOODHOUND_URL` | BloodHound CE instance URL |
 | `--token-id` | `BLOODHOUND_TOKEN_ID` | BloodHound API token ID |
 | `--token-key` | `BLOODHOUND_TOKEN_KEY` | BloodHound API token key |
-| `--upload-schema-only` | | Only upload schema definitions to BloodHound (skip results upload) |
-| `--upload-results-only` | | Only upload collection results to BloodHound (skip schema upload) |
-| `--skip-collection` | | Skip data collection (use with schema upload or upload-only workflows) |
+| `--upload-schema-only` | | Only upload schema definitions to BloodHound (skip results and queries) |
+| `--upload-results-only` | | Only upload collection results to BloodHound (skip schema and queries) |
+| `--upload-queries-only` | | Only upload bundled saved Cypher queries (implies `--skip-collection`) |
+| `--upload-queries` | | Force-upload bundled saved Cypher queries (default when `-B` is set without an `--upload-*-only` flag) |
+| `--no-upload-queries` | | Suppress saved-query upload that would otherwise happen via `-B` |
+| `--queries-dir` | | Additional directory of saved-query JSON files to upload alongside bundled queries (additive; matching names override bundled) |
+| `--skip-collection` | | Skip data collection (use with schema, results, or query upload-only workflows) |
 
 ### Diagnostics
 

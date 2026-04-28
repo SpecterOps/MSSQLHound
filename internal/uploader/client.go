@@ -30,6 +30,13 @@ const (
 
 	// extensionsPath is the BH CE API endpoint for custom schema/type definitions.
 	extensionsPath = "/api/v2/extensions"
+
+	// savedQueriesPath is the BH CE API endpoint for saved Cypher queries.
+	savedQueriesPath = "/api/v2/saved-queries"
+	// listSavedQueriesPageSize is the per-page limit used when paginating the
+	// saved-queries listing. 1000 keeps the paginate-loop short while staying
+	// well under any reasonable BH CE response budget.
+	listSavedQueriesPageSize = 1000
 )
 
 // Client communicates with the BloodHound CE file upload API.
@@ -68,7 +75,7 @@ func NewClient(baseURL string, auth Authenticator) *Client {
 		}).DialContext,
 	}
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
+		BaseURL: NormalizeBaseURL(baseURL),
 		Auth:    auth,
 		HTTPClient: &http.Client{
 			Timeout:   defaultHTTPTimeout,
@@ -77,6 +84,21 @@ func NewClient(baseURL string, auth Authenticator) *Client {
 		MaxRetries: defaultMaxRetries,
 		RetryDelay: defaultRetryDelay,
 	}
+}
+
+// NormalizeBaseURL trims trailing slashes and a trailing "/ui" segment from
+// baseURL. Users frequently paste the BloodHound CE URL straight from their
+// browser address bar (e.g. "https://bh.example.com/ui"), but the API lives
+// at "/api/v2/..." on the same origin — not under "/ui". Without this fix,
+// the SPA's HTML fallback intercepts API calls and the JSON decode fails
+// with "invalid character '<' looking for beginning of value", or worse,
+// silently returns 200 OK on writes that never reached the API.
+func NormalizeBaseURL(baseURL string) string {
+	s := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(strings.ToLower(s), "/ui") {
+		s = s[:len(s)-len("/ui")]
+	}
+	return strings.TrimRight(s, "/")
 }
 
 // startUploadResponse is the JSON response from POST /api/v2/file-upload/start.
@@ -231,6 +253,14 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 			continue
 		}
 
+		// Catch the SPA-fallback case: the server returned a successful HTML
+		// response, which means the request never reached the API. Do not
+		// retry — the URL is wrong, not transient.
+		if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(strings.ToLower(ct), "text/html") {
+			resp.Body.Close()
+			return nil, fmt.Errorf("BloodHound API returned text/html (HTTP %d) for %s — check that --bloodhound-url points at the API root, not the /ui SPA path", resp.StatusCode, path)
+		}
+
 		return resp, nil
 	}
 
@@ -245,6 +275,97 @@ func (c *Client) readError(resp *http.Response, operation string) error {
 		msg = resp.Status
 	}
 	return fmt.Errorf("%s failed (HTTP %d): %s", operation, resp.StatusCode, msg)
+}
+
+// savedQueryListResponse is the JSON shape returned by GET /api/v2/saved-queries.
+// Only the fields we need are decoded; BH CE returns more.
+type savedQueryListResponse struct {
+	Data []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"data"`
+}
+
+// ListSavedQueries enumerates every saved query visible to the authenticated
+// account, paginating through /api/v2/saved-queries until the server returns
+// fewer rows than requested. The returned map is keyed by query Name (case-
+// sensitive, as BH CE treats names) with the BH-assigned id as the value.
+func (c *Client) ListSavedQueries(ctx context.Context) (map[string]int64, error) {
+	out := make(map[string]int64)
+	skip := 0
+	for {
+		path := fmt.Sprintf("%s?skip=%d&limit=%d", savedQueriesPath, skip, listSavedQueriesPageSize)
+		resp, err := c.doRequest(ctx, http.MethodGet, path, nil, "application/json")
+		if err != nil {
+			return nil, fmt.Errorf("failed to list saved queries: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			err := c.readError(resp, "list saved queries")
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var page savedQueryListResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("failed to parse saved-query list response: %w", decodeErr)
+		}
+
+		for _, q := range page.Data {
+			if q.Name != "" {
+				out[q.Name] = q.ID
+			}
+		}
+
+		if len(page.Data) < listSavedQueriesPageSize {
+			return out, nil
+		}
+		skip += len(page.Data)
+	}
+}
+
+// CreateSavedQuery POSTs a new saved query to /api/v2/saved-queries. Success
+// is HTTP 201 (per the BH CE OpenAPI spec and the gophlare reference impl).
+func (c *Client) CreateSavedQuery(ctx context.Context, q SavedQuery) error {
+	body, err := json.Marshal(q)
+	if err != nil {
+		return fmt.Errorf("marshal saved query %q: %w", q.Name, err)
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, savedQueriesPath, body, "application/json")
+	if err != nil {
+		return fmt.Errorf("create saved query %q: %w", q.Name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return c.readError(resp, fmt.Sprintf("create saved query %q", q.Name))
+	}
+	return nil
+}
+
+// UpdateSavedQuery PUTs to /api/v2/saved-queries/{id} to overwrite an existing
+// query in-place, preserving its id, ownership, and any sharing settings.
+// Success is HTTP 200 or 204.
+func (c *Client) UpdateSavedQuery(ctx context.Context, id int64, q SavedQuery) error {
+	body, err := json.Marshal(q)
+	if err != nil {
+		return fmt.Errorf("marshal saved query %q: %w", q.Name, err)
+	}
+
+	path := fmt.Sprintf("%s/%d", savedQueriesPath, id)
+	resp, err := c.doRequest(ctx, http.MethodPut, path, body, "application/json")
+	if err != nil {
+		return fmt.Errorf("update saved query %q: %w", q.Name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return c.readError(resp, fmt.Sprintf("update saved query %q", q.Name))
+	}
+	return nil
 }
 
 // truncate returns s truncated to maxLen characters with "..." appended if needed.
