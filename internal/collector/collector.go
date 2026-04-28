@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -88,6 +89,8 @@ type Config struct {
 	TokenKey       string // API token key
 	UploadSchema   bool   // Upload schema definitions (SCHEMA.json)
 	UploadResults  bool   // Upload results after collection
+	UploadQueries  bool   // Upload bundled + --queries-dir saved Cypher queries
+	QueriesDir     string // Optional directory of additional saved-query JSON files
 	SkipCollection bool   // Skip data collection (upload-only mode)
 }
 
@@ -363,7 +366,7 @@ func (c *Collector) Run() error {
 	}
 
 	// Upload to BloodHound CE if configured
-	if c.config.BloodHoundURL != "" && (c.config.UploadSchema || (c.config.UploadResults && zipPath != "")) {
+	if c.config.BloodHoundURL != "" && (c.config.UploadSchema || c.config.UploadQueries || (c.config.UploadResults && zipPath != "")) {
 		if err := c.uploadToBloodHound(zipPath); err != nil {
 			c.config.Logger.Warn("BloodHound upload failed", "error", err)
 		}
@@ -6360,7 +6363,11 @@ func (c *Collector) writeADFiles() error {
 	return nil
 }
 
-// uploadToBloodHound uploads the results zip (and optionally the schema) to BloodHound CE.
+// uploadToBloodHound uploads the results zip, schema, and saved queries to
+// BloodHound CE. Each phase runs independently — a failure in one (e.g. an
+// older BH deployment that doesn't expose /api/v2/extensions) does not
+// prevent the other phases from running. Phase errors are aggregated and
+// returned together at the end.
 func (c *Collector) uploadToBloodHound(zipPath string) error {
 	u := uploader.NewUploader(c.config.BloodHoundURL, c.config.TokenID, c.config.TokenKey, c.config.Logger)
 	if u == nil {
@@ -6370,23 +6377,34 @@ func (c *Collector) uploadToBloodHound(zipPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	var phaseErrs []error
+
 	// Upload schema if requested — registers custom node/edge kinds with
-	// BloodHound CE via PUT /api/v2/extensions.
+	// BloodHound CE via PUT /api/v2/extensions. Older BH CE deployments may
+	// return 404 for this endpoint; we log and continue rather than aborting.
 	if c.config.UploadSchema {
 		c.config.Logger.Info("Uploading schema to BloodHound...")
 		schemaData := bloodhound.SchemaJSON
+		schemaReady := true
 		if c.config.DisablePossibleEdges {
 			modified, err := bloodhound.SchemaJSONWithDisabledPossibleEdges()
 			if err != nil {
-				return fmt.Errorf("failed to modify schema for disabled possible edges: %w", err)
+				phaseErrs = append(phaseErrs, fmt.Errorf("schema (modify for disabled possible edges): %w", err))
+				c.config.Logger.Warn("Schema modification failed; skipping schema upload", "error", err)
+				schemaReady = false
+			} else {
+				schemaData = modified
 			}
-			schemaData = modified
 		}
-		c.config.Logger.Debug("Schema PUT body", "body", string(schemaData))
-		if err := u.Client.UploadSchema(ctx, schemaData); err != nil {
-			return fmt.Errorf("schema upload failed: %w", err)
+		if schemaReady {
+			c.config.Logger.Debug("Schema PUT body", "body", string(schemaData))
+			if err := u.Client.UploadSchema(ctx, schemaData); err != nil {
+				phaseErrs = append(phaseErrs, fmt.Errorf("schema: %w", err))
+				c.config.Logger.Warn("Schema upload failed; continuing with remaining phases", "error", err)
+			} else {
+				c.config.Logger.Info("Schema uploaded successfully")
+			}
 		}
-		c.config.Logger.Info("Schema uploaded successfully")
 	}
 
 	// Upload results zip
@@ -6394,10 +6412,43 @@ func (c *Collector) uploadToBloodHound(zipPath string) error {
 		c.config.Logger.Info("Uploading results to BloodHound...", "file", zipPath)
 		summary := u.UploadFiles(ctx, []string{zipPath})
 		if summary.FilesFailed > 0 {
-			return fmt.Errorf("results upload failed")
+			phaseErrs = append(phaseErrs, fmt.Errorf("results: %d file(s) failed", summary.FilesFailed))
+			c.config.Logger.Warn("Results upload had failures; continuing with remaining phases",
+				"failed", summary.FilesFailed)
 		}
 	}
 
+	// Upload saved Cypher queries (bundled + --queries-dir, additive).
+	if c.config.UploadQueries {
+		bundled, err := uploader.LoadEmbeddedQueries()
+		if err != nil {
+			phaseErrs = append(phaseErrs, fmt.Errorf("queries (load bundled): %w", err))
+			c.config.Logger.Warn("Failed to load bundled saved queries", "error", err)
+		} else {
+			var custom []uploader.SavedQuery
+			if c.config.QueriesDir != "" {
+				custom, err = uploader.LoadQueriesFromDir(c.config.QueriesDir, c.config.Logger)
+				if err != nil {
+					phaseErrs = append(phaseErrs, fmt.Errorf("queries (load %s): %w", c.config.QueriesDir, err))
+					c.config.Logger.Warn("Failed to load custom saved queries", "dir", c.config.QueriesDir, "error", err)
+					custom = nil
+				}
+			}
+			queries := uploader.MergeQueries(bundled, custom)
+			c.config.Logger.Info("Uploading saved queries to BloodHound...",
+				"bundled", len(bundled), "custom", len(custom), "total", len(queries))
+			qSummary := u.UploadSavedQueries(ctx, queries)
+			c.config.Logger.Info("Saved queries upload complete",
+				"created", qSummary.Created, "updated", qSummary.Updated, "failed", qSummary.Failed)
+			if qSummary.Failed > 0 {
+				phaseErrs = append(phaseErrs, fmt.Errorf("queries: %d failure(s)", qSummary.Failed))
+			}
+		}
+	}
+
+	if len(phaseErrs) > 0 {
+		return errors.Join(phaseErrs...)
+	}
 	c.config.Logger.Info("BloodHound upload complete")
 	return nil
 }
