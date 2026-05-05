@@ -2392,6 +2392,26 @@ func (c *Collector) createServerNode(info *types.ServerInfo) *bloodhound.Node {
 		props["extendedProtection"] = info.ExtendedProtection
 	}
 
+	// CVE-2025-49758: ChangePassword privilege escalation. Vulnerability is determined
+	// by the SQL Server engine version, so it lives on the server node (not per-database).
+	// When the version cannot be parsed, CheckCVE202549758 returns nil and we default
+	// IsVulnerable to false to avoid false positives, matching IsVulnerableToCVE202549758.
+	cveResult := CheckCVE202549758(info.VersionNumber, info.Version)
+	if cveResult != nil {
+		props["isVulnerableToCVE_2025_49758"] = cveResult.IsVulnerable
+		if cveResult.UpdateName != "" {
+			props["cve_2025_49758_updateName"] = cveResult.UpdateName
+		}
+		if cveResult.KB != "" {
+			props["cve_2025_49758_patchKB"] = cveResult.KB
+		}
+		if cveResult.RequiredVersion != "" {
+			props["cve_2025_49758_requiredVersion"] = cveResult.RequiredVersion
+		}
+	} else {
+		props["isVulnerableToCVE_2025_49758"] = false
+	}
+
 	// Add SPNs
 	if len(info.SPNs) > 0 {
 		props["servicePrincipalNames"] = info.SPNs
