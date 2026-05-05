@@ -2400,16 +2400,16 @@ func (c *Collector) createServerNode(info *types.ServerInfo) *bloodhound.Node {
 	if cveResult != nil {
 		props["isVulnerableToCVE_2025_49758"] = cveResult.IsVulnerable
 		if cveResult.UpdateName != "" {
-			props["cve_2025_49758_updateName"] = cveResult.UpdateName
+			props["CVE-2025-49758_updateName"] = cveResult.UpdateName
 		}
 		if cveResult.KB != "" {
-			props["cve_2025_49758_patchKB"] = cveResult.KB
+			props["CVE-2025-49758_patchKB"] = cveResult.KB
 		}
 		if cveResult.RequiredVersion != "" {
-			props["cve_2025_49758_requiredVersion"] = cveResult.RequiredVersion
+			props["CVE-2025-49758_requiredVersion"] = cveResult.RequiredVersion
 		}
 	} else {
-		props["isVulnerableToCVE_2025_49758"] = false
+		props["isVulnerableToCVE-2025-49758"] = false
 	}
 
 	// Add SPNs
