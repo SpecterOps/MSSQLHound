@@ -1,6 +1,9 @@
 # MSSQLHound Release Notes
 
-## Version 2.0
+## Version 2.0.1 (May 5, 2026)
+- Add CVE-2025-49758 to MSSQL_Server node properties
+
+## Version 2.0 (April 23, 2026)
 - Initial Go release
 
 ## Version 1.1 (December 22, 2025)
