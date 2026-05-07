@@ -3,8 +3,10 @@ package collector
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,108 @@ import (
 	"github.com/SpecterOps/MSSQLHound/internal/bloodhound"
 	"github.com/SpecterOps/MSSQLHound/internal/types"
 )
+
+func TestWindowsADSIFallbackRequiresImplicitLDAPAuth(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	wantImplicit := runtime.GOOS == "windows"
+	if got := collector.canUseWindowsADSIFallback(); got != wantImplicit {
+		t.Fatalf("implicit LDAP fallback = %v, want %v", got, wantImplicit)
+	}
+
+	cases := []Config{
+		{LDAPUser: "alice"},
+		{LDAPPassword: "secret"},
+		{UseKerberos: true},
+	}
+	for _, cfg := range cases {
+		collector.config = &cfg
+		if collector.canUseWindowsADSIFallback() {
+			t.Fatalf("ADSI fallback enabled for explicit LDAP config: %+v", cfg)
+		}
+	}
+}
+
+func TestWindowsADSIFallbackRequiresError(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	if collector.shouldUseWindowsADSIFallback(nil) {
+		t.Fatal("ADSI fallback enabled without an LDAP error")
+	}
+
+	want := runtime.GOOS == "windows"
+	if got := collector.shouldUseWindowsADSIFallback(errors.New("LDAP Result Code 49 Invalid Credentials")); got != want {
+		t.Fatalf("ADSI fallback on LDAP error = %v, want %v", got, want)
+	}
+}
+
+func TestScanAllComputersEnablesInitialADSIFallback(t *testing.T) {
+	collector := &Collector{config: &Config{ScanAllComputers: true}}
+	err := errors.New("LDAP Result Code 49 Invalid Credentials")
+	want := runtime.GOOS == "windows"
+	if got := collector.shouldUseScanAllWindowsADSIFallback(err); got != want {
+		t.Fatalf("scan-all ADSI fallback = %v, want %v", got, want)
+	}
+
+	collector.config.ScanAllComputers = false
+	if collector.shouldUseScanAllWindowsADSIFallback(err) {
+		t.Fatal("scan-all ADSI fallback enabled when ScanAllComputers is false")
+	}
+
+	collector.config = &Config{ScanAllComputers: true, LDAPUser: "alice"}
+	if collector.shouldUseScanAllWindowsADSIFallback(err) {
+		t.Fatal("scan-all ADSI fallback enabled for explicit LDAP config")
+	}
+}
+
+func TestLDAPErrorSummaryOmitsTroubleshootingForFallbackLog(t *testing.T) {
+	err := errors.New("all LDAP connection methods failed: LDAPS failed\n\nTroubleshooting suggestions for Kerberos authentication failures:\n  1. Verify your Kerberos ticket is valid\n\nNote: The domain controller requires LDAP signing.")
+	want := "all LDAP connection methods failed: LDAPS failed"
+	if got := ldapErrorSummary(err); got != want {
+		t.Fatalf("ldapErrorSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestLDAPErrorSummaryOmitsSigningNoteForFallbackLog(t *testing.T) {
+	err := errors.New("all LDAP connection methods failed: LDAP failed\n\nNote: The domain controller requires LDAP signing.")
+	want := "all LDAP connection methods failed: LDAP failed"
+	if got := ldapErrorSummary(err); got != want {
+		t.Fatalf("ldapErrorSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestDomainComputersFromNames(t *testing.T) {
+	computers := domainComputersFromNames([]string{"host1.example.com", "", "host2.example.com"})
+	if len(computers) != 2 {
+		t.Fatalf("computer count = %d, want 2", len(computers))
+	}
+	if computers[0].Hostname != "host1.example.com" || computers[0].SID != "" {
+		t.Fatalf("first computer = %+v", computers[0])
+	}
+	if computers[1].Hostname != "host2.example.com" || computers[1].SID != "" {
+		t.Fatalf("second computer = %+v", computers[1])
+	}
+}
+
+func TestIPDedupeWorkerCount(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	if got := collector.ipDedupeWorkerCount(1000); got != 64 {
+		t.Fatalf("default workers = %d, want 64", got)
+	}
+
+	collector.config.Workers = 512
+	if got := collector.ipDedupeWorkerCount(1000); got != 256 {
+		t.Fatalf("capped workers = %d, want 256", got)
+	}
+
+	collector.config.Workers = 512
+	if got := collector.ipDedupeWorkerCount(10); got != 10 {
+		t.Fatalf("workers above hostname count = %d, want 10", got)
+	}
+
+	collector.config.Workers = 0
+	if got := collector.ipDedupeWorkerCount(0); got != 1 {
+		t.Fatalf("empty workers = %d, want 1", got)
+	}
+}
 
 // TestEdgeCreation tests that edges are created correctly for various scenarios
 func TestEdgeCreation(t *testing.T) {
@@ -1001,6 +1105,21 @@ func TestDeduplicateByIP(t *testing.T) {
 		}
 	})
 
+	t.Run("unresolvable scan-all computer dropped", func(t *testing.T) {
+		c.serversToProcess = []*ServerToProcess{
+			{Hostname: "this-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "unresolvable", SkipIfUnresolved: true},
+			{Hostname: "localhost", Port: 1433, ConnectionString: "localhost", SkipIfUnresolved: true},
+		}
+		c.deduplicateByIP()
+
+		if len(c.serversToProcess) != 1 {
+			t.Fatalf("expected 1 server after dropping unresolved scan-all computer, got %d", len(c.serversToProcess))
+		}
+		if c.serversToProcess[0].Hostname != "localhost" {
+			t.Fatalf("remaining server = %q, want localhost", c.serversToProcess[0].Hostname)
+		}
+	})
+
 	t.Run("same IP different instances kept", func(t *testing.T) {
 		c.serversToProcess = []*ServerToProcess{
 			{Hostname: "localhost", Port: 1433, InstanceName: "INST1", ConnectionString: "localhost\\INST1"},
@@ -1033,6 +1152,34 @@ func TestSkipIPDedupe(t *testing.T) {
 
 	if len(c.serversToProcess) != 2 {
 		t.Fatalf("expected 2 servers (dedupe skipped), got %d", len(c.serversToProcess))
+	}
+}
+
+func TestFilterUnresolvedScanAllComputers(t *testing.T) {
+	config := &Config{}
+	c, _ := New(config)
+
+	c.serversToProcess = []*ServerToProcess{
+		{Hostname: "this-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "scan-all-unresolvable", SkipIfUnresolved: true},
+		{Hostname: "localhost", Port: 1433, ConnectionString: "scan-all-localhost", SkipIfUnresolved: true},
+		{Hostname: "another-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "manual-unresolvable"},
+	}
+
+	c.filterUnresolvedScanAllComputers()
+
+	if len(c.serversToProcess) != 2 {
+		t.Fatalf("expected unresolved scan-all target to be removed and manual target kept, got %d", len(c.serversToProcess))
+	}
+
+	remaining := map[string]bool{}
+	for _, server := range c.serversToProcess {
+		remaining[server.ConnectionString] = true
+	}
+	if !remaining["scan-all-localhost"] {
+		t.Fatal("expected resolvable scan-all target to remain")
+	}
+	if !remaining["manual-unresolvable"] {
+		t.Fatal("expected manual unresolved target to remain")
 	}
 }
 

@@ -363,12 +363,10 @@ type Client struct {
 	useWindowsAuth           bool
 	verbose                  bool
 	debug                    bool
-	encrypt                  bool              // Whether to use encryption
-	usePowerShell            bool              // Whether using PowerShell fallback
-	psClient                 *PowerShellClient // PowerShell client for fallback
-	collectFromLinkedServers bool              // Whether to collect from linked servers
-	epaResult                *EPATestResult    // Pre-computed EPA result (set before Connect)
-	dnsResolver              string            // DNS resolver IP (e.g. domain controller)
+	encrypt                  bool           // Whether to use encryption
+	collectFromLinkedServers bool           // Whether to collect from linked servers
+	epaResult                *EPATestResult // Pre-computed EPA result (set before Connect)
+	dnsResolver              string         // DNS resolver IP (e.g. domain controller)
 	logger                   *slog.Logger
 	proxyDialer              interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
@@ -432,35 +430,9 @@ func parseServerInstance(instance string) (hostname string, port int, instanceNa
 	return
 }
 
-// Connect establishes a connection to the SQL Server
-// It tries multiple connection strategies to maximize compatibility.
-// If go-mssqldb fails with the "untrusted domain" error, it will automatically
-// fall back to using PowerShell with System.Data.SqlClient which handles
-// some SSPI edge cases that go-mssqldb cannot.
+// Connect establishes a native go-mssqldb connection to the SQL Server.
 func (c *Client) Connect(ctx context.Context) error {
-	// First try native go-mssqldb connection
-	err := c.connectNative(ctx)
-	if err == nil {
-		return nil
-	}
-
-	// Check if this is the "untrusted domain" error that PowerShell can handle.
-	// PowerShell fallback is not available when using a proxy since the spawned
-	// process cannot route its connections through the Go-level SOCKS proxy.
-	if IsUntrustedDomainError(err) && c.useWindowsAuth && c.proxyDialer == nil {
-		c.logVerbose("Native connection failed with untrusted domain error, trying PowerShell fallback...")
-		// Try PowerShell fallback
-		psErr := c.connectPowerShell(ctx)
-		if psErr == nil {
-			c.logVerbose("PowerShell fallback succeeded")
-			return nil
-		}
-		// Both methods failed - return combined error for clarity
-		c.logVerbose("PowerShell fallback also failed", "error", psErr)
-		return fmt.Errorf("all connection methods failed (native: %v, PowerShell: %v)", err, psErr)
-	}
-
-	return err
+	return c.connectNative(ctx)
 }
 
 // CheckPort performs a quick TCP connectivity check against the SQL Server port.
@@ -548,10 +520,6 @@ func (c *Client) connectNative(ctx context.Context) error {
 	// HostNameInCertificate field, which strict mode needs for TLS certificate
 	// validation (the cert CN/SAN rarely contains an IP).
 	//
-	// NOTE: Some servers with specific SSPI configurations may fail to connect
-	// from Go even though PowerShell/System.Data.SqlClient works. This is a
-	// known limitation of the go-mssqldb driver's Windows SSPI implementation.
-
 	// Get short hostname for some strategies (only for FQDNs, not IP addresses)
 	shortHostname := ""
 	// Determine the cert hostname for strict encryption (HostNameInCertificate).
@@ -842,38 +810,8 @@ func (c *Client) connectNative(ctx context.Context) error {
 	return fmt.Errorf("all connection strategies failed, last error: %w", lastErr)
 }
 
-// connectPowerShell connects using PowerShell and System.Data.SqlClient
-func (c *Client) connectPowerShell(ctx context.Context) error {
-	c.psClient = NewPowerShellClient(c.serverInstance, c.userID, c.password)
-	c.psClient.SetVerbose(c.verbose)
-
-	err := c.psClient.TestConnection(ctx)
-	if err != nil {
-		c.psClient = nil
-		return err
-	}
-
-	c.usePowerShell = true
-	return nil
-}
-
-// UsingPowerShell returns true if the client is using the PowerShell fallback
-func (c *Client) UsingPowerShell() bool {
-	return c.usePowerShell
-}
-
-// executeQuery is a unified query interface that works with both native and PowerShell modes
-// It returns the results as []QueryResult, which can be processed uniformly
+// executeQuery returns query results as []QueryResult for uniform processing.
 func (c *Client) executeQuery(ctx context.Context, query string) ([]QueryResult, error) {
-	if c.usePowerShell {
-		response, err := c.psClient.ExecuteQuery(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		return response.Rows, nil
-	}
-
-	// Native mode - use c.db
 	rows, err := c.DBW().QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -915,16 +853,14 @@ func (c *Client) executeQuery(ctx context.Context, query string) ([]QueryResult,
 	return results, rows.Err()
 }
 
-// DB returns the underlying database connection (nil in PowerShell mode)
-// This is used for methods that need direct database access
+// DB returns the underlying database connection.
 func (c *Client) DB() *sql.DB {
 	return c.db
 }
 
-// DBW returns a database wrapper that works with both native and PowerShell modes
-// Use this for query methods to ensure compatibility with PowerShell fallback
+// DBW returns a database wrapper for query methods.
 func (c *Client) DBW() *DBWrapper {
-	return NewDBWrapper(c.db, c.psClient, c.usePowerShell)
+	return NewDBWrapper(c.db)
 }
 
 // connStrPasswordRe matches the password field in a semicolon-delimited connection string.
@@ -1120,23 +1056,23 @@ type EPATestResult struct {
 //
 // Two-path EPA detection flow (per MS-TDS spec):
 //
-//   Path 1 - TDS 7.x normal (most servers):
-//     PRELOGIN(cleartext) -> TLS-over-TDS handshake -> LOGIN7 with NTLM Type1
-//     -> server returns NTLM Type2 challenge (contains encryption flag)
+//	Path 1 - TDS 7.x normal (most servers):
+//	  PRELOGIN(cleartext) -> TLS-over-TDS handshake -> LOGIN7 with NTLM Type1
+//	  -> server returns NTLM Type2 challenge (contains encryption flag)
 //
-//   Path 2 - TDS 8.0 strict (ForceStrictEncryption=1):
-//     Direct TLS handshake -> PRELOGIN(inside TLS) -> LOGIN7 with NTLM Type1
-//     -> server returns NTLM Type2 challenge
-//     Tried only when Path 1 PRELOGIN fails (strict servers reject cleartext PRELOGIN).
+//	Path 2 - TDS 8.0 strict (ForceStrictEncryption=1):
+//	  Direct TLS handshake -> PRELOGIN(inside TLS) -> LOGIN7 with NTLM Type1
+//	  -> server returns NTLM Type2 challenge
+//	  Tried only when Path 1 PRELOGIN fails (strict servers reject cleartext PRELOGIN).
 //
 // EPA determination logic (for encrypted connections):
-//   1. Normal login (unmodified NTLM) succeeds -> baseline established
-//   2. BogusCBT login (garbage channel binding token) fails with "untrusted domain"
-//      -> server is checking channel bindings, proceed to step 3
-//      BogusCBT succeeds -> EPA is Off (server ignores channel bindings)
-//   3. MissingCBT login (no channel binding token at all):
-//      Fails with "untrusted domain" -> EPA = Required
-//      Succeeds -> EPA = Allowed (accepts but doesn't require CBT)
+//  1. Normal login (unmodified NTLM) succeeds -> baseline established
+//  2. BogusCBT login (garbage channel binding token) fails with "untrusted domain"
+//     -> server is checking channel bindings, proceed to step 3
+//     BogusCBT succeeds -> EPA is Off (server ignores channel bindings)
+//  3. MissingCBT login (no channel binding token at all):
+//     Fails with "untrusted domain" -> EPA = Required
+//     Succeeds -> EPA = Allowed (accepts but doesn't require CBT)
 //
 // For unencrypted connections (ENCRYPT_OFF): service binding is tested instead.
 func (c *Client) TestEPA(ctx context.Context) (*EPATestResult, error) {
@@ -1479,9 +1415,6 @@ func (c *Client) Close() error {
 	if c.db != nil {
 		return c.db.Close()
 	}
-	// PowerShell client doesn't need explicit cleanup
-	c.psClient = nil
-	c.usePowerShell = false
 	return nil
 }
 
@@ -1645,7 +1578,7 @@ func (c *Client) CollectServerInfo(ctx context.Context) (*types.ServerInfo, erro
 // collectServerProperties gets basic server information
 func (c *Client) collectServerProperties(ctx context.Context, info *types.ServerInfo) error {
 	query := `
-		SELECT 
+		SELECT
 			SERVERPROPERTY('ServerName') AS ServerName,
 			SERVERPROPERTY('MachineName') AS MachineName,
 			SERVERPROPERTY('InstanceName') AS InstanceName,
@@ -1694,7 +1627,7 @@ func (c *Client) collectServerProperties(ctx context.Context, info *types.Server
 // collectServerPrincipals gets all server-level principals (logins and server roles)
 func (c *Client) collectServerPrincipals(ctx context.Context, serverInfo *types.ServerInfo) ([]types.ServerPrincipal, error) {
 	query := `
-		SELECT 
+		SELECT
 			p.principal_id,
 			p.name,
 			p.type_desc,
@@ -1805,7 +1738,7 @@ func (c *Client) collectServerPrincipals(ctx context.Context, serverInfo *types.
 // collectServerRoleMemberships gets role memberships for server principals
 func (c *Client) collectServerRoleMemberships(ctx context.Context, principals []types.ServerPrincipal, serverInfo *types.ServerInfo) error {
 	query := `
-		SELECT 
+		SELECT
 			rm.member_principal_id,
 			rm.role_principal_id,
 			r.name AS role_name
@@ -1884,7 +1817,7 @@ func (c *Client) collectServerRoleMemberships(ctx context.Context, principals []
 // collectServerPermissions gets explicit permissions for server principals
 func (c *Client) collectServerPermissions(ctx context.Context, principals []types.ServerPrincipal, serverInfo *types.ServerInfo) error {
 	query := `
-		SELECT 
+		SELECT
 			p.grantee_principal_id,
 			p.permission_name,
 			p.state_desc,
@@ -1979,7 +1912,7 @@ func (c *Client) collectServerPermissions(ctx context.Context, principals []type
 // collectDatabases gets all accessible databases and their principals
 func (c *Client) collectDatabases(ctx context.Context, serverInfo *types.ServerInfo) ([]types.Database, error) {
 	query := `
-		SELECT 
+		SELECT
 			d.database_id,
 			d.name,
 			d.owner_sid,
@@ -2066,7 +1999,7 @@ func (c *Client) collectDatabasePrincipals(ctx context.Context, db *types.Databa
 	// Query all principals using fully-qualified table name
 	// The USE statement doesn't always work properly with go-mssqldb
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			p.principal_id,
 			p.name,
 			p.type_desc,
@@ -2168,7 +2101,7 @@ func (c *Client) linkDatabaseUsersToServerLogins(ctx context.Context, principals
 
 	// Query to join database principals to server principals by SID
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			dp.principal_id AS db_principal_id,
 			sp.name AS server_login_name,
 			sp.principal_id AS server_principal_id
@@ -2215,7 +2148,7 @@ func (c *Client) linkDatabaseUsersToServerLogins(ctx context.Context, principals
 // collectDatabaseRoleMemberships gets role memberships for database principals
 func (c *Client) collectDatabaseRoleMemberships(ctx context.Context, principals []types.DatabasePrincipal, db *types.Database, serverInfo *types.ServerInfo) error {
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			rm.member_principal_id,
 			rm.role_principal_id,
 			r.name AS role_name
@@ -2303,7 +2236,7 @@ func (c *Client) collectDatabaseRoleMemberships(ctx context.Context, principals 
 // collectDatabasePermissions gets explicit permissions for database principals
 func (c *Client) collectDatabasePermissions(ctx context.Context, principals []types.DatabasePrincipal, db *types.Database, serverInfo *types.ServerInfo) error {
 	query := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			p.grantee_principal_id,
 			p.permission_name,
 			p.state_desc,

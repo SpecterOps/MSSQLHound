@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -130,6 +129,18 @@ type ServerToProcess struct {
 	ComputerSID      string // Computer SID
 	DiscoveredFrom   string // Hostname of server this was discovered from (for linked servers)
 	Domain           string // Domain inferred from the source server (for linked servers)
+	SkipIfUnresolved bool   // Drop scan-all-computers targets when DNS resolution fails
+}
+
+type domainComputer struct {
+	Hostname string
+	SID      string
+}
+
+type dnsLookupResult struct {
+	hostname string
+	ip       string
+	err      error
 }
 
 // ServerSPNInfo holds SPN-related data discovered from Active Directory
@@ -193,6 +204,24 @@ func (c *Collector) getDNSResolver() string {
 	return ""
 }
 
+func (c *Collector) targetDNSResolver() *net.Resolver {
+	dns := c.getDNSResolver()
+	if dns == "" {
+		return net.DefaultResolver
+	}
+
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if c.proxyDialer != nil {
+				return c.proxyDialer.DialContext(ctx, "tcp", net.JoinHostPort(dns, "53"))
+			}
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, net.JoinHostPort(dns, "53"))
+		},
+	}
+}
+
 // newADClient creates a new AD client with proxy settings if configured.
 // Returns nil if a previous LDAP attempt already failed with invalid credentials
 // to prevent further authentication attempts that could lock out the AD account.
@@ -235,6 +264,35 @@ func isLDAPAuthError(err error) bool {
 	return strings.Contains(errStr, "Invalid Credentials") ||
 		strings.Contains(errStr, "invalid credentials") ||
 		strings.Contains(errStr, "Result Code 49")
+}
+
+func (c *Collector) canUseWindowsADSIFallback() bool {
+	return runtime.GOOS == "windows" && c.config.LDAPUser == "" && c.config.LDAPPassword == "" && !c.config.UseKerberos
+}
+
+func (c *Collector) shouldUseWindowsADSIFallback(err error) bool {
+	return err != nil && c.canUseWindowsADSIFallback()
+}
+
+func (c *Collector) shouldUseScanAllWindowsADSIFallback(err error) bool {
+	return c.config.ScanAllComputers && c.shouldUseWindowsADSIFallback(err)
+}
+
+func ldapErrorSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	cut := len(msg)
+	for _, marker := range []string{
+		"\n\nTroubleshooting suggestions for Kerberos authentication failures:",
+		"\n\nNote: The domain controller requires LDAP signing.",
+	} {
+		if idx := strings.Index(msg, marker); idx >= 0 && idx < cut {
+			cut = idx
+		}
+	}
+	return msg[:cut]
 }
 
 // newMSSQLClient creates a new MSSQL client with proxy settings if configured.
@@ -741,6 +799,7 @@ func (c *Collector) buildServerList() error {
 		c.deduplicateByIP()
 	} else {
 		c.config.Logger.Info("Skipping IP-based deduplication (--skip-ip-dedupe)")
+		c.filterUnresolvedScanAllComputers()
 	}
 
 	return nil
@@ -755,25 +814,58 @@ func (c *Collector) deduplicateByIP() {
 		instance string
 	}
 
-	c.config.Logger.Info("Deduplicating servers by resolved IP", "count", len(c.serversToProcess))
+	totalServers := len(c.serversToProcess)
+	c.config.Logger.Info("Deduplicating servers by resolved IP", "count", totalServers)
+	if totalServers == 0 {
+		return
+	}
+
+	uniqueHostnames := make([]string, 0, totalServers)
+	seenHostnames := make(map[string]struct{})
+	for _, server := range c.serversToProcess {
+		hostname := strings.TrimSpace(server.Hostname)
+		if hostname == "" {
+			continue
+		}
+		key := strings.ToLower(hostname)
+		if _, exists := seenHostnames[key]; exists {
+			continue
+		}
+		seenHostnames[key] = struct{}{}
+		uniqueHostnames = append(uniqueHostnames, hostname)
+	}
+
+	started := time.Now()
+	resolvedByHostname := c.resolveHostnames(uniqueHostnames, "IP dedupe", totalServers)
 
 	seen := make(map[ipKey]int) // ipKey -> index in deduplicated slice
 	var deduplicated []*ServerToProcess
+	lastProgress := time.Now()
+	skippedUnresolved := 0
 
-	resolver := net.DefaultResolver
-
-	for _, server := range c.serversToProcess {
-		// Resolve hostname to IP with a short timeout to avoid blocking on unresolvable hosts
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		addrs, err := resolver.LookupHost(ctx, server.Hostname)
-		cancel()
-		if err != nil || len(addrs) == 0 {
+	for i, server := range c.serversToProcess {
+		result := resolvedByHostname[strings.ToLower(strings.TrimSpace(server.Hostname))]
+		if result.ip == "" {
+			if server.SkipIfUnresolved {
+				c.config.Logger.Log(context.Background(), logging.LevelVerbose, "DNS lookup failed, dropping scan-all-computers target",
+					"hostname", server.Hostname, "error", result.err)
+				skippedUnresolved++
+				if (i+1)%10000 == 0 || time.Since(lastProgress) >= 10*time.Second {
+					c.config.Logger.Info("Applied IP dedupe results", "processed", i+1, "total", totalServers, "kept", len(deduplicated), "skippedUnresolved", skippedUnresolved)
+					lastProgress = time.Now()
+				}
+				continue
+			}
 			c.config.Logger.Log(context.Background(), logging.LevelVerbose, "DNS lookup failed, keeping server as-is",
-				"hostname", server.Hostname, "error", err)
+				"hostname", server.Hostname, "error", result.err)
 			deduplicated = append(deduplicated, server)
+			if (i+1)%10000 == 0 || time.Since(lastProgress) >= 10*time.Second {
+				c.config.Logger.Info("Applied IP dedupe results", "processed", i+1, "total", totalServers, "kept", len(deduplicated), "skippedUnresolved", skippedUnresolved)
+				lastProgress = time.Now()
+			}
 			continue
 		}
-		ip := addrs[0]
+		ip := result.ip
 		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Resolved hostname",
 			"hostname", server.Hostname, "ip", ip)
 
@@ -795,12 +887,173 @@ func (c *Collector) deduplicateByIP() {
 		}
 		seen[key] = len(deduplicated)
 		deduplicated = append(deduplicated, server)
+
+		if (i+1)%10000 == 0 || time.Since(lastProgress) >= 10*time.Second {
+			c.config.Logger.Info("Applied IP dedupe results", "processed", i+1, "total", totalServers, "kept", len(deduplicated), "skippedUnresolved", skippedUnresolved)
+			lastProgress = time.Now()
+		}
 	}
 
+	c.config.Logger.Info("Finished IP dedupe", "processed", totalServers, "kept", len(deduplicated), "skippedUnresolved", skippedUnresolved, "elapsed", time.Since(started).Round(time.Second))
 	if removed := len(c.serversToProcess) - len(deduplicated); removed > 0 {
 		c.config.Logger.Info("Deduplicated servers by resolved IP", "removed", removed)
 	}
 	c.serversToProcess = deduplicated
+}
+
+func (c *Collector) filterUnresolvedScanAllComputers() {
+	hostnames := make([]string, 0)
+	seenHostnames := make(map[string]struct{})
+	for _, server := range c.serversToProcess {
+		if !server.SkipIfUnresolved {
+			continue
+		}
+		hostname := strings.TrimSpace(server.Hostname)
+		if hostname == "" {
+			continue
+		}
+		key := strings.ToLower(hostname)
+		if _, exists := seenHostnames[key]; exists {
+			continue
+		}
+		seenHostnames[key] = struct{}{}
+		hostnames = append(hostnames, hostname)
+	}
+	if len(hostnames) == 0 {
+		return
+	}
+
+	resolvedByHostname := c.resolveHostnames(hostnames, "scan-all-computers DNS filter", len(c.serversToProcess))
+	filtered := make([]*ServerToProcess, 0, len(c.serversToProcess))
+	removed := 0
+	for _, server := range c.serversToProcess {
+		if !server.SkipIfUnresolved {
+			filtered = append(filtered, server)
+			continue
+		}
+
+		result := resolvedByHostname[strings.ToLower(strings.TrimSpace(server.Hostname))]
+		if result.ip == "" {
+			c.config.Logger.Log(context.Background(), logging.LevelVerbose, "DNS lookup failed, dropping scan-all-computers target",
+				"hostname", server.Hostname, "error", result.err)
+			removed++
+			continue
+		}
+		filtered = append(filtered, server)
+	}
+
+	c.serversToProcess = filtered
+	if removed > 0 {
+		c.config.Logger.Info("Removed unresolved scan-all-computers targets", "removed", removed)
+	}
+}
+
+func (c *Collector) resolveHostnames(hostnames []string, reason string, totalServers int) map[string]dnsLookupResult {
+	resultsByHostname := make(map[string]dnsLookupResult, len(hostnames))
+	if len(hostnames) == 0 {
+		return resultsByHostname
+	}
+
+	workers := c.ipDedupeWorkerCount(len(hostnames))
+	c.config.Logger.Info("Resolving unique hostnames", "reason", reason, "uniqueHostnames", len(hostnames), "servers", totalServers, "workers", workers)
+
+	resolver := c.targetDNSResolver()
+	jobs := make(chan string)
+	results := make(chan dnsLookupResult)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for hostname := range jobs {
+				result := dnsLookupResult{hostname: hostname}
+				if ip := net.ParseIP(hostname); ip != nil {
+					result.ip = ip.String()
+					results <- result
+					continue
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				addrs, err := resolver.LookupHost(ctx, hostname)
+				cancel()
+
+				result.err = err
+				if err == nil && len(addrs) > 0 {
+					result.ip = preferredResolvedIP(addrs)
+				}
+				results <- result
+			}
+		}()
+	}
+
+	go func() {
+		for _, hostname := range hostnames {
+			jobs <- hostname
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+
+	resolved := 0
+	failed := 0
+	processed := 0
+	started := time.Now()
+	lastProgress := started
+	for result := range results {
+		processed++
+		if result.ip != "" {
+			resolved++
+		} else {
+			failed++
+		}
+		resultsByHostname[strings.ToLower(result.hostname)] = result
+
+		if processed%1000 == 0 || time.Since(lastProgress) >= 10*time.Second || processed == len(hostnames) {
+			c.config.Logger.Info("Resolved hostnames", "reason", reason, "processed", processed, "total", len(hostnames), "resolved", resolved, "failed", failed, "elapsed", time.Since(started).Round(time.Second))
+			lastProgress = time.Now()
+		}
+	}
+
+	return resultsByHostname
+}
+
+func preferredResolvedIP(addrs []string) string {
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && ip.To4() != nil {
+			return ip.String()
+		}
+	}
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil {
+			return ip.String()
+		}
+	}
+	if len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
+}
+
+func (c *Collector) ipDedupeWorkerCount(uniqueHostnames int) int {
+	if uniqueHostnames <= 0 {
+		return 1
+	}
+	workers := c.config.Workers
+	if workers <= 0 {
+		workers = 64
+	}
+	if workers > 256 {
+		workers = 256
+	}
+	if workers > uniqueHostnames {
+		workers = uniqueHostnames
+	}
+	if workers < 1 {
+		return 1
+	}
+	return workers
 }
 
 // tryResolveSID attempts to resolve the computer SID for a server.
@@ -897,23 +1150,29 @@ func (c *Collector) enumerateServersFromAD() error {
 	defer adClient.Close()
 
 	spns, err := adClient.EnumerateMSSQLSPNs()
+	sharedADClient := adClient
+	usingADSIComputerFallback := false
 
-	if err != nil && isLDAPAuthError(err) {
+	if c.shouldUseScanAllWindowsADSIFallback(err) {
+		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "LDAP SPN enumeration failed before Windows ADSI fallback", "error", ldapErrorSummary(err))
+		c.config.Logger.Info("LDAP SPN enumeration failed, continuing ScanAllComputers with Windows ADSI fallback")
+		c.setLDAPAuthFailed()
+		sharedADClient = nil
+		spns = nil
+		err = nil
+		usingADSIComputerFallback = true
+	} else if err != nil && isLDAPAuthError(err) {
 		c.setLDAPAuthFailed()
 		return fmt.Errorf("LDAP authentication failed: %w", err)
-	}
-
-	// If LDAP failed on Windows, try using PowerShell/ADSI as fallback
-	if err != nil && runtime.GOOS == "windows" {
-		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "LDAP enumeration failed, trying PowerShell/ADSI fallback...")
-		spns, err = c.enumerateSPNsViaPowerShell()
 	}
 
 	if err != nil {
 		return fmt.Errorf("failed to enumerate MSSQL SPNs: %w", err)
 	}
 
-	c.config.Logger.Info("LDAP bind successful", "auth", adClient.AuthMethod())
+	if !usingADSIComputerFallback {
+		c.config.Logger.Info("LDAP bind successful", "auth", adClient.AuthMethod())
+	}
 	c.config.Logger.Info("Found MSSQL SPNs", "count", len(spns))
 
 	for _, spn := range spns {
@@ -937,7 +1196,7 @@ func (c *Collector) enumerateServersFromAD() error {
 		}
 
 		// Try to resolve computer SID early (reuses shared AD client)
-		c.tryResolveSID(server, adClient)
+		c.tryResolveSID(server, sharedADClient)
 
 		// Build ObjectIdentifier and add to processing list (handles deduplication)
 		c.addServerToProcess(server)
@@ -972,28 +1231,54 @@ func (c *Collector) enumerateServersFromAD() error {
 	if c.config.ScanAllComputers {
 		c.config.Logger.Info("ScanAllComputers enabled, enumerating all domain computers")
 
-		computers, err := adClient.EnumerateAllComputers()
-		if err != nil && isLDAPAuthError(err) {
+		var computers []domainComputer
+		var err error
+		var computerLDAPFallbackErr error
+		if usingADSIComputerFallback {
+			computers, err = c.enumerateComputersViaWindowsADSI()
+		} else {
+			computerNames, enumErr := adClient.EnumerateAllComputers()
+			computers = domainComputersFromNames(computerNames)
+			err = enumErr
+		}
+		if !usingADSIComputerFallback && c.shouldUseWindowsADSIFallback(err) {
+			// Try in-process ADSI fallback on Windows.
+			computerLDAPFallbackErr = err
+			c.config.Logger.Log(context.Background(), logging.LevelVerbose, "LDAP computer enumeration failed before Windows ADSI fallback", "error", ldapErrorSummary(err))
+			c.config.Logger.Info("LDAP computer enumeration failed, trying Windows ADSI fallback")
+			c.setLDAPAuthFailed()
+			sharedADClient = nil
+			computers, err = c.enumerateComputersViaWindowsADSI()
+		} else if err != nil && isLDAPAuthError(err) {
 			c.setLDAPAuthFailed()
 			c.config.Logger.Warn("LDAP authentication failed", "error", err)
 			return nil
 		}
-		if err != nil && runtime.GOOS == "windows" {
-			// Try PowerShell fallback on Windows
-			c.config.Logger.Info("LDAP enumeration failed, trying PowerShell fallback", "error", err)
-			computers, err = c.enumerateComputersViaPowerShell()
-		}
 		if err != nil {
-			c.config.Logger.Warn("Failed to enumerate domain computers", "error", err)
+			if computerLDAPFallbackErr != nil {
+				c.config.Logger.Warn("Failed to enumerate domain computers via LDAP and Windows ADSI fallback", "ldap_error", computerLDAPFallbackErr, "adsi_error", err)
+			} else {
+				c.config.Logger.Warn("Failed to enumerate domain computers", "error", err)
+			}
 		} else {
 			added := 0
-			for _, computer := range computers {
-				server := c.parseServerString(computer)
-				c.tryResolveSID(server, adClient)
+			lastProgress := time.Now()
+			for i, computer := range computers {
+				server := c.parseServerString(computer.Hostname)
+				server.ComputerSID = computer.SID
+				server.SkipIfUnresolved = true
+				if server.ComputerSID == "" {
+					c.tryResolveSID(server, sharedADClient)
+				}
 				oldLen := len(c.serversToProcess)
 				c.addServerToProcess(server)
 				if len(c.serversToProcess) > oldLen {
 					added++
+				}
+				processed := i + 1
+				if processed%1000 == 0 || time.Since(lastProgress) >= 10*time.Second {
+					c.config.Logger.Info("Processed enumerated domain computers", "processed", processed, "total", len(computers), "added", added)
+					lastProgress = time.Now()
 				}
 			}
 			c.config.Logger.Info("Added additional computers to scan", "count", added)
@@ -1005,98 +1290,14 @@ func (c *Collector) enumerateServersFromAD() error {
 	return nil
 }
 
-// enumerateSPNsViaPowerShell uses PowerShell/ADSI to enumerate MSSQL SPNs (Windows fallback)
-func (c *Collector) enumerateSPNsViaPowerShell() ([]types.SPN, error) {
-	c.config.Logger.Info("Using PowerShell/ADSI fallback for SPN enumeration")
-
-	// PowerShell script to enumerate MSSQL SPNs using ADSI
-	script := `
-$searcher = [adsisearcher]"(servicePrincipalName=MSSQLSvc/*)"
-$searcher.PageSize = 1000
-$searcher.PropertiesToLoad.AddRange(@('servicePrincipalName', 'samAccountName', 'objectSid'))
-$results = $searcher.FindAll()
-foreach ($result in $results) {
-    $sid = (New-Object System.Security.Principal.SecurityIdentifier($result.Properties['objectsid'][0], 0)).Value
-    $samName = $result.Properties['samaccountname'][0]
-    foreach ($spn in $result.Properties['serviceprincipalname']) {
-        if ($spn -like 'MSSQLSvc/*') {
-            Write-Output "$spn|$samName|$sid"
-        }
-    }
-}
-`
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("PowerShell SPN enumeration failed: %w", err)
-	}
-
-	var spns []types.SPN
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) < 3 {
-			continue
-		}
-
-		spnStr := parts[0]
-		accountName := parts[1]
-		accountSID := parts[2]
-
-		// Parse SPN: MSSQLSvc/hostname:port or MSSQLSvc/hostname:instancename
-		spn := c.parseSPN(spnStr, accountName, accountSID)
-		if spn != nil {
-			spns = append(spns, *spn)
+func domainComputersFromNames(names []string) []domainComputer {
+	computers := make([]domainComputer, 0, len(names))
+	for _, name := range names {
+		if name != "" {
+			computers = append(computers, domainComputer{Hostname: name})
 		}
 	}
-
-	return spns, nil
-}
-
-// enumerateComputersViaPowerShell uses PowerShell/ADSI to enumerate all domain computers (Windows fallback)
-func (c *Collector) enumerateComputersViaPowerShell() ([]string, error) {
-	c.config.Logger.Info("Using PowerShell/ADSI fallback for computer enumeration")
-
-	// PowerShell script to enumerate all domain computers using ADSI
-	script := `
-$searcher = [adsisearcher]"(&(objectCategory=computer)(objectClass=computer))"
-$searcher.PageSize = 1000
-$searcher.PropertiesToLoad.AddRange(@('dNSHostName', 'name'))
-$results = $searcher.FindAll()
-foreach ($result in $results) {
-    $dns = $result.Properties['dnshostname']
-    $name = $result.Properties['name']
-    if ($dns -and $dns[0]) {
-        Write-Output $dns[0]
-    } elseif ($name -and $name[0]) {
-        Write-Output $name[0]
-    }
-}
-`
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("PowerShell computer enumeration failed: %w", err)
-	}
-
-	var computers []string
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			computers = append(computers, line)
-		}
-	}
-
-	c.config.Logger.Info("PowerShell enumerated computers", "count", len(computers))
-	return computers, nil
+	return computers
 }
 
 // parseSPN parses an SPN string into an SPN struct
@@ -1570,25 +1771,21 @@ func (c *Collector) lookupSPNsForServer(server *ServerToProcess) *ServerSPNInfo 
 	}
 
 	// Try native LDAP first
+	var spns []types.SPN
+	var err error
 	adClient := c.newADClient(domain)
 	if adClient == nil {
 		return nil
+	} else {
+		c.config.Logger.Info("Looking up SPNs in AD", "hostname", server.Hostname, "domain", domain)
+		spns, err = adClient.LookupMSSQLSPNsForHost(server.Hostname)
+		adClient.Close()
 	}
-
-	c.config.Logger.Info("Looking up SPNs in AD", "hostname", server.Hostname, "domain", domain)
-	spns, err := adClient.LookupMSSQLSPNsForHost(server.Hostname)
-	adClient.Close()
 
 	if err != nil && isLDAPAuthError(err) {
 		c.setLDAPAuthFailed()
 		c.config.Logger.Warn("AD SPN lookup failed (invalid credentials)", "error", err)
 		return nil
-	}
-
-	// If LDAP failed on Windows, try PowerShell/ADSI
-	if err != nil && runtime.GOOS == "windows" {
-		c.config.Logger.Info("LDAP lookup failed, trying PowerShell/ADSI fallback")
-		spns, err = c.lookupSPNsViaPowerShell(server.Hostname)
 	}
 
 	if err != nil {
@@ -1645,69 +1842,6 @@ func (c *Collector) lookupSPNsForServer(server *ServerToProcess) *ServerSPNInfo 
 	c.serverSPNDataMu.Unlock()
 
 	return spnInfo
-}
-
-// lookupSPNsViaPowerShell uses PowerShell/ADSI to look up SPNs for a specific hostname
-func (c *Collector) lookupSPNsViaPowerShell(hostname string) ([]types.SPN, error) {
-	// Extract short hostname for matching
-	shortHost := hostname
-	if idx := strings.Index(hostname, "."); idx > 0 {
-		shortHost = hostname[:idx]
-	}
-
-	// PowerShell script to look up SPNs for a specific hostname
-	script := fmt.Sprintf(`
-$shortHost = '%s'
-$fqdn = '%s'
-$searcher = [adsisearcher]"(|(servicePrincipalName=MSSQLSvc/$shortHost*)(servicePrincipalName=MSSQLSvc/$fqdn*))"
-$searcher.PageSize = 1000
-$searcher.PropertiesToLoad.AddRange(@('servicePrincipalName', 'samAccountName', 'objectSid'))
-$results = $searcher.FindAll()
-foreach ($result in $results) {
-    $sid = (New-Object System.Security.Principal.SecurityIdentifier($result.Properties['objectsid'][0], 0)).Value
-    $samName = $result.Properties['samaccountname'][0]
-    foreach ($spn in $result.Properties['serviceprincipalname']) {
-        if ($spn -like 'MSSQLSvc/*') {
-            # Filter to only matching hostnames
-            $spnHost = (($spn -split '/')[1] -split ':')[0]
-            if ($spnHost -ieq $shortHost -or $spnHost -ieq $fqdn -or $spnHost -like "$shortHost.*") {
-                Write-Output "$spn|$samName|$sid"
-            }
-        }
-    }
-}
-`, shortHost, hostname)
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("PowerShell SPN lookup failed: %w", err)
-	}
-
-	var spns []types.SPN
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) < 3 {
-			continue
-		}
-
-		spnStr := parts[0]
-		accountName := parts[1]
-		accountSID := parts[2]
-
-		spn := c.parseSPN(spnStr, accountName, accountSID)
-		if spn != nil {
-			spns = append(spns, *spn)
-		}
-	}
-
-	return spns, nil
 }
 
 // parseServerInstance parses a server instance string into hostname, port, and instance name
