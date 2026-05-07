@@ -1,5 +1,10 @@
 # MSSQLHound Release Notes
 
+## Version 2.0.2 (May 7, 2026)
+- LDAP bind fail fallback to ADSI when channel binding required
+- Deduplicate DNS resolution for --scan-all-computers
+- Remove PowerShell fallback
+
 ## Version 2.0.1 (May 5, 2026)
 - Add CVE-2025-49758 to MSSQL_Server node properties
 
