@@ -3,8 +3,10 @@ package collector
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,73 @@ import (
 	"github.com/SpecterOps/MSSQLHound/internal/bloodhound"
 	"github.com/SpecterOps/MSSQLHound/internal/types"
 )
+
+func TestWindowsADSIFallbackRequiresImplicitLDAPAuth(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	wantImplicit := runtime.GOOS == "windows"
+	if got := collector.canUseWindowsADSIFallback(); got != wantImplicit {
+		t.Fatalf("implicit LDAP fallback = %v, want %v", got, wantImplicit)
+	}
+
+	cases := []Config{
+		{LDAPUser: "alice"},
+		{LDAPPassword: "secret"},
+		{UseKerberos: true},
+	}
+	for _, cfg := range cases {
+		collector.config = &cfg
+		if collector.canUseWindowsADSIFallback() {
+			t.Fatalf("ADSI fallback enabled for explicit LDAP config: %+v", cfg)
+		}
+	}
+}
+
+func TestWindowsADSIFallbackRequiresError(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	if collector.shouldUseWindowsADSIFallback(nil) {
+		t.Fatal("ADSI fallback enabled without an LDAP error")
+	}
+
+	want := runtime.GOOS == "windows"
+	if got := collector.shouldUseWindowsADSIFallback(errors.New("LDAP Result Code 49 Invalid Credentials")); got != want {
+		t.Fatalf("ADSI fallback on LDAP error = %v, want %v", got, want)
+	}
+}
+
+func TestDomainComputersFromNames(t *testing.T) {
+	computers := domainComputersFromNames([]string{"host1.example.com", "", "host2.example.com"})
+	if len(computers) != 2 {
+		t.Fatalf("computer count = %d, want 2", len(computers))
+	}
+	if computers[0].Hostname != "host1.example.com" || computers[0].SID != "" {
+		t.Fatalf("first computer = %+v", computers[0])
+	}
+	if computers[1].Hostname != "host2.example.com" || computers[1].SID != "" {
+		t.Fatalf("second computer = %+v", computers[1])
+	}
+}
+
+func TestIPDedupeWorkerCount(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	if got := collector.ipDedupeWorkerCount(1000); got != 64 {
+		t.Fatalf("default workers = %d, want 64", got)
+	}
+
+	collector.config.Workers = 512
+	if got := collector.ipDedupeWorkerCount(1000); got != 256 {
+		t.Fatalf("capped workers = %d, want 256", got)
+	}
+
+	collector.config.Workers = 512
+	if got := collector.ipDedupeWorkerCount(10); got != 10 {
+		t.Fatalf("workers above hostname count = %d, want 10", got)
+	}
+
+	collector.config.Workers = 0
+	if got := collector.ipDedupeWorkerCount(0); got != 1 {
+		t.Fatalf("empty workers = %d, want 1", got)
+	}
+}
 
 // TestEdgeCreation tests that edges are created correctly for various scenarios
 func TestEdgeCreation(t *testing.T) {
