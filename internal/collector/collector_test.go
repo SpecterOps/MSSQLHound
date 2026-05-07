@@ -47,6 +47,41 @@ func TestWindowsADSIFallbackRequiresError(t *testing.T) {
 	}
 }
 
+func TestScanAllComputersEnablesInitialADSIFallback(t *testing.T) {
+	collector := &Collector{config: &Config{ScanAllComputers: true}}
+	err := errors.New("LDAP Result Code 49 Invalid Credentials")
+	want := runtime.GOOS == "windows"
+	if got := collector.shouldUseScanAllWindowsADSIFallback(err); got != want {
+		t.Fatalf("scan-all ADSI fallback = %v, want %v", got, want)
+	}
+
+	collector.config.ScanAllComputers = false
+	if collector.shouldUseScanAllWindowsADSIFallback(err) {
+		t.Fatal("scan-all ADSI fallback enabled when ScanAllComputers is false")
+	}
+
+	collector.config = &Config{ScanAllComputers: true, LDAPUser: "alice"}
+	if collector.shouldUseScanAllWindowsADSIFallback(err) {
+		t.Fatal("scan-all ADSI fallback enabled for explicit LDAP config")
+	}
+}
+
+func TestLDAPErrorSummaryOmitsTroubleshootingForFallbackLog(t *testing.T) {
+	err := errors.New("all LDAP connection methods failed: LDAPS failed\n\nTroubleshooting suggestions for Kerberos authentication failures:\n  1. Verify your Kerberos ticket is valid\n\nNote: The domain controller requires LDAP signing.")
+	want := "all LDAP connection methods failed: LDAPS failed"
+	if got := ldapErrorSummary(err); got != want {
+		t.Fatalf("ldapErrorSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestLDAPErrorSummaryOmitsSigningNoteForFallbackLog(t *testing.T) {
+	err := errors.New("all LDAP connection methods failed: LDAP failed\n\nNote: The domain controller requires LDAP signing.")
+	want := "all LDAP connection methods failed: LDAP failed"
+	if got := ldapErrorSummary(err); got != want {
+		t.Fatalf("ldapErrorSummary() = %q, want %q", got, want)
+	}
+}
+
 func TestDomainComputersFromNames(t *testing.T) {
 	computers := domainComputersFromNames([]string{"host1.example.com", "", "host2.example.com"})
 	if len(computers) != 2 {
@@ -1070,6 +1105,21 @@ func TestDeduplicateByIP(t *testing.T) {
 		}
 	})
 
+	t.Run("unresolvable scan-all computer dropped", func(t *testing.T) {
+		c.serversToProcess = []*ServerToProcess{
+			{Hostname: "this-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "unresolvable", SkipIfUnresolved: true},
+			{Hostname: "localhost", Port: 1433, ConnectionString: "localhost", SkipIfUnresolved: true},
+		}
+		c.deduplicateByIP()
+
+		if len(c.serversToProcess) != 1 {
+			t.Fatalf("expected 1 server after dropping unresolved scan-all computer, got %d", len(c.serversToProcess))
+		}
+		if c.serversToProcess[0].Hostname != "localhost" {
+			t.Fatalf("remaining server = %q, want localhost", c.serversToProcess[0].Hostname)
+		}
+	})
+
 	t.Run("same IP different instances kept", func(t *testing.T) {
 		c.serversToProcess = []*ServerToProcess{
 			{Hostname: "localhost", Port: 1433, InstanceName: "INST1", ConnectionString: "localhost\\INST1"},
@@ -1102,6 +1152,34 @@ func TestSkipIPDedupe(t *testing.T) {
 
 	if len(c.serversToProcess) != 2 {
 		t.Fatalf("expected 2 servers (dedupe skipped), got %d", len(c.serversToProcess))
+	}
+}
+
+func TestFilterUnresolvedScanAllComputers(t *testing.T) {
+	config := &Config{}
+	c, _ := New(config)
+
+	c.serversToProcess = []*ServerToProcess{
+		{Hostname: "this-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "scan-all-unresolvable", SkipIfUnresolved: true},
+		{Hostname: "localhost", Port: 1433, ConnectionString: "scan-all-localhost", SkipIfUnresolved: true},
+		{Hostname: "another-host-does-not-exist-xyz.invalid", Port: 1433, ConnectionString: "manual-unresolvable"},
+	}
+
+	c.filterUnresolvedScanAllComputers()
+
+	if len(c.serversToProcess) != 2 {
+		t.Fatalf("expected unresolved scan-all target to be removed and manual target kept, got %d", len(c.serversToProcess))
+	}
+
+	remaining := map[string]bool{}
+	for _, server := range c.serversToProcess {
+		remaining[server.ConnectionString] = true
+	}
+	if !remaining["scan-all-localhost"] {
+		t.Fatal("expected resolvable scan-all target to remain")
+	}
+	if !remaining["manual-unresolvable"] {
+		t.Fatal("expected manual unresolved target to remain")
 	}
 }
 

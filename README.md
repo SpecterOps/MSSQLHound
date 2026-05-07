@@ -224,14 +224,10 @@ Each authentication below generates log entries on the target system.
 
 ## Subprocesses Executed
 
-MSSQLHound spawns local `powershell.exe` processes as fallbacks when native Go clients fail. All subprocesses run on the **operator's machine**, not on targets (except WinRM remote execution).
+MSSQLHound does not spawn local `powershell.exe` processes as collection fallbacks. The only PowerShell command constructed by the Go binary is sent through WinRM for the EPA matrix workflow.
 
 | Executable | Arguments | Purpose | Conditions |
 |------------|-----------|---------|------------|
-| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | SQL query execution via `System.Data.SqlClient` | Windows only. Fallback when Go TDS driver fails with "untrusted domain" error. **Not used when `--proxy` is set.** |
-| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | SPN enumeration via `[adsisearcher]` (ADSI) | Windows only. Fallback when Go LDAP client fails. |
-| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | Domain computer enumeration via `[adsisearcher]` (ADSI) | Windows only. Fallback when Go LDAP client fails. |
-| `powershell.exe` | `-NoProfile -NonInteractive -Command <script>` | SPN lookup by hostname via `[adsisearcher]` (ADSI) | Windows only. Fallback when Go LDAP client fails. |
 | `powershell.exe` | `-NoProfile -NonInteractive -EncodedCommand <base64>` | Remote PowerShell via WinRM: EPA registry configuration and SQL service restart on target host | **Only `test-epa-matrix` subcommand.** Executes on the remote target via WinRM. |
 
 ## SQL Queries Executed on Targets
@@ -360,7 +356,6 @@ The original MSSQLHound PowerShell script is an excellent tool for SQL Server se
 - **No PowerShell Required**: Can run on systems without PowerShell installed
 
 ### Compatibility
-- **PowerShell Fallback**: When the native Go SQL driver fails (e.g., certain SSPI configurations), automatically falls back to PowerShell's `System.Data.SqlClient` for maximum compatibility
 - **Full Feature Parity**: Produces identical BloodHound-compatible output
 
 ### Maintainability
@@ -375,7 +370,6 @@ The original MSSQLHound PowerShell script is an excellent tool for SQL Server se
 - **Active Directory Integration**: Resolves Windows logins to domain principals via LDAP
 - **BloodHound Output**: Produces OpenGraph JSON format compatible with BloodHound CE
 - **Streaming Output**: Memory-efficient streaming JSON writer for large environments
-- **Automatic Fallback**: Falls back to PowerShell for servers with SSPI issues
 - **LDAP Paging**: Handles large domains with thousands of computers/SPNs
 
 ## Building
@@ -751,15 +745,13 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 ### Connection Handling
 
-The Go version includes automatic PowerShell fallback for servers that fail with the native `go-mssqldb` driver:
+The Go version uses the native `go-mssqldb` driver with multiple connection strategies for hostname, encryption, and SPN handling:
 
 ```
 Native connection: go-mssqldb (fast, cross-platform)
-        ↓ fails with "untrusted domain" error
-Fallback: PowerShell + System.Data.SqlClient (Windows only, more compatible)
 ```
 
-This ensures maximum compatibility while maintaining performance for the majority of servers.
+If all native strategies fail, the connection error is returned directly.
 
 ### LDAP Connection Methods
 
@@ -768,7 +760,8 @@ The Go version tries multiple LDAP connection methods in order:
 1. **LDAPS (port 636)** - TLS encrypted, most secure
 2. **LDAP + StartTLS (port 389)** - Upgrade to TLS
 3. **Plain LDAP (port 389)** - Unencrypted (may fail if DC requires signing)
-4. **PowerShell/ADSI Fallback** - Windows COM-based fallback
+
+For `--scan-all-computers` on Windows with implicit LDAP authentication, computer enumeration may use in-process Go ADSI if LDAP computer enumeration fails. This path does not launch PowerShell.
 
 ## CVE Detection
 
@@ -827,18 +820,7 @@ Some SQL Server instances with specific SSPI configurations may fail to connect 
 Login failed. The login is from an untrusted domain and cannot be used with Windows authentication
 ```
 
-**Automatic Handling:** The Go version detects this error and automatically retries using PowerShell's `System.Data.SqlClient`, which handles these edge cases more reliably. This fallback requires PowerShell to be available on the system.
-
-### PowerShell Fallback Limitations
-
-The PowerShell fallback for SQL connections and AD enumeration requires:
-- Windows operating system
-- PowerShell execution not blocked by security policy
-- Access to `System.Data.SqlClient` (.NET Framework)
-
-If PowerShell is blocked (e.g., `Access is denied` error), the fallback will not work. In this case:
-- For SQL connections: Some servers may not be reachable
-- For AD enumeration: Use explicit LDAP credentials instead
+There is no local PowerShell retry path for this condition. Check domain trust, SPN selection, EPA settings, and the selected authentication method; use SQL authentication or explicit Kerberos material where appropriate.
 
 ### When to Use LDAP Credentials
 
@@ -872,11 +854,10 @@ Use `-v` or `--verbose` to see detailed connection attempts and errors:
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `untrusted domain` | SSPI negotiation failed | Automatic PowerShell fallback; check domain trust |
+| `untrusted domain` | SSPI negotiation failed | Check domain trust, SPN selection, EPA settings, and authentication method |
 | `Size Limit Exceeded` | Too many LDAP results | Update to latest version (has paging) |
 | `80090346` | GSSAPI/Kerberos failure | Use explicit LDAP credentials |
 | `Strong Auth Required` | DC requires LDAP signing | Will automatically try LDAPS/StartTLS |
-| `Access is denied` (PowerShell) | Execution policy blocked | Use explicit LDAP credentials instead |
 
 ### Debug LDAP Connection
 
