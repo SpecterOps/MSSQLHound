@@ -1,1 +1,1 @@
-{"query":"MATCH p = (:Base)-[:MSSQL_CoerceAndRelayToMSSQL]-\u003e() RETURN p","name":"MSSQL: Domain Principals that Can Coerce and Relay to MSSQL","description":"Paths from domain computer principals to their corresponding SQL Server logins on servers where EPA is not required"}
+{"query":"MATCH p = (:Base)-[:MSSQL_CoerceAndRelayToMSSQL]->() RETURN p","name":"MSSQL: Domain Principals that Can Coerce and Relay to MSSQL","description":"Paths from domain computer principals to their corresponding SQL Server logins on servers where EPA is not required"}

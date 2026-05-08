@@ -66,6 +66,10 @@ var (
 	tokenKey          string
 	uploadSchemaOnly  bool
 	uploadResultsOnly bool
+	uploadQueriesOnly bool
+	uploadQueries     bool
+	noUploadQueries   bool
+	queriesDir        string
 	skipCollection    bool
 )
 
@@ -145,9 +149,13 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().StringVar(&bloodhoundURL, "bloodhound-url", "", "BloodHound CE instance URL, uses local DNS (env: BLOODHOUND_URL)")
 	rootCmd.Flags().StringVar(&tokenID, "token-id", "", "BloodHound API token ID (env: BLOODHOUND_TOKEN_ID)")
 	rootCmd.Flags().StringVar(&tokenKey, "token-key", "", "BloodHound API token key (env: BLOODHOUND_TOKEN_KEY)")
-	rootCmd.Flags().BoolVar(&uploadSchemaOnly, "upload-schema-only", false, "Only upload schema definitions to BloodHound (skip results upload)")
-	rootCmd.Flags().BoolVar(&uploadResultsOnly, "upload-results-only", false, "Only upload collection results to BloodHound (skip schema upload)")
-	rootCmd.Flags().BoolVar(&skipCollection, "skip-collection", false, "Skip data collection (use with -B to only upload schema)")
+	rootCmd.Flags().BoolVar(&uploadSchemaOnly, "upload-schema-only", false, "Only upload schema definitions to BloodHound (skip results and queries)")
+	rootCmd.Flags().BoolVar(&uploadResultsOnly, "upload-results-only", false, "Only upload collection results to BloodHound (skip schema and queries)")
+	rootCmd.Flags().BoolVar(&uploadQueriesOnly, "upload-queries-only", false, "Only upload bundled saved Cypher queries (implies --skip-collection)")
+	rootCmd.Flags().BoolVar(&uploadQueries, "upload-queries", false, "Upload bundled saved Cypher queries (default when -B is set without --upload-*-only)")
+	rootCmd.Flags().BoolVar(&noUploadQueries, "no-upload-queries", false, "Suppress saved-query upload that would otherwise happen via -B")
+	rootCmd.Flags().StringVar(&queriesDir, "queries-dir", "", "Additional directory of saved-query JSON files to upload alongside bundled queries")
+	rootCmd.Flags().BoolVar(&skipCollection, "skip-collection", false, "Skip data collection (use with -B to only upload schema/queries)")
 
 	// Annotate flags with display groups for --help output
 	for _, name := range []string{"user", "password", "nt-hash", "ldap-user", "ldap-password",
@@ -169,7 +177,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	for _, name := range []string{"temp-dir", "zip-dir", "log-per-target"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Output"}) //nolint:errcheck
 	}
-	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results-only", "upload-schema-only", "skip-collection"} {
+	for _, name := range []string{"bloodhound", "bloodhound-url", "token-id", "token-key", "upload-results-only", "upload-schema-only", "upload-queries-only", "upload-queries", "no-upload-queries", "queries-dir", "skip-collection"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"BloodHound Upload"}) //nolint:errcheck
 	}
 
@@ -381,17 +389,45 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Validate mutually exclusive upload-only flags
-	if uploadSchemaOnly && uploadResultsOnly {
-		return fmt.Errorf("--upload-schema-only and --upload-results-only are mutually exclusive")
+	onlyFlags := 0
+	if uploadSchemaOnly {
+		onlyFlags++
+	}
+	if uploadResultsOnly {
+		onlyFlags++
+	}
+	if uploadQueriesOnly {
+		onlyFlags++
+	}
+	if onlyFlags > 1 {
+		return fmt.Errorf("--upload-schema-only, --upload-results-only, and --upload-queries-only are mutually exclusive")
+	}
+	if uploadQueriesOnly && noUploadQueries {
+		return fmt.Errorf("--upload-queries-only and --no-upload-queries are mutually exclusive")
 	}
 
-	// Determine what to upload: default is both schema and results
+	// Determine what to upload. Default (when -B is set without any
+	// --upload-*-only flag) is schema + results + bundled queries.
 	uploadSchema := true
 	uploadResults := true
-	if uploadSchemaOnly {
+	uploadQueriesEffective := true
+	switch {
+	case uploadSchemaOnly:
 		uploadResults = false
-	} else if uploadResultsOnly {
+		uploadQueriesEffective = false
+	case uploadResultsOnly:
 		uploadSchema = false
+		uploadQueriesEffective = false
+	case uploadQueriesOnly:
+		uploadSchema = false
+		uploadResults = false
+		skipCollection = true // queries-only never collects
+	}
+	if noUploadQueries {
+		uploadQueriesEffective = false
+	}
+	if uploadQueries {
+		uploadQueriesEffective = true
 	}
 
 	// Build configuration from flags
@@ -438,6 +474,8 @@ func run(cmd *cobra.Command, args []string) error {
 		TokenKey:                        tokenKey,
 		UploadSchema:                    uploadSchema,
 		UploadResults:                   uploadResults,
+		UploadQueries:                   uploadQueriesEffective,
+		QueriesDir:                      queriesDir,
 		SkipCollection:                  skipCollection,
 	}
 
