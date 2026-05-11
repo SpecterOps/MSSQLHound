@@ -61,6 +61,7 @@ type Config struct {
 	CollectFromLinkedServers   bool
 	SkipPrivateAddress         bool
 	ScanAllComputers           bool
+	ScanAllComputerPorts       []int
 	SkipADNodeCreation         bool
 	DisableNontraversableEdges bool
 	DisablePossibleEdges       bool
@@ -68,6 +69,7 @@ type Config struct {
 
 	// Timeouts and limits
 	LinkedServerTimeout    int
+	PortCheckTimeout       time.Duration
 	MemoryThresholdPercent int
 
 	// Concurrency
@@ -142,6 +144,13 @@ type dnsLookupResult struct {
 	ip       string
 	err      error
 }
+
+var (
+	windowsComputerSIDLookupTimeout = 5 * time.Second
+	windowsComputerSIDResolver      = ad.ResolveComputerSIDWindows
+	serverProcessingTimeout         = 6 * time.Minute
+	serverProcessor                 = (*Collector).processServer
+)
 
 // ServerSPNInfo holds SPN-related data discovered from Active Directory
 type ServerSPNInfo struct {
@@ -313,6 +322,7 @@ func (c *Collector) newMSSQLClient(serverInstance, userID, password string, log 
 	if c.config.UseKerberos {
 		client.SetKerberosConfig(c.config.Krb5ConfigFile, c.config.Krb5CCacheFile, c.config.Krb5KeytabFile, c.config.Krb5Realm)
 	}
+	client.SetPortCheckTimeout(c.config.PortCheckTimeout)
 	return client
 }
 
@@ -503,26 +513,37 @@ func (c *Collector) serverWorker(id int, jobs <-chan serverJob, results chan<- s
 
 	for job := range jobs {
 		c.config.Logger.Log(context.Background(), logging.LevelVerbose, "Worker processing server", "worker", id, "target", job.server.ConnectionString)
+		results <- c.processServerWithWorkerTimeout(job)
+	}
+}
 
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					c.config.Logger.Error("Worker panic recovered", "worker", id, "target", job.server.ConnectionString, "panic", r)
-					results <- serverResult{
-						index:  job.index,
-						server: job.server,
-						err:    fmt.Errorf("worker panicked: %v", r),
-					}
-				}
-			}()
+func (c *Collector) processServerWithWorkerTimeout(job serverJob) serverResult {
+	resultCh := make(chan serverResult, 1)
 
-			err := c.processServer(job.server)
-			results <- serverResult{
-				index:  job.index,
-				server: job.server,
-				err:    err,
+	go func() {
+		result := serverResult{index: job.index, server: job.server}
+		defer func() {
+			if r := recover(); r != nil {
+				result.err = fmt.Errorf("worker panicked: %v", r)
 			}
+			resultCh <- result
 		}()
+
+		result.err = serverProcessor(c, job.server)
+	}()
+
+	timer := time.NewTimer(serverProcessingTimeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-resultCh:
+		return result
+	case <-timer.C:
+		return serverResult{
+			index:  job.index,
+			server: job.server,
+			err:    fmt.Errorf("server processing timed out after %s", serverProcessingTimeout),
+		}
 	}
 }
 
@@ -633,6 +654,31 @@ func (c *Collector) parseServerString(serverStr string) *ServerToProcess {
 	}
 
 	return server
+}
+
+func (c *Collector) scanAllComputerPorts() []int {
+	if len(c.config.ScanAllComputerPorts) == 0 {
+		return []int{1433}
+	}
+	return c.config.ScanAllComputerPorts
+}
+
+func (c *Collector) scanAllComputerServers(computer domainComputer) []*ServerToProcess {
+	ports := c.scanAllComputerPorts()
+	servers := make([]*ServerToProcess, 0, len(ports))
+	useDefaultConnectionString := len(ports) == 1 && ports[0] == 1433
+	for _, port := range ports {
+		connectionString := computer.Hostname
+		if !useDefaultConnectionString {
+			connectionString = fmt.Sprintf("%s:%d", computer.Hostname, port)
+		}
+		server := c.parseServerString(connectionString)
+		server.Port = port
+		server.ComputerSID = computer.SID
+		server.SkipIfUnresolved = true
+		servers = append(servers, server)
+	}
+	return servers
 }
 
 // extractLineCredentials strips user:pass@ from a target line, applying the
@@ -1065,7 +1111,7 @@ func (c *Collector) tryResolveSID(server *ServerToProcess, sharedClient *ad.Clie
 
 	// Try Windows API first
 	if runtime.GOOS == "windows" {
-		sid, err := ad.ResolveComputerSIDWindows(server.Hostname, c.config.Domain)
+		sid, err := c.resolveComputerSIDWindows(server.Hostname, c.config.Domain)
 		if err == nil && sid != "" {
 			server.ComputerSID = sid
 			return
@@ -1089,6 +1135,29 @@ func (c *Collector) tryResolveSID(server *ServerToProcess, sharedClient *ad.Clie
 	}
 	if err == nil && sid != "" {
 		server.ComputerSID = sid
+	}
+}
+
+func (c *Collector) resolveComputerSIDWindows(computerName, domain string) (string, error) {
+	type sidResult struct {
+		sid string
+		err error
+	}
+
+	results := make(chan sidResult, 1)
+	go func() {
+		sid, err := windowsComputerSIDResolver(computerName, domain)
+		results <- sidResult{sid: sid, err: err}
+	}()
+
+	timer := time.NewTimer(windowsComputerSIDLookupTimeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-results:
+		return result.sid, result.err
+	case <-timer.C:
+		return "", fmt.Errorf("Windows computer SID lookup timed out after %s for %s", windowsComputerSIDLookupTimeout, computerName)
 	}
 }
 
@@ -1229,7 +1298,7 @@ func (c *Collector) enumerateServersFromAD() error {
 	// If ScanAllComputers is enabled, also enumerate all domain computers
 	// Reuses the same shared AD client from above.
 	if c.config.ScanAllComputers {
-		c.config.Logger.Info("ScanAllComputers enabled, enumerating all domain computers")
+		c.config.Logger.Info("ScanAllComputers enabled, enumerating all domain computers", "ports", c.scanAllComputerPorts())
 
 		var computers []domainComputer
 		var err error
@@ -1264,16 +1333,15 @@ func (c *Collector) enumerateServersFromAD() error {
 			added := 0
 			lastProgress := time.Now()
 			for i, computer := range computers {
-				server := c.parseServerString(computer.Hostname)
-				server.ComputerSID = computer.SID
-				server.SkipIfUnresolved = true
-				if server.ComputerSID == "" {
-					c.tryResolveSID(server, sharedADClient)
-				}
-				oldLen := len(c.serversToProcess)
-				c.addServerToProcess(server)
-				if len(c.serversToProcess) > oldLen {
-					added++
+				for _, server := range c.scanAllComputerServers(computer) {
+					if server.ComputerSID == "" {
+						c.tryResolveSID(server, sharedADClient)
+					}
+					oldLen := len(c.serversToProcess)
+					c.addServerToProcess(server)
+					if len(c.serversToProcess) > oldLen {
+						added++
+					}
 				}
 				processed := i + 1
 				if processed%1000 == 0 || time.Since(lastProgress) >= 10*time.Second {
@@ -1661,7 +1729,7 @@ func (c *Collector) processServerFromSPNData(server *ServerToProcess, spnInfo *S
 	computerSID := server.ComputerSID
 	if computerSID == "" && c.config.Domain != "" {
 		if runtime.GOOS == "windows" {
-			sid, err := ad.ResolveComputerSIDWindows(server.Hostname, c.config.Domain)
+			sid, err := c.resolveComputerSIDWindows(server.Hostname, c.config.Domain)
 			if err == nil && sid != "" {
 				computerSID = sid
 				server.ComputerSID = sid
@@ -1824,7 +1892,7 @@ func (c *Collector) lookupSPNsForServer(server *ServerToProcess) *ServerSPNInfo 
 
 	// Also resolve computer SID if we don't have it
 	if server.ComputerSID == "" {
-		sid, err := ad.ResolveComputerSIDWindows(server.Hostname, domain)
+		sid, err := c.resolveComputerSIDWindows(server.Hostname, domain)
 		if err == nil && sid != "" {
 			server.ComputerSID = sid
 			// Rebuild ObjectIdentifier with the new SID
@@ -1893,7 +1961,7 @@ func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log 
 	// Method 1 & 2: Try Windows APIs (only available on Windows)
 	if runtime.GOOS == "windows" {
 		log.Log(context.Background(), logging.LevelVerbose, "Attempting to resolve computer SID", "machine", machineName, "domain", domain, "method", "WindowsAPI")
-		sid, err := ad.ResolveComputerSIDWindows(machineName, domain)
+		sid, err := c.resolveComputerSIDWindows(machineName, domain)
 		if err == nil && sid != "" {
 			c.applyComputerSID(serverInfo, sid, "WindowsAPI", log)
 			return
@@ -1901,8 +1969,8 @@ func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log 
 		log.Log(context.Background(), logging.LevelVerbose, "Windows API LookupAccountName failed", "error", err)
 
 		if serverInfo.DomainSID != "" {
-			sid, err := ad.ResolveComputerSIDByDomainSID(machineName, serverInfo.DomainSID, domain)
-			if err == nil && sid != "" {
+			sid, err := c.resolveComputerSIDWindows(machineName, domain)
+			if err == nil && sid != "" && strings.HasPrefix(sid, serverInfo.DomainSID) {
 				c.applyComputerSID(serverInfo, sid, "WindowsAPI", log)
 				return
 			}
@@ -4776,7 +4844,7 @@ func (c *Collector) resolveDataSourceToSID(hostname, port, instanceName, domain 
 	}
 
 	// Try Windows API first
-	sid, err := ad.ResolveComputerSIDWindows(machineName, domain)
+	sid, err := c.resolveComputerSIDWindows(machineName, domain)
 	if err == nil && sid != "" {
 		if instanceName != "" {
 			return fmt.Sprintf("%s:%s", sid, instanceName)

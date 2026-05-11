@@ -16,11 +16,11 @@ func TestClassifyTarget(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		input            string
-		wantInstance     string
-		wantListFile     string
-		wantList         string
+		name         string
+		input        string
+		wantInstance string
+		wantListFile string
+		wantList     string
 	}{
 		{
 			name:  "empty input",
@@ -94,6 +94,47 @@ func TestClassifyTarget(t *testing.T) {
 			}
 			if gotList != tc.wantList {
 				t.Errorf("list: got %q, want %q", gotList, tc.wantList)
+			}
+		})
+	}
+}
+
+func TestParsePortList(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    []int
+		wantErr bool
+	}{
+		{name: "default", input: "1433", want: []int{1433}},
+		{name: "multiple", input: "1433,1444,51433", want: []int{1433, 1444, 51433}},
+		{name: "spaces and duplicates", input: " 1433, 1444,1433 ", want: []int{1433, 1444}},
+		{name: "empty", input: "", wantErr: true},
+		{name: "empty item", input: "1433,,1444", wantErr: true},
+		{name: "not numeric", input: "1433,abc", wantErr: true},
+		{name: "zero", input: "0", wantErr: true},
+		{name: "too high", input: "65536", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePortList(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("ports = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("ports = %v, want %v", got, tc.want)
+				}
 			}
 		})
 	}
@@ -227,12 +268,12 @@ func TestExtractTargetCredentials(t *testing.T) {
 
 func TestParseBloodhoundUploadFlag(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     string
-		wantID    string
-		wantKey   string
-		wantURL   string
-		wantErr   string
+		name    string
+		input   string
+		wantID  string
+		wantKey string
+		wantURL string
+		wantErr string
 	}{
 		{
 			name:    "valid full URL",
