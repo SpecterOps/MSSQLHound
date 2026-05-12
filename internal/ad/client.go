@@ -165,10 +165,10 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 
 	// Transport configurations to try in order of preference.
 	type transportConfig struct {
-		label   string
-		scheme  string
-		port    string
-		tls     *tls.Config
+		label    string
+		scheme   string
+		port     string
+		tls      *tls.Config
 		startTLS bool
 	}
 	transports := []transportConfig{
@@ -499,13 +499,13 @@ func (c *Client) SetProxyDialer(d interface {
 // dialLDAP establishes an LDAP connection, routing through the proxy if configured.
 // For "ldaps" scheme, it performs a TLS handshake after the TCP connection.
 func (c *Client) dialLDAP(scheme, host, port string, tlsConfig *tls.Config) (*ldap.Conn, error) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
 	if c.proxyDialer == nil {
-		// Use standard DialURL
 		url := fmt.Sprintf("%s://%s:%s", scheme, host, port)
 		if tlsConfig != nil {
-			return ldap.DialURL(url, ldap.DialWithTLSConfig(tlsConfig))
+			return ldap.DialURL(url, ldap.DialWithDialer(dialer), ldap.DialWithTLSConfig(tlsConfig))
 		}
-		return ldap.DialURL(url)
+		return ldap.DialURL(url, ldap.DialWithDialer(dialer))
 	}
 
 	// Dial through proxy
