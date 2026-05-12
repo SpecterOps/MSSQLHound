@@ -433,7 +433,15 @@ Collect from a single SQL Server:
 
 # Specifying domain controller IP (also used as DNS resolver)
 ./mssqlhound --scan-all-computers --dc 10.0.0.1 --ldap-user "DOMAIN\username" --ldap-password "password"
+
+# Scan additional candidate SQL ports on every blindly enumerated computer
+./mssqlhound --scan-all-computers --scan-all-computer-ports 1433,1434,14330
+
+# Loosen the TCP reachability timeout for slow networks (default is 2 seconds)
+./mssqlhound --scan-all-computers --port-check-timeout 5
 ```
+
+When `--scan-all-computers` is set, SPN-discovered SQL Servers still honor their AD-advertised port or instance. The `--scan-all-computer-ports` list only applies to domain computers without an MSSQLSvc SPN. A per-server worker timeout ensures one wedged target (stuck in nested SQL/LDAP/DNS/SID lookups) cannot keep the worker pool open forever.
 
 ### DNS and Domain Controller Configuration
 
@@ -653,11 +661,13 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 
 ### Target Selection
 
-| Flag | Description |
-|------|-------------|
-| `-t, --targets` | Targets (see Authentication above): single, comma-separated, or file path |
-| `-A, --scan-all-computers` | Scan all domain computers, not just those with SQL SPNs |
-| `--skip-private-address` | Skip private IP check when resolving domain computer addresses |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-t, --targets` | | Targets (see Authentication above): single, comma-separated, or file path |
+| `-A, --scan-all-computers` | false | Scan all domain computers, not just those with SQL SPNs. SPN-discovered SQL Servers still preserve their AD-advertised port or instance; blindly enumerated computers use the ports from `--scan-all-computer-ports` |
+| `--scan-all-computer-ports` | `1433` | Comma-separated TCP ports to scan on blindly enumerated domain computers when `--scan-all-computers` is set |
+| `--port-check-timeout` | `2` | TCP port reachability timeout (seconds) before skipping a target |
+| `--skip-private-address` | false | Skip private IP check when resolving domain computer addresses |
 
 ### Collection
 
