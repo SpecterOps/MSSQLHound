@@ -1279,6 +1279,40 @@ func TestFilterUnresolvedScanAllComputers(t *testing.T) {
 	}
 }
 
+func TestADUserNodeNameStripsNETBIOSPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	domainSID := "S-1-5-21-9999999999-9999999999-9999999999"
+	serverInfo := &types.ServerInfo{
+		ObjectIdentifier: domainSID + "-1001:1433",
+		Hostname:         "sqlhost",
+		FQDN:             "sqlhost.contoso.com",
+		ComputerSID:      domainSID + "-1001",
+		DomainSID:        domainSID,
+		ServerPrincipals: []types.ServerPrincipal{
+			{
+				Name:                       "CONTOSO\\jdoe",
+				TypeDescription:            "WINDOWS_LOGIN",
+				SecurityIdentifier:         domainSID + "-2001",
+				IsActiveDirectoryPrincipal: true,
+				IsDisabled:                 false,
+				Permissions:                []types.Permission{{Permission: "CONNECT SQL", State: "GRANT", ClassDesc: "SERVER"}},
+			},
+		},
+	}
+	c, _ := New(&Config{TempDir: tmpDir, Domain: "CONTOSO.COM"})
+	if err := c.createADNodes(serverInfo); err != nil {
+		t.Fatalf("createADNodes: %v", err)
+	}
+	if len(c.adUsers) != 1 {
+		t.Fatalf("adUsers count = %d, want 1", len(c.adUsers))
+	}
+	got, _ := c.adUsers[0].Properties["name"].(string)
+	want := "jdoe@CONTOSO.COM"
+	if got != want {
+		t.Errorf("AD User node name = %q, want %q (NETBIOS prefix must be stripped)", got, want)
+	}
+}
+
 func TestRunDomainEnumOnlySkipsCollection(t *testing.T) {
 	tmpDir := t.TempDir()
 
