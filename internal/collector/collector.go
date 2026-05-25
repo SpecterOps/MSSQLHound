@@ -3055,10 +3055,14 @@ func (c *Collector) createADNodes(serverInfo *types.ServerInfo) error {
 			kinds = []string{bloodhound.NodeKinds.User, "Base"}
 		}
 
-		// Build the display name with domain
+		// Build the display name: strip NETBIOS prefix (DOMAIN\user → user) then
+		// append @DOMAIN.COM to match BloodHound's NAME@DOMAIN.COM convention.
 		displayName := principal.Name
+		if idx := strings.Index(displayName, "\\"); idx != -1 {
+			displayName = displayName[idx+1:]
+		}
 		if c.config.Domain != "" && !strings.Contains(displayName, "@") {
-			displayName = principal.Name + "@" + c.config.Domain
+			displayName = displayName + "@" + c.config.Domain
 		}
 
 		nodeProps := map[string]interface{}{
