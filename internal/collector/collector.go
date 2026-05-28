@@ -119,6 +119,11 @@ type Collector struct {
 	adGroups    []*bloodhound.Node
 	adSeenNodes map[string]bool // Dedup AD nodes by ID across servers
 	adNodesMu   sync.Mutex      // Protects adComputers, adUsers, adGroups, adSeenNodes
+
+	// Aggregate node/edge counts across all output files for the end-of-run summary
+	totalNodesByKind map[string]int
+	totalEdgesByKind map[string]int
+	totalStatsMu     sync.Mutex // Protects totalNodesByKind and totalEdgesByKind
 }
 
 // ServerToProcess holds information about a server to be processed
@@ -166,9 +171,11 @@ func New(config *Config) (*Collector, error) {
 		config.Logger = slog.New(logging.NewHandler(os.Stderr, nil))
 	}
 	c := &Collector{
-		config:        config,
-		serverSPNData: make(map[string]*ServerSPNInfo),
-		adSeenNodes:   make(map[string]bool),
+		config:           config,
+		serverSPNData:    make(map[string]*ServerSPNInfo),
+		adSeenNodes:      make(map[string]bool),
+		totalNodesByKind: make(map[string]int),
+		totalEdgesByKind: make(map[string]int),
 	}
 	if config.NTHash != "" {
 		hash, err := hex.DecodeString(config.NTHash)
@@ -437,6 +444,22 @@ func (c *Collector) Run() error {
 		}
 	}
 
+	// Log aggregate node and edge counts across all output files.
+	c.totalStatsMu.Lock()
+	totalNodes := c.totalNodesByKind
+	totalEdges := c.totalEdgesByKind
+	c.totalStatsMu.Unlock()
+	if len(totalNodes) > 0 || len(totalEdges) > 0 {
+		summaryArgs := make([]any, 0, len(totalNodes)*2+len(totalEdges)*2)
+		for kind, count := range totalNodes {
+			summaryArgs = append(summaryArgs, "node:"+kind, count)
+		}
+		for kind, count := range totalEdges {
+			summaryArgs = append(summaryArgs, "edge:"+kind, count)
+		}
+		c.config.Logger.Info("Total node and edge counts by type", summaryArgs...)
+	}
+
 	c.config.Logger.Info("Total run duration", "duration", time.Since(runStart).Round(time.Millisecond))
 
 	return nil
@@ -552,6 +575,18 @@ func (c *Collector) addOutputFile(path string) {
 	c.outputFilesMu.Lock()
 	defer c.outputFilesMu.Unlock()
 	c.outputFiles = append(c.outputFiles, path)
+}
+
+// mergeTypeStats adds per-kind counts from a finished writer into the run-wide totals (thread-safe).
+func (c *Collector) mergeTypeStats(nodesByKind, edgesByKind map[string]int) {
+	c.totalStatsMu.Lock()
+	defer c.totalStatsMu.Unlock()
+	for k, v := range nodesByKind {
+		c.totalNodesByKind[k] += v
+	}
+	for k, v := range edgesByKind {
+		c.totalEdgesByKind[k] += v
+	}
 }
 
 // addLogFile adds a per-target log file to the list (thread-safe)
@@ -2570,6 +2605,7 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 		args = append(args, "edge:"+kind, count)
 	}
 	c.config.Logger.Info("Node and edge counts by type", args...)
+	c.mergeTypeStats(nodesByKind, edgesByKind)
 
 	return nil
 }
@@ -6588,6 +6624,8 @@ func (c *Collector) writeADFiles() error {
 		c.addOutputFile(filePath)
 		nodes, _ := writer.Stats()
 		written = append(written, fmt.Sprintf("%d nodes to %s", nodes, spec.filename))
+		adNodesByKind, adEdgesByKind := writer.TypeStats()
+		c.mergeTypeStats(adNodesByKind, adEdgesByKind)
 	}
 
 	if len(written) > 0 {
