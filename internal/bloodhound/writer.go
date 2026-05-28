@@ -84,16 +84,18 @@ type Icon struct {
 
 // StreamingWriter handles streaming JSON output for BloodHound format
 type StreamingWriter struct {
-	file      *os.File
-	encoder   *json.Encoder
-	mu        sync.Mutex
-	nodeCount int
-	edgeCount int
-	firstNode bool
-	firstEdge bool
-	inEdges   bool
-	filePath  string
-	seenEdges map[string]bool // dedup: "source|target|kind"
+	file         *os.File
+	encoder      *json.Encoder
+	mu           sync.Mutex
+	nodeCount    int
+	edgeCount    int
+	nodesByKind  map[string]int
+	edgesByKind  map[string]int
+	firstNode    bool
+	firstEdge    bool
+	inEdges      bool
+	filePath     string
+	seenEdges    map[string]bool // dedup: "source|target|kind"
 }
 
 // NewStreamingWriter creates a new streaming BloodHound JSON writer
@@ -120,11 +122,13 @@ func newStreamingWriter(filePath string, sourceKind string) (*StreamingWriter, e
 	}
 
 	w := &StreamingWriter{
-		file:      file,
-		firstNode: true,
-		firstEdge: true,
-		filePath:  filePath,
-		seenEdges: make(map[string]bool),
+		file:        file,
+		firstNode:   true,
+		firstEdge:   true,
+		filePath:    filePath,
+		seenEdges:   make(map[string]bool),
+		nodesByKind: make(map[string]int),
+		edgesByKind: make(map[string]int),
 	}
 
 	// Write header
@@ -191,6 +195,9 @@ func (w *StreamingWriter) WriteNode(node *Node) error {
 	}
 
 	w.nodeCount++
+	if len(node.Kinds) > 0 {
+		w.nodesByKind[node.Kinds[0]]++
+	}
 	return nil
 }
 
@@ -246,6 +253,7 @@ func (w *StreamingWriter) WriteEdge(edge *Edge) error {
 	}
 
 	w.edgeCount++
+	w.edgesByKind[edge.Kind]++
 	return nil
 }
 
@@ -293,6 +301,21 @@ func (w *StreamingWriter) Stats() (nodes, edges int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.nodeCount, w.edgeCount
+}
+
+// TypeStats returns copies of the per-kind node and edge counts.
+func (w *StreamingWriter) TypeStats() (nodesByKind, edgesByKind map[string]int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	nodes := make(map[string]int, len(w.nodesByKind))
+	for k, v := range w.nodesByKind {
+		nodes[k] = v
+	}
+	edges := make(map[string]int, len(w.edgesByKind))
+	for k, v := range w.edgesByKind {
+		edges[k] = v
+	}
+	return nodes, edges
 }
 
 // FilePath returns the path to the output file

@@ -2559,6 +2559,18 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 	nodes, edges := writer.Stats()
 	c.config.Logger.Info("Wrote output file", "nodes", nodes, "edges", edges, "file", filepath.Base(outputFile))
 
+	nodesByKind, edgesByKind := writer.TypeStats()
+	// Build a flat list of key/value pairs so the structured logger renders each kind inline.
+	// Nodes are prefixed with "node:" and edges with "edge:" to distinguish them at a glance.
+	args := make([]any, 0, len(nodesByKind)*2+len(edgesByKind)*2)
+	for kind, count := range nodesByKind {
+		args = append(args, "node:"+kind, count)
+	}
+	for kind, count := range edgesByKind {
+		args = append(args, "edge:"+kind, count)
+	}
+	c.config.Logger.Info("Node and edge counts by type", args...)
+
 	return nil
 }
 
