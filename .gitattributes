@@ -1,0 +1,7 @@
+# Normalize all text files to LF in the repository and on checkout.
+# `text=auto` lets git auto-detect text vs binary; `eol=lf` forces LF so
+# editors/IDEs that rewrite line endings can't reintroduce CRLF into commits.
+* text=auto eol=lf
+
+# Known binary assets: never apply line-ending conversion.
+*.zip binary
