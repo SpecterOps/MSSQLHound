@@ -2217,8 +2217,8 @@ func (c *Collector) resolveServiceAccountSIDsViaLDAP(serverInfo *types.ServerInf
 		}
 
 		// For computer accounts, we need to look up the DNSHostName via LDAP
-		// PowerShell uses DNSHostName for computer account names (e.g., FORS13DA.ad005.onehc.net)
-		// instead of SAMAccountName (FORS13DA$)
+		// PowerShell uses DNSHostName for computer account names (e.g., HOST01.corp.example.com)
+		// instead of SAMAccountName (HOST01$)
 		if isComputerAccount && sa.SID != "" {
 			// First, check if this is the server's own computer account
 			// by comparing the SID with the server's ComputerSID
