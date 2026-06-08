@@ -367,6 +367,7 @@ type Client struct {
 	collectFromLinkedServers bool           // Whether to collect from linked servers
 	epaResult                *EPATestResult // Pre-computed EPA result (set before Connect)
 	dnsResolver              string         // DNS resolver IP (e.g. domain controller)
+	portCheckTimeout         time.Duration
 	logger                   *slog.Logger
 	proxyDialer              interface {
 		DialContext(ctx context.Context, network, address string) (net.Conn, error)
@@ -378,14 +379,15 @@ func NewClient(serverInstance, userID, password string) *Client {
 	hostname, port, instanceName := parseServerInstance(serverInstance)
 
 	return &Client{
-		serverInstance: serverInstance,
-		hostname:       hostname,
-		port:           port,
-		instanceName:   instanceName,
-		userID:         userID,
-		password:       password,
-		useWindowsAuth: userID == "" && password == "",
-		logger:         slog.New(logging.NewHandler(os.Stderr, nil)),
+		serverInstance:   serverInstance,
+		hostname:         hostname,
+		port:             port,
+		instanceName:     instanceName,
+		userID:           userID,
+		password:         password,
+		portCheckTimeout: 2 * time.Second,
+		useWindowsAuth:   userID == "" && password == "",
+		logger:           slog.New(logging.NewHandler(os.Stderr, nil)),
 	}
 }
 
@@ -453,7 +455,12 @@ func (c *Client) CheckPort(ctx context.Context) error {
 
 	addr := fmt.Sprintf("%s:%d", c.hostname, port)
 
-	dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
+	portCheckTimeout := c.portCheckTimeout
+	if portCheckTimeout <= 0 {
+		portCheckTimeout = 2 * time.Second
+	}
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, portCheckTimeout)
 	defer dialCancel()
 
 	var conn net.Conn
@@ -465,7 +472,7 @@ func (c *Client) CheckPort(ctx context.Context) error {
 		}
 		conn, err = c.proxyDialer.DialContext(dialCtx, "tcp", dialAddr)
 	} else {
-		dialer := dialerWithResolver(c.dnsResolver, 2*time.Second)
+		dialer := dialerWithResolver(c.dnsResolver, portCheckTimeout)
 		conn, err = dialer.DialContext(dialCtx, "tcp", addr)
 	}
 	if err != nil {
@@ -954,6 +961,12 @@ func (c *Client) SetDebug(debug bool) {
 
 func (c *Client) SetCollectFromLinkedServers(collect bool) {
 	c.collectFromLinkedServers = collect
+}
+
+func (c *Client) SetPortCheckTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		c.portCheckTimeout = timeout
+	}
 }
 
 // SetNTHash sets a pre-computed NT hash (16 bytes) for pass-the-hash authentication.

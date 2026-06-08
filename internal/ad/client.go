@@ -165,10 +165,10 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 
 	// Transport configurations to try in order of preference.
 	type transportConfig struct {
-		label   string
-		scheme  string
-		port    string
-		tls     *tls.Config
+		label    string
+		scheme   string
+		port     string
+		tls      *tls.Config
 		startTLS bool
 	}
 	transports := []transportConfig{
@@ -219,7 +219,7 @@ func (c *Client) connectWithExplicitCredentials(dc, serverName string) error {
 			} else {
 				errors = append(errors, fmt.Sprintf("%s %s: %v", t.label, m.name, bindErr))
 				conn.Close()
-				if isLDAPAuthError(bindErr) {
+				if isLDAPAuthError(bindErr) && !isLDAPSSPIChannelBindingError(bindErr) {
 					return fmt.Errorf("LDAP authentication failed (invalid credentials): %s", strings.Join(errors, "; "))
 				}
 			}
@@ -328,6 +328,19 @@ func isLDAPAuthError(err error) bool {
 		strings.Contains(errStr, "Result Code 49")
 }
 
+// isLDAPSSPIChannelBindingError checks for Active Directory's SEC_E_BAD_BINDINGS
+// failure. AD reports it as LDAP result 49 even when the password is correct,
+// so password-based flows should continue to another bind method such as
+// SimpleBind over TLS instead of reporting invalid credentials immediately.
+func isLDAPSSPIChannelBindingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "80090346") ||
+		strings.Contains(errStr, "sec_e_bad_bindings")
+}
+
 // containsAny checks if any of the error strings contain any of the substrings
 func containsAny(errors []string, substrings ...string) bool {
 	for _, err := range errors {
@@ -365,40 +378,66 @@ func (c *Client) ntlmBind(conn *ldap.Conn) error {
 // simpleBind performs simple LDAP authentication (requires TLS for security)
 // This is a fallback when NTLM and GSSAPI fail
 func (c *Client) simpleBind(conn *ldap.Conn) error {
-	// Build the bind DN - try multiple formats
-	username := c.ldapUser
-
-	// If it's already a DN format, use it directly
-	if strings.Contains(strings.ToLower(username), "cn=") || strings.Contains(strings.ToLower(username), "dc=") {
-		return conn.Bind(username, c.ldapPassword)
-	}
-
-	// Try UPN format (user@domain) first - most compatible
-	if strings.Contains(username, "@") {
-		if err := conn.Bind(username, c.ldapPassword); err == nil {
+	var lastErr error
+	for _, bindName := range c.simpleBindNames() {
+		if err := conn.Bind(bindName, c.ldapPassword); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
 	}
+	return lastErr
+}
 
-	// Try DOMAIN\user format converted to UPN
+func (c *Client) simpleBindNames() []string {
+	username := strings.TrimSpace(c.ldapUser)
+	if username == "" {
+		return nil
+	}
+
+	lowerUsername := strings.ToLower(username)
+	if strings.Contains(lowerUsername, "cn=") || strings.Contains(lowerUsername, "dc=") {
+		return []string{username}
+	}
+
+	var names []string
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		for _, existing := range names {
+			if strings.EqualFold(existing, name) {
+				return
+			}
+		}
+		names = append(names, name)
+	}
+
+	if strings.Contains(username, "@") {
+		add(username)
+		return names
+	}
+
 	if strings.Contains(username, "\\") {
 		parts := strings.SplitN(username, "\\", 2)
-		upn := fmt.Sprintf("%s@%s", parts[1], parts[0])
-		if err := conn.Bind(upn, c.ldapPassword); err == nil {
-			return nil
+		domainPart := parts[0]
+		userPart := parts[1]
+		if c.domain != "" {
+			add(fmt.Sprintf("%s@%s", userPart, c.domain))
 		}
+		if strings.Contains(domainPart, ".") {
+			add(fmt.Sprintf("%s@%s", userPart, domainPart))
+		}
+		add(username)
+		add(fmt.Sprintf("%s@%s", userPart, domainPart))
+		return names
 	}
 
-	// Try constructing UPN with the domain
-	if !strings.Contains(username, "@") && !strings.Contains(username, "\\") {
-		upn := fmt.Sprintf("%s@%s", username, c.domain)
-		if err := conn.Bind(upn, c.ldapPassword); err == nil {
-			return nil
-		}
+	if c.domain != "" {
+		add(fmt.Sprintf("%s@%s", username, c.domain))
 	}
-
-	// Final attempt with original username
-	return conn.Bind(username, c.ldapPassword)
+	add(username)
+	return names
 }
 
 func (c *Client) gssapiBind(conn *ldap.Conn, dc string, overTLS bool) error {
@@ -499,13 +538,13 @@ func (c *Client) SetProxyDialer(d interface {
 // dialLDAP establishes an LDAP connection, routing through the proxy if configured.
 // For "ldaps" scheme, it performs a TLS handshake after the TCP connection.
 func (c *Client) dialLDAP(scheme, host, port string, tlsConfig *tls.Config) (*ldap.Conn, error) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
 	if c.proxyDialer == nil {
-		// Use standard DialURL
 		url := fmt.Sprintf("%s://%s:%s", scheme, host, port)
 		if tlsConfig != nil {
-			return ldap.DialURL(url, ldap.DialWithTLSConfig(tlsConfig))
+			return ldap.DialURL(url, ldap.DialWithDialer(dialer), ldap.DialWithTLSConfig(tlsConfig))
 		}
-		return ldap.DialURL(url)
+		return ldap.DialURL(url, ldap.DialWithDialer(dialer))
 	}
 
 	// Dial through proxy

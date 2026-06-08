@@ -95,6 +95,38 @@ func TestDomainComputersFromNames(t *testing.T) {
 	}
 }
 
+func TestScanAllComputerServersDefaultPortPreservesConnectionString(t *testing.T) {
+	collector := &Collector{config: &Config{}}
+	servers := collector.scanAllComputerServers(domainComputer{Hostname: "host1.example.com", SID: "S-1-5-21-1"})
+	if len(servers) != 1 {
+		t.Fatalf("server count = %d, want 1", len(servers))
+	}
+	server := servers[0]
+	if server.ConnectionString != "host1.example.com" {
+		t.Fatalf("connection string = %q, want hostname default", server.ConnectionString)
+	}
+	if server.Port != 1433 || server.ComputerSID != "S-1-5-21-1" || !server.SkipIfUnresolved {
+		t.Fatalf("server = %+v", server)
+	}
+}
+
+func TestScanAllComputerServersCustomPorts(t *testing.T) {
+	collector := &Collector{config: &Config{ScanAllComputerPorts: []int{1433, 1444}}}
+	servers := collector.scanAllComputerServers(domainComputer{Hostname: "host1.example.com", SID: "S-1-5-21-1"})
+	if len(servers) != 2 {
+		t.Fatalf("server count = %d, want 2", len(servers))
+	}
+	wantConnections := []string{"host1.example.com:1433", "host1.example.com:1444"}
+	for i, server := range servers {
+		if server.ConnectionString != wantConnections[i] {
+			t.Fatalf("server[%d] connection = %q, want %q", i, server.ConnectionString, wantConnections[i])
+		}
+		if server.Port != collector.config.ScanAllComputerPorts[i] || server.ComputerSID != "S-1-5-21-1" || !server.SkipIfUnresolved {
+			t.Fatalf("server[%d] = %+v", i, server)
+		}
+	}
+}
+
 func TestIPDedupeWorkerCount(t *testing.T) {
 	collector := &Collector{config: &Config{}}
 	if got := collector.ipDedupeWorkerCount(1000); got != 64 {
@@ -114,6 +146,70 @@ func TestIPDedupeWorkerCount(t *testing.T) {
 	collector.config.Workers = 0
 	if got := collector.ipDedupeWorkerCount(0); got != 1 {
 		t.Fatalf("empty workers = %d, want 1", got)
+	}
+}
+
+func TestResolveComputerSIDWindowsTimesOut(t *testing.T) {
+	originalTimeout := windowsComputerSIDLookupTimeout
+	originalResolver := windowsComputerSIDResolver
+	defer func() {
+		windowsComputerSIDLookupTimeout = originalTimeout
+		windowsComputerSIDResolver = originalResolver
+	}()
+
+	blocked := make(chan struct{})
+	windowsComputerSIDLookupTimeout = 10 * time.Millisecond
+	windowsComputerSIDResolver = func(_, _ string) (string, error) {
+		<-blocked
+		return "S-1-5-21-1", nil
+	}
+	defer close(blocked)
+
+	started := time.Now()
+	_, err := (&Collector{config: &Config{}}).resolveComputerSIDWindows("host1", "example.com")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %q, want timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SID lookup took %s, want bounded timeout", elapsed)
+	}
+}
+
+func TestProcessServerWithWorkerTimeoutReturnsResult(t *testing.T) {
+	originalTimeout := serverProcessingTimeout
+	originalProcessor := serverProcessor
+	defer func() {
+		serverProcessingTimeout = originalTimeout
+		serverProcessor = originalProcessor
+	}()
+
+	blocked := make(chan struct{})
+	serverProcessingTimeout = 10 * time.Millisecond
+	serverProcessor = func(_ *Collector, _ *ServerToProcess) error {
+		<-blocked
+		return nil
+	}
+	defer close(blocked)
+
+	collector := &Collector{config: &Config{}}
+	server := &ServerToProcess{Hostname: "host1", ConnectionString: "host1"}
+	started := time.Now()
+	result := collector.processServerWithWorkerTimeout(serverJob{index: 7, server: server})
+
+	if result.index != 7 || result.server != server {
+		t.Fatalf("result = %+v, want original job metadata", result)
+	}
+	if result.err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(result.err.Error(), "timed out") {
+		t.Fatalf("error = %q, want timeout", result.err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("worker timeout took %s, want bounded timeout", elapsed)
 	}
 }
 
@@ -1180,6 +1276,40 @@ func TestFilterUnresolvedScanAllComputers(t *testing.T) {
 	}
 	if !remaining["manual-unresolvable"] {
 		t.Fatal("expected manual unresolved target to remain")
+	}
+}
+
+func TestADUserNodeNameStripsNETBIOSPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	domainSID := "S-1-5-21-9999999999-9999999999-9999999999"
+	serverInfo := &types.ServerInfo{
+		ObjectIdentifier: domainSID + "-1001:1433",
+		Hostname:         "sqlhost",
+		FQDN:             "sqlhost.contoso.com",
+		ComputerSID:      domainSID + "-1001",
+		DomainSID:        domainSID,
+		ServerPrincipals: []types.ServerPrincipal{
+			{
+				Name:                       "CONTOSO\\jdoe",
+				TypeDescription:            "WINDOWS_LOGIN",
+				SecurityIdentifier:         domainSID + "-2001",
+				IsActiveDirectoryPrincipal: true,
+				IsDisabled:                 false,
+				Permissions:                []types.Permission{{Permission: "CONNECT SQL", State: "GRANT", ClassDesc: "SERVER"}},
+			},
+		},
+	}
+	c, _ := New(&Config{TempDir: tmpDir, Domain: "CONTOSO.COM"})
+	if err := c.createADNodes(serverInfo); err != nil {
+		t.Fatalf("createADNodes: %v", err)
+	}
+	if len(c.adUsers) != 1 {
+		t.Fatalf("adUsers count = %d, want 1", len(c.adUsers))
+	}
+	got, _ := c.adUsers[0].Properties["name"].(string)
+	want := "jdoe@CONTOSO.COM"
+	if got != want {
+		t.Errorf("AD User node name = %q, want %q (NETBIOS prefix must be stripped)", got, want)
 	}
 }
 

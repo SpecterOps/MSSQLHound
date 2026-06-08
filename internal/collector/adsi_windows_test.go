@@ -33,7 +33,7 @@ func TestADSIComputerHostname(t *testing.T) {
 }
 
 func TestADSIDomainToDN(t *testing.T) {
-	if got, want := adsiDomainToDN("ad005.onehc.net"), "DC=ad005,DC=onehc,DC=net"; got != want {
+	if got, want := adsiDomainToDN("corp.example.com"), "DC=corp,DC=example,DC=com"; got != want {
 		t.Fatalf("base DN = %q, want %q", got, want)
 	}
 	if got, want := adsiDomainToDN(" example.com "), "DC=example,DC=com"; got != want {

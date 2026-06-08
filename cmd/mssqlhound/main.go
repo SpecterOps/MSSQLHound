@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 )
 
 var (
-	version = "2.0.0"
+	version = "2.0.3"
 
 	// Shared connection options (persistent - inherited by subcommands)
 	serverInstance string
@@ -39,23 +40,25 @@ var (
 	proxyAddr      string
 
 	// Collection-specific options (local to root command)
-	tempDir        string
-	zipDir         string
-	fileSizeLimit  string
+	tempDir       string
+	zipDir        string
+	fileSizeLimit string
 
 	logPerTarget bool
 
-	domainEnumOnly                  bool
-	skipLinkedServerEnum            bool
-	collectFromLinkedServers        bool
-	skipPrivateAddress              bool
-	scanAllComputers                bool
-	skipADNodeCreation              bool
-	disableNontraversableEdges      bool
-	disablePossibleEdges bool
-	skipIPDedupe         bool
+	domainEnumOnly             bool
+	skipLinkedServerEnum       bool
+	collectFromLinkedServers   bool
+	skipPrivateAddress         bool
+	scanAllComputers           bool
+	skipADNodeCreation         bool
+	disableNontraversableEdges bool
+	disablePossibleEdges       bool
+	skipIPDedupe               bool
+	scanAllComputerPorts       string
 
 	linkedServerTimeout    int
+	portCheckTimeout       int
 	memoryThresholdPercent int
 	workers                int
 
@@ -136,7 +139,9 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolVar(&disableNontraversableEdges, "disable-nontraversable-edges", false, "Disable non-traversable edges")
 	rootCmd.Flags().BoolVar(&disablePossibleEdges, "disable-possible-edges", false, "Disable possible edges (makes them non-traversable in schema and edge data)")
 	rootCmd.Flags().BoolVar(&skipIPDedupe, "skip-ip-dedupe", false, "Skip DNS-based target deduplication (keeps all targets even if they resolve to the same IP)")
+	rootCmd.Flags().StringVar(&scanAllComputerPorts, "scan-all-computer-ports", "1433", "Comma-separated TCP ports to scan for --scan-all-computers targets")
 	rootCmd.Flags().IntVar(&linkedServerTimeout, "linked-timeout", 300, "Linked server enumeration timeout (seconds)")
+	rootCmd.Flags().IntVar(&portCheckTimeout, "port-check-timeout", 2, "TCP port reachability timeout before skipping a target (seconds)")
 	rootCmd.Flags().IntVar(&memoryThresholdPercent, "memory-threshold", 90, "Stop when memory exceeds this percentage")
 	rootCmd.Flags().IntVarP(&workers, "workers", "w", 0, "Number of concurrent workers (0 = sequential processing)")
 
@@ -159,11 +164,11 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	}
 	for _, name := range []string{"scan-all-computers", "skip-private-address",
 		"domain-enum-only", "skip-linked-servers", "collect-from-linked",
-		"skip-ad-nodes", "disable-nontraversable-edges", "disable-possible-edges", "skip-ip-dedupe"} {
+		"skip-ad-nodes", "disable-nontraversable-edges", "disable-possible-edges", "skip-ip-dedupe", "scan-all-computer-ports"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Collection"}) //nolint:errcheck
 	}
 	for _, name := range []string{"linked-timeout", "workers", "file-size-limit",
-		"memory-threshold", "size-update-interval"} {
+		"port-check-timeout", "memory-threshold", "size-update-interval"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Performance"}) //nolint:errcheck
 	}
 	for _, name := range []string{"temp-dir", "zip-dir", "log-per-target"} {
@@ -385,6 +390,14 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--upload-schema-only and --upload-results-only are mutually exclusive")
 	}
 
+	parsedScanAllComputerPorts, err := parsePortList(scanAllComputerPorts)
+	if err != nil {
+		return fmt.Errorf("invalid --scan-all-computer-ports: %w", err)
+	}
+	if portCheckTimeout <= 0 {
+		return fmt.Errorf("--port-check-timeout must be greater than 0 seconds")
+	}
+
 	// Determine what to upload: default is both schema and results
 	uploadSchema := true
 	uploadResults := true
@@ -396,49 +409,51 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Build configuration from flags
 	config := &collector.Config{
-		ServerInstance:                  serverInstance,
-		ServerListFile:                  serverListFile,
-		ServerList:                      serverList,
-		UserID:                          userID,
-		Password:                        password,
-		NTHash:                          ntHash,
-		UseKerberos:                     useKerberos,
-		Krb5ConfigFile:                  krb5ConfigFile,
-		Krb5CCacheFile:                  krb5CCacheFile,
-		Krb5KeytabFile:                  krb5KeytabFile,
-		Krb5Realm:                       krb5Realm,
-		Domain:                          strings.ToUpper(domain),
-		DC:                              dc,
-		DNSResolver:                     dnsResolver,
-		LDAPUser:                        effectiveLDAPUser,
-		LDAPPassword:                    effectiveLDAPPassword,
-		TempDir:                         tempDir,
-		ZipDir:                          zipDir,
-		FileSizeLimit:                   fileSizeLimit,
-		Verbose:                         verbose,
-		Debug:                           debug,
-		DomainEnumOnly:                  domainEnumOnly,
-		SkipLinkedServerEnum:            skipLinkedServerEnum,
-		CollectFromLinkedServers:        collectFromLinkedServers,
-		SkipPrivateAddress:              skipPrivateAddress,
-		ScanAllComputers:                scanAllComputers,
-		SkipADNodeCreation:              skipADNodeCreation,
-		DisableNontraversableEdges:      disableNontraversableEdges,
-		DisablePossibleEdges: disablePossibleEdges,
-		SkipIPDedupe:         skipIPDedupe,
-		LinkedServerTimeout:             linkedServerTimeout,
-		MemoryThresholdPercent:          memoryThresholdPercent,
-		Workers:                         workers,
-		ProxyAddr:                       proxyAddr,
-		Logger:                          logger,
-		LogPerTarget:                    logPerTarget,
-		LogLevel:                        &logLevel,
-		BloodHoundURL:                   bloodhoundURL,
-		TokenID:                         tokenID,
-		TokenKey:                        tokenKey,
-		UploadSchema:                    uploadSchema,
-		UploadResults:                   uploadResults,
-		SkipCollection:                  skipCollection,
+		ServerInstance:             serverInstance,
+		ServerListFile:             serverListFile,
+		ServerList:                 serverList,
+		UserID:                     userID,
+		Password:                   password,
+		NTHash:                     ntHash,
+		UseKerberos:                useKerberos,
+		Krb5ConfigFile:             krb5ConfigFile,
+		Krb5CCacheFile:             krb5CCacheFile,
+		Krb5KeytabFile:             krb5KeytabFile,
+		Krb5Realm:                  krb5Realm,
+		Domain:                     strings.ToUpper(domain),
+		DC:                         dc,
+		DNSResolver:                dnsResolver,
+		LDAPUser:                   effectiveLDAPUser,
+		LDAPPassword:               effectiveLDAPPassword,
+		TempDir:                    tempDir,
+		ZipDir:                     zipDir,
+		FileSizeLimit:              fileSizeLimit,
+		Verbose:                    verbose,
+		Debug:                      debug,
+		DomainEnumOnly:             domainEnumOnly,
+		SkipLinkedServerEnum:       skipLinkedServerEnum,
+		CollectFromLinkedServers:   collectFromLinkedServers,
+		SkipPrivateAddress:         skipPrivateAddress,
+		ScanAllComputers:           scanAllComputers,
+		ScanAllComputerPorts:       parsedScanAllComputerPorts,
+		SkipADNodeCreation:         skipADNodeCreation,
+		DisableNontraversableEdges: disableNontraversableEdges,
+		DisablePossibleEdges:       disablePossibleEdges,
+		SkipIPDedupe:               skipIPDedupe,
+		LinkedServerTimeout:        linkedServerTimeout,
+		PortCheckTimeout:           time.Duration(portCheckTimeout) * time.Second,
+		MemoryThresholdPercent:     memoryThresholdPercent,
+		Workers:                    workers,
+		ProxyAddr:                  proxyAddr,
+		Logger:                     logger,
+		LogPerTarget:               logPerTarget,
+		LogLevel:                   &logLevel,
+		BloodHoundURL:              bloodhoundURL,
+		TokenID:                    tokenID,
+		TokenKey:                   tokenKey,
+		UploadSchema:               uploadSchema,
+		UploadResults:              uploadResults,
+		SkipCollection:             skipCollection,
 	}
 
 	if proxyAddr != "" {
@@ -473,6 +488,34 @@ func classifyTarget(target string) (string, string, string) {
 	}
 	// Otherwise it's a single server instance (host, host:port, host\instance, SPN)
 	return target, "", ""
+}
+
+func parsePortList(value string) ([]int, error) {
+	parts := strings.Split(value, ",")
+	ports := make([]int, 0, len(parts))
+	seen := make(map[int]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("empty port")
+		}
+		port, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a number", part)
+		}
+		if port < 1 || port > 65535 {
+			return nil, fmt.Errorf("%d is outside 1-65535", port)
+		}
+		if _, exists := seen[port]; exists {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("at least one port is required")
+	}
+	return ports, nil
 }
 
 // extractTargetCredentials parses user:password@target from a target string.
