@@ -1,4 +1,7 @@
 # MSSQLHound Release Notes
+## Version 2.0.3 (June 8, 2026)
+- Add --scan-all-computer-ports and --port-check-timeout options
+- Fix LDAP bind fail fallback when channel binding required
 
 ## Version 2.0.2 (May 7, 2026)
 - LDAP bind fail fallback to ADSI when channel binding required

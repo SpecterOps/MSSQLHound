@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	version = "2.0.0"
+	version = "2.0.3"
 
 	// Shared connection options (persistent - inherited by subcommands)
 	serverInstance string
