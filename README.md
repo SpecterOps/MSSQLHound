@@ -317,6 +317,7 @@ If all three methods fail, a warning is logged: `Could not determine service acc
     computers.json                           AD computer nodes (unless --skip-ad-nodes)
     users.json                               AD user nodes (unless --skip-ad-nodes)
     groups.json                              AD group nodes (unless --skip-ad-nodes)
+    ad_edges.json                            Edges touching AD nodes, without source_kind metadata
 
 {current directory or --zip-dir}/
   mssql-bloodhound-YYYYMMDD-HHMMSS.zip      Final output (contains all JSON files above)
@@ -582,7 +583,7 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
 # Disable possible edges (stricter pathfinding, fewer false positives)
 ./mssqlhound -t sql.contoso.com --disable-possible-edges
 
-# Skip AD node creation (collect only MSSQL nodes, no User/Group/Computer nodes)
+# Skip AD node creation (still emits AD-touching edges in ad_edges.json)
 ./mssqlhound -t sql.contoso.com --skip-ad-nodes
 ```
 
@@ -677,7 +678,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `--skip-linked-servers` | false | Don't enumerate linked servers |
 | `--collect-from-linked` | false | Queue discovered linked servers as additional direct targets and collect them in later passes |
 | `--linked-timeout` | 300 | Linked server enumeration timeout (seconds) |
-| `--skip-ad-nodes` | false | Skip creating `User`, `Group`, `Computer` nodes |
+| `--skip-ad-nodes` | false | Skip creating `User`, `Group`, `Computer` nodes; AD-touching edges are still emitted to `ad_edges.json` |
 | `--disable-nontraversable-edges` | false | Disable non-traversable edges |
 | `--disable-possible-edges` | false | Disable possible edges (makes them non-traversable in schema and edge data) |
 | `-w, --workers` | 0 | Number of concurrent workers (0 = sequential processing) |

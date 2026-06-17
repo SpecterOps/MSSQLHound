@@ -307,6 +307,16 @@ func TestHasLoginEdges(t *testing.T) {
 	runTestCases(t, result.Edges,hasLoginTestCases)
 }
 
+func TestHasLoginEdgesFallbackWhenLocalGroupMapEmpty(t *testing.T) {
+	info := buildHasLoginTestData()
+	info.LocalGroupsWithLogins = map[string]*types.LocalGroupInfo{}
+
+	result := runEdgeCreation(t, info, true)
+	runTestCases(t, result.Edges, []edgeTestCase{
+		{EdgeType: "MSSQL_HasLogin", Description: "Local group has SQL login", SourcePattern: "*-S-1-5-32-544", TargetPattern: "BUILTIN\\Administrators@*"},
+	})
+}
+
 // =============================================================================
 // CONTROLSERVER
 // =============================================================================

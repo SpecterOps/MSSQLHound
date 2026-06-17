@@ -120,6 +120,11 @@ type Collector struct {
 	adSeenNodes map[string]bool // Dedup AD nodes by ID across servers
 	adNodesMu   sync.Mutex      // Protects adComputers, adUsers, adGroups, adSeenNodes
 
+	// Accumulated AD-touching edges across all servers for sourceless output.
+	adEdgesWriter *bloodhound.StreamingWriter
+	adEdgesPath   string
+	adEdgesMu     sync.Mutex // Protects adEdgesWriter and adEdgesPath
+
 	// Aggregate node/edge counts across all output files for the end-of-run summary
 	totalNodesByKind map[string]int
 	totalEdgesByKind map[string]int
@@ -163,6 +168,18 @@ type ServerSPNInfo struct {
 	ServiceAccounts []types.ServiceAccount
 	AccountName     string
 	AccountSID      string
+}
+
+const adEdgesFilename = "ad_edges.json"
+
+type edgeSink interface {
+	WriteEdge(*bloodhound.Edge) error
+}
+
+type adEdgeRouter struct {
+	collector *Collector
+	primary   edgeSink
+	adEdges   []*bloodhound.Edge
 }
 
 // New creates a new collector
@@ -412,6 +429,10 @@ func (c *Collector) Run() error {
 				}
 			}
 
+			if err := c.closeADEdgesFile(); err != nil {
+				return fmt.Errorf("failed to write AD edge file: %w", err)
+			}
+
 			// Create zip file
 			if len(c.outputFiles) > 0 {
 				var err error
@@ -587,6 +608,86 @@ func (c *Collector) mergeTypeStats(nodesByKind, edgesByKind map[string]int) {
 	for k, v := range edgesByKind {
 		c.totalEdgesByKind[k] += v
 	}
+}
+
+func (c *Collector) newADEdgeRouter(primary edgeSink) *adEdgeRouter {
+	return &adEdgeRouter{
+		collector: c,
+		primary:   primary,
+	}
+}
+
+func (r *adEdgeRouter) WriteEdge(edge *bloodhound.Edge) error {
+	if edge == nil {
+		return r.primary.WriteEdge(edge)
+	}
+	if r.collector.edgeTouchesADNode(edge) {
+		r.adEdges = append(r.adEdges, edge)
+		return nil
+	}
+	return r.primary.WriteEdge(edge)
+}
+
+func (r *adEdgeRouter) FlushADEdges() error {
+	return r.collector.writeADEdges(r.adEdges)
+}
+
+func (c *Collector) edgeTouchesADNode(edge *bloodhound.Edge) bool {
+	if edge == nil {
+		return false
+	}
+	c.adNodesMu.Lock()
+	defer c.adNodesMu.Unlock()
+	return c.adSeenNodes[edge.Start.Value] || c.adSeenNodes[edge.End.Value]
+}
+
+func (c *Collector) writeADEdges(edges []*bloodhound.Edge) error {
+	if len(edges) == 0 {
+		return nil
+	}
+
+	c.adEdgesMu.Lock()
+	defer c.adEdgesMu.Unlock()
+
+	if c.adEdgesWriter == nil {
+		filePath := filepath.Join(c.tempDir, adEdgesFilename)
+		writer, err := bloodhound.NewStreamingWriterNoSourceKind(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to create %s: %w", adEdgesFilename, err)
+		}
+		c.adEdgesWriter = writer
+		c.adEdgesPath = filePath
+	}
+
+	for _, edge := range edges {
+		if err := c.adEdgesWriter.WriteEdge(edge); err != nil {
+			return fmt.Errorf("failed to write edge to %s: %w", adEdgesFilename, err)
+		}
+	}
+	return nil
+}
+
+func (c *Collector) closeADEdgesFile() error {
+	c.adEdgesMu.Lock()
+	defer c.adEdgesMu.Unlock()
+
+	if c.adEdgesWriter == nil {
+		return nil
+	}
+
+	if err := c.adEdgesWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close %s: %w", adEdgesFilename, err)
+	}
+
+	c.addOutputFile(c.adEdgesPath)
+	_, edges := c.adEdgesWriter.Stats()
+	nodesByKind, edgesByKind := c.adEdgesWriter.TypeStats()
+	c.mergeTypeStats(nodesByKind, edgesByKind)
+	c.config.Logger.Info("Wrote AD edge file", "edges", edges, "file", adEdgesFilename)
+
+	c.adEdgesWriter = nil
+	c.adEdgesPath = ""
+	return nil
 }
 
 // addLogFile adds a per-target log file to the list (thread-safe)
@@ -2473,7 +2574,12 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 	if err != nil {
 		return err
 	}
-	defer writer.Close()
+	writerClosed := false
+	defer func() {
+		if !writerClosed {
+			writer.Close()
+		}
+	}()
 
 	// Create server node
 	serverNode := c.createServerNode(serverInfo)
@@ -2562,16 +2668,15 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 		}
 	}
 
-	// Collect AD nodes (User, Group, Computer) if not skipped.
-	// These are accumulated across servers and written to separate files (computers.json, users.json, groups.json).
-	if !c.config.SkipADNodeCreation {
-		if err := c.createADNodes(serverInfo); err != nil {
-			return err
-		}
+	// Collect AD nodes into the internal endpoint index for edge routing.
+	// When --skip-ad-nodes is set, the nodes are indexed but not written to AD node files.
+	if err := c.createADNodes(serverInfo); err != nil {
+		return err
 	}
 
 	// Create edges
-	if err := c.createEdges(writer, serverInfo); err != nil {
+	edgeRouter := c.newADEdgeRouter(writer)
+	if err := c.createEdges(edgeRouter, serverInfo); err != nil {
 		return err
 	}
 
@@ -2606,6 +2711,15 @@ func (c *Collector) generateOutput(serverInfo *types.ServerInfo, outputFile stri
 	}
 	c.config.Logger.Info("Node and edge counts by type", args...)
 	c.mergeTypeStats(nodesByKind, edgesByKind)
+
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	writerClosed = true
+
+	if err := edgeRouter.FlushADEdges(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -2943,6 +3057,10 @@ func (c *Collector) createADNodes(serverInfo *types.ServerInfo) error {
 		}
 		c.adSeenNodes[node.ID] = true
 
+		if c.config.SkipADNodeCreation {
+			return
+		}
+
 		// Categorize by primary kind (first element)
 		switch node.Kinds[0] {
 		case bloodhound.NodeKinds.Computer:
@@ -3024,7 +3142,7 @@ func (c *Collector) createADNodes(serverInfo *types.ServerInfo) error {
 	// Resolve domain login SIDs via LDAP for AD enrichment (matching PowerShell behavior).
 	// This provides properties like SAMAccountName, distinguishedName, DNSHostName, etc.
 	resolvedPrincipals := make(map[string]*types.DomainPrincipal)
-	if c.config.Domain != "" {
+	if !c.config.SkipADNodeCreation && c.config.Domain != "" {
 		adClient := c.newADClient(c.config.Domain)
 		if adClient != nil {
 			for _, principal := range serverInfo.ServerPrincipals {
@@ -3346,7 +3464,7 @@ func (c *Collector) createADNodes(serverInfo *types.ServerInfo) error {
 }
 
 // createEdges creates all edges for the server
-func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *types.ServerInfo) error {
+func (c *Collector) createEdges(writer edgeSink, serverInfo *types.ServerInfo) error {
 	// =========================================================================
 	// CONTAINS EDGES
 	// =========================================================================
@@ -3979,7 +4097,7 @@ func (c *Collector) createEdges(writer *bloodhound.StreamingWriter, serverInfo *
 	// Create HasLogin edges for local groups that have SQL logins
 	// This processes ALL local groups (not just BUILTIN S-1-5-32-*), matching PowerShell behavior.
 	// LocalGroupsWithLogins contains groups collected via WMI/net localgroup enumeration.
-	if serverInfo.LocalGroupsWithLogins != nil {
+	if len(serverInfo.LocalGroupsWithLogins) > 0 {
 		for _, groupInfo := range serverInfo.LocalGroupsWithLogins {
 			if groupInfo.Principal == nil || groupInfo.Principal.SecurityIdentifier == "" {
 				continue
@@ -4997,7 +5115,7 @@ func (c *Collector) processLinkedServersQueue(processedServers map[string]bool) 
 }
 
 // createFixedRoleEdges creates edges for fixed server and database role capabilities
-func (c *Collector) createFixedRoleEdges(writer *bloodhound.StreamingWriter, serverInfo *types.ServerInfo) error {
+func (c *Collector) createFixedRoleEdges(writer edgeSink, serverInfo *types.ServerInfo) error {
 	// Fixed server roles with special capabilities
 	for _, principal := range serverInfo.ServerPrincipals {
 		if principal.TypeDescription != "SERVER_ROLE" || !principal.IsFixedRole {
@@ -5372,7 +5490,7 @@ func (c *Collector) createFixedRoleEdges(writer *bloodhound.StreamingWriter, ser
 }
 
 // createServerPermissionEdges creates edges based on server-level permissions
-func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWriter, serverInfo *types.ServerInfo) error {
+func (c *Collector) createServerPermissionEdges(writer edgeSink, serverInfo *types.ServerInfo) error {
 	principalMap := make(map[int]*types.ServerPrincipal)
 	for i := range serverInfo.ServerPrincipals {
 		principalMap[serverInfo.ServerPrincipals[i].PrincipalID] = &serverInfo.ServerPrincipals[i]
@@ -5908,7 +6026,7 @@ func (c *Collector) createServerPermissionEdges(writer *bloodhound.StreamingWrit
 }
 
 // createDatabasePermissionEdges creates edges based on database-level permissions
-func (c *Collector) createDatabasePermissionEdges(writer *bloodhound.StreamingWriter, db *types.Database, serverInfo *types.ServerInfo) error {
+func (c *Collector) createDatabasePermissionEdges(writer edgeSink, db *types.Database, serverInfo *types.ServerInfo) error {
 	principalMap := make(map[int]*types.DatabasePrincipal)
 	for i := range db.DatabasePrincipals {
 		principalMap[db.DatabasePrincipals[i].PrincipalID] = &db.DatabasePrincipals[i]

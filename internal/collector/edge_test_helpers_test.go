@@ -19,14 +19,15 @@ import (
 // edgeTestCase describes a single expected (or unexpected) edge in the output.
 // It mirrors the PowerShell expectedEdges hashtable structure.
 type edgeTestCase struct {
-	EdgeType       string                 // BloodHound edge kind (e.g. "MSSQL_AddMember")
-	Description    string                 // Human-readable description of what is being tested
-	SourcePattern  string                 // Wildcard or exact-match pattern for edge start value
-	TargetPattern  string                 // Wildcard or exact-match pattern for edge end value
-	Negative       bool                   // If true, this edge must NOT exist
-	Reason         string                 // Explanation for negative tests
-	EdgeProperties map[string]interface{} // Property assertions
-	ExpectedCount  int                    // If >0, assert exactly N matching edges
+	EdgeType        string                 // BloodHound edge kind (e.g. "MSSQL_AddMember")
+	Description     string                 // Human-readable description of what is being tested
+	SourcePattern   string                 // Wildcard or exact-match pattern for edge start value
+	TargetPattern   string                 // Wildcard or exact-match pattern for edge end value
+	Negative        bool                   // If true, this edge must NOT exist
+	Reason          string                 // Explanation for negative tests
+	EdgeProperties  map[string]interface{} // Property assertions
+	ExpectedCount   int                    // If >0, assert exactly N matching edges
+	AllowExtraCount bool                   // Integration-only: pass when matches exceed ExpectedCount, but log for review
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +200,6 @@ func runSingleTestCase(t *testing.T, edges []bloodhound.Edge, tc edgeTestCase) {
 		assertEdgeProperty(t, edges, tc.EdgeType, tc.SourcePattern, tc.TargetPattern, propName, propValue, tc.Description)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Edge creation test runner

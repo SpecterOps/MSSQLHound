@@ -220,8 +220,8 @@ func parseBloodHoundJSON(data []byte) ([]bloodhound.Edge, []bloodhound.Node, err
 		var nodes []bloodhound.Node
 		for _, raw := range dataDoc.Data {
 			var probe struct {
-				Kind  string `json:"kind"`
-				Start *struct{}  `json:"start"`
+				Kind  string    `json:"kind"`
+				Start *struct{} `json:"start"`
 			}
 			if err := json.Unmarshal(raw, &probe); err != nil {
 				continue
@@ -251,10 +251,10 @@ func parseBloodHoundJSON(data []byte) ([]bloodhound.Edge, []bloodhound.Node, err
 
 // integrationTestRun holds results from a test run.
 type integrationTestRun struct {
-	Edges       []bloodhound.Edge
-	Nodes       []bloodhound.Node
-	OutputFile  string
-	Results     []integrationTestResult
+	Edges      []bloodhound.Edge
+	Nodes      []bloodhound.Node
+	OutputFile string
+	Results    []integrationTestResult
 }
 
 type integrationTestResult struct {
@@ -284,17 +284,17 @@ func runEnumerationAndValidate(t *testing.T, cfg *integrationConfig, includeNont
 	tempDir := t.TempDir()
 	collectorCfg := &Config{
 		ServerInstance:             cfg.ServerInstance,
-		UserID:                    cfg.EnumUserID,
-		Password:                  cfg.EnumPassword,
-		Domain:                    cfg.Domain,
-		DC:                        cfg.DC,
-		DNSResolver:               cfg.DC, // Use DC as DNS resolver when no explicit resolver is set
-		LDAPUser:                  cfg.LDAPUser,
-		LDAPPassword:              cfg.LDAPPassword,
-		TempDir:                   tempDir,
-		Verbose:                   true,
+		UserID:                     cfg.EnumUserID,
+		Password:                   cfg.EnumPassword,
+		Domain:                     cfg.Domain,
+		DC:                         cfg.DC,
+		DNSResolver:                cfg.DC, // Use DC as DNS resolver when no explicit resolver is set
+		LDAPUser:                   cfg.LDAPUser,
+		LDAPPassword:               cfg.LDAPPassword,
+		TempDir:                    tempDir,
+		Verbose:                    true,
 		DisableNontraversableEdges: !includeNontraversable,
-		SkipLinkedServerEnum:      false,
+		SkipLinkedServerEnum:       false,
 	}
 
 	t.Logf("Running enumeration as %s (nontraversable: %v)...",
@@ -422,6 +422,18 @@ func runSingleTestCaseWithResult(t *testing.T, edges []bloodhound.Edge, tc edgeT
 	matching := findEdges(edges, tc.EdgeType, tc.SourcePattern, tc.TargetPattern)
 
 	if tc.ExpectedCount > 0 {
+		if len(matching) < tc.ExpectedCount {
+			t.Errorf("Expected at least %d %s edges matching %s -> %s, got %d",
+				tc.ExpectedCount, tc.EdgeType, tc.SourcePattern, tc.TargetPattern, len(matching))
+			logActualEdgesOfType(t, edges, tc.EdgeType)
+			return false
+		}
+		if len(matching) > tc.ExpectedCount && tc.AllowExtraCount {
+			t.Logf("Found %d %s edges matching %s -> %s; baseline is %d, extra matches flagged for manual review",
+				len(matching), tc.EdgeType, tc.SourcePattern, tc.TargetPattern, tc.ExpectedCount)
+			logActualEdgesOfType(t, edges, tc.EdgeType)
+			return true
+		}
 		if len(matching) != tc.ExpectedCount {
 			t.Errorf("Expected %d %s edges matching %s -> %s, got %d",
 				tc.ExpectedCount, tc.EdgeType, tc.SourcePattern, tc.TargetPattern, len(matching))
