@@ -1,4 +1,7 @@
 # MSSQLHound Release Notes
+## Version 2.0.4 (June 29, 2026)
+- Move AD nodes/edges to separate file to prevent accidental deletion based on source_kind
+
 ## Version 2.0.3 (June 8, 2026)
 - Add --scan-all-computer-ports and --port-check-timeout options
 - Fix LDAP bind fail fallback when channel binding required
