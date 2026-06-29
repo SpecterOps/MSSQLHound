@@ -8,15 +8,14 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SpecterOps/MSSQLHound/internal/mssql"
 	"github.com/go-ldap/ldap/v3"
-	_ "github.com/microsoft/go-mssqldb"
 )
 
 // integrationConfig holds configuration for integration tests, loaded from environment variables.
@@ -25,7 +24,7 @@ type integrationConfig struct {
 	UserID         string // Sysadmin user for setup (empty = Windows auth)
 	Password       string // Sysadmin password
 	Domain         string // AD domain name (default: $USERDOMAIN)
-	DC           string // Domain controller (optional, auto-discovered)
+	DC             string // Domain controller (optional, auto-discovered)
 	LDAPUser       string // LDAP credentials for AD operations
 	LDAPPassword   string // LDAP password
 	LimitToEdge    string // Limit to specific edge type (optional)
@@ -45,7 +44,7 @@ func loadIntegrationConfig() *integrationConfig {
 		UserID:         os.Getenv("MSSQL_USER"),
 		Password:       os.Getenv("MSSQL_PASSWORD"),
 		Domain:         envOrDefault("MSSQL_DOMAIN", os.Getenv("USERDOMAIN")),
-		DC:           os.Getenv("MSSQL_DC"),
+		DC:             os.Getenv("MSSQL_DC"),
 		LDAPUser:       os.Getenv("LDAP_USER"),
 		LDAPPassword:   os.Getenv("LDAP_PASSWORD"),
 		LimitToEdge:    os.Getenv("MSSQL_LIMIT_EDGE"),
@@ -119,32 +118,27 @@ func connectSQL(cfg *integrationConfig) (*sql.DB, error) {
 	// Resolve hostname via DC if system DNS can't reach the server
 	serverInstance := resolveServerInstance(cfg.ServerInstance, cfg.DC)
 
-	var connStr string
-	if cfg.UserID != "" {
-		connStr = fmt.Sprintf("sqlserver://%s@%s?database=master&encrypt=disable",
-			url.UserPassword(cfg.UserID, cfg.Password).String(), serverInstance)
-	} else {
-		// Windows authentication
-		connStr = fmt.Sprintf("sqlserver://%s?database=master&encrypt=disable&integrated+security=sspi",
-			serverInstance)
-	}
+	client := mssql.NewClient(serverInstance, cfg.UserID, cfg.Password)
+	client.SetDomain(cfg.Domain)
+	client.SetLDAPCredentials(cfg.LDAPUser, cfg.LDAPPassword)
+	client.SetDNSResolver(cfg.DC)
 
-	db, err := sql.Open("sqlserver", connStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open SQL connection: %w", err)
-	}
-
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetMaxOpenConns(5)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping SQL Server %s: %w", cfg.ServerInstance, err)
+	if cfg.LDAPUser != "" && cfg.LDAPPassword != "" {
+		if epaResult, err := client.TestEPA(ctx); err == nil {
+			client.SetEPAResult(epaResult)
+		}
 	}
 
+	if err := client.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("failed to connect to SQL Server %s: %w", cfg.ServerInstance, err)
+	}
+
+	db := client.DB()
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(5)
 	return db, nil
 }
 

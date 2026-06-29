@@ -294,6 +294,100 @@ func TestEdgeCreation(t *testing.T) {
 	verifyEdges(t, edges, nodes)
 }
 
+func TestGenerateOutputRoutesADEdgesToSourcelessFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	serverInfo := createADEdgeRoutingServerInfo()
+	c, _ := New(&Config{TempDir: tmpDir})
+	c.tempDir = tmpDir
+
+	outputPath := filepath.Join(tmpDir, "mssql-routing.json")
+	if err := c.generateOutput(serverInfo, outputPath); err != nil {
+		t.Fatalf("generateOutput: %v", err)
+	}
+	if err := c.closeADEdgesFile(); err != nil {
+		t.Fatalf("closeADEdgesFile: %v", err)
+	}
+
+	sourceKind, hasSourceKind := readMetadataSourceKind(t, outputPath)
+	if !hasSourceKind || sourceKind != "MSSQL_Base" {
+		t.Fatalf("per-server source_kind = %q, present=%v; want MSSQL_Base", sourceKind, hasSourceKind)
+	}
+
+	adEdgesPath := filepath.Join(tmpDir, adEdgesFilename)
+	if sourceKind, hasSourceKind := readMetadataSourceKind(t, adEdgesPath); hasSourceKind {
+		t.Fatalf("%s source_kind = %q, want no source_kind", adEdgesFilename, sourceKind)
+	}
+
+	_, serverEdges, err := bloodhound.ReadFromFile(outputPath)
+	if err != nil {
+		t.Fatalf("ReadFromFile per-server: %v", err)
+	}
+	adNodes, adEdges, err := bloodhound.ReadFromFile(adEdgesPath)
+	if err != nil {
+		t.Fatalf("ReadFromFile %s: %v", adEdgesFilename, err)
+	}
+	if len(adNodes) != 0 {
+		t.Fatalf("%s nodes = %d, want 0", adEdgesFilename, len(adNodes))
+	}
+
+	domainSID := serverInfo.DomainSID
+	userSID := domainSID + "-2001"
+	userLoginID := "DOMAIN\\routeuser@" + serverInfo.ObjectIdentifier
+
+	assertEdgeExists(t, serverEdges, bloodhound.EdgeKinds.Contains, serverInfo.ObjectIdentifier, userLoginID, "MSSQL-only Contains edge stays in source_kind file")
+	assertEdgeNotExists(t, serverEdges, bloodhound.EdgeKinds.HasLogin, userSID, userLoginID, "AD HasLogin edge is moved out of source_kind file")
+	assertEdgeNotExists(t, serverEdges, bloodhound.EdgeKinds.HostFor, serverInfo.ComputerSID, serverInfo.ObjectIdentifier, "AD HostFor edge is moved out of source_kind file")
+
+	assertEdgeExists(t, adEdges, bloodhound.EdgeKinds.HasLogin, userSID, userLoginID, "AD HasLogin edge is written to sourceless file")
+	assertEdgeExists(t, adEdges, bloodhound.EdgeKinds.HostFor, serverInfo.ComputerSID, serverInfo.ObjectIdentifier, "AD HostFor edge is written to sourceless file")
+	assertEdgeExists(t, adEdges, bloodhound.EdgeKinds.ExecuteOnHost, serverInfo.ObjectIdentifier, serverInfo.ComputerSID, "AD ExecuteOnHost edge is written to sourceless file")
+	assertEdgeNotExists(t, adEdges, bloodhound.EdgeKinds.Contains, serverInfo.ObjectIdentifier, userLoginID, "MSSQL-only Contains edge is not written to sourceless file")
+}
+
+func TestGenerateOutputRoutesADEdgesWhenADNodesSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	serverInfo := createADEdgeRoutingServerInfo()
+	c, _ := New(&Config{TempDir: tmpDir, SkipADNodeCreation: true})
+	c.tempDir = tmpDir
+
+	outputPath := filepath.Join(tmpDir, "mssql-routing.json")
+	if err := c.generateOutput(serverInfo, outputPath); err != nil {
+		t.Fatalf("generateOutput: %v", err)
+	}
+	if err := c.closeADEdgesFile(); err != nil {
+		t.Fatalf("closeADEdgesFile: %v", err)
+	}
+
+	for _, filename := range []string{"computers.json", "users.json", "groups.json"} {
+		if _, err := os.Stat(filepath.Join(tmpDir, filename)); !os.IsNotExist(err) {
+			t.Fatalf("%s existence error = %v, want file absent", filename, err)
+		}
+	}
+	if len(c.adComputers) != 0 || len(c.adUsers) != 0 || len(c.adGroups) != 0 {
+		t.Fatalf("AD node lists = computers:%d users:%d groups:%d, want all empty", len(c.adComputers), len(c.adUsers), len(c.adGroups))
+	}
+
+	_, serverEdges, err := bloodhound.ReadFromFile(outputPath)
+	if err != nil {
+		t.Fatalf("ReadFromFile per-server: %v", err)
+	}
+	adEdgesPath := filepath.Join(tmpDir, adEdgesFilename)
+	adNodes, adEdges, err := bloodhound.ReadFromFile(adEdgesPath)
+	if err != nil {
+		t.Fatalf("ReadFromFile %s: %v", adEdgesFilename, err)
+	}
+	if len(adNodes) != 0 {
+		t.Fatalf("%s nodes = %d, want 0", adEdgesFilename, len(adNodes))
+	}
+
+	userSID := serverInfo.DomainSID + "-2001"
+	userLoginID := "DOMAIN\\routeuser@" + serverInfo.ObjectIdentifier
+
+	assertEdgeNotExists(t, serverEdges, bloodhound.EdgeKinds.HasLogin, userSID, userLoginID, "--skip-ad-nodes still moves AD HasLogin edge")
+	assertEdgeExists(t, adEdges, bloodhound.EdgeKinds.HasLogin, userSID, userLoginID, "--skip-ad-nodes still writes AD HasLogin edge")
+	assertEdgeExists(t, adEdges, bloodhound.EdgeKinds.HostFor, serverInfo.ComputerSID, serverInfo.ObjectIdentifier, "--skip-ad-nodes still writes HostFor edge")
+}
+
 // createMockServerInfo creates a mock ServerInfo for testing
 func createMockServerInfo() *types.ServerInfo {
 	domainSID := "S-1-5-21-1234567890-1234567890-1234567890"
@@ -585,6 +679,71 @@ func createMockServerInfo() *types.ServerInfo {
 			},
 		},
 	}
+}
+
+func createADEdgeRoutingServerInfo() *types.ServerInfo {
+	domainSID := "S-1-5-21-1111111111-2222222222-3333333333"
+	serverSID := domainSID + "-1001"
+	serverOID := serverSID + ":1433"
+	userSID := domainSID + "-2001"
+
+	return &types.ServerInfo{
+		ObjectIdentifier:   serverOID,
+		Hostname:           "routesql",
+		ServerName:         "ROUTESQL",
+		SQLServerName:      "routesql.domain.com:1433",
+		Port:               1433,
+		ExtendedProtection: "On",
+		ComputerSID:        serverSID,
+		DomainSID:          domainSID,
+		FQDN:               "routesql.domain.com",
+		ServerPrincipals: []types.ServerPrincipal{
+			{
+				ObjectIdentifier: "sysadmin@" + serverOID,
+				PrincipalID:      3,
+				Name:             "sysadmin",
+				TypeDescription:  "SERVER_ROLE",
+				IsFixedRole:      true,
+				SQLServerName:    "routesql.domain.com:1433",
+			},
+			{
+				ObjectIdentifier:           "DOMAIN\\routeuser@" + serverOID,
+				PrincipalID:                256,
+				Name:                       "DOMAIN\\routeuser",
+				TypeDescription:            "WINDOWS_LOGIN",
+				IsDisabled:                 false,
+				SecurityIdentifier:         userSID,
+				IsActiveDirectoryPrincipal: true,
+				SQLServerName:              "routesql.domain.com:1433",
+				Permissions: []types.Permission{
+					{Permission: "CONNECT SQL", State: "GRANT", ClassDesc: "SERVER"},
+				},
+			},
+		},
+	}
+}
+
+func readMetadataSourceKind(t *testing.T, path string) (string, bool) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	var output struct {
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		t.Fatalf("Unmarshal %s: %v", path, err)
+	}
+	raw, ok := output.Metadata["source_kind"]
+	if !ok {
+		return "", false
+	}
+	var sourceKind string
+	if err := json.Unmarshal(raw, &sourceKind); err != nil {
+		t.Fatalf("Unmarshal source_kind from %s: %v", path, err)
+	}
+	return sourceKind, true
 }
 
 // createMockServerInfoWithComputerLogin creates a mock ServerInfo with a computer account login

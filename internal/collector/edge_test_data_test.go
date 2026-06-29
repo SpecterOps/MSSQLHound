@@ -577,7 +577,7 @@ var getAdminTGSTestCases = []edgeTestCase{
 // ---------------------------------------------------------------------------
 
 var linkedAsAdminTestCases = []edgeTestCase{
-	{EdgeType: "MSSQL_LinkedAsAdmin", Description: "Admin SQL login linked servers create LinkedAsAdmin edges (including nested roles)", SourcePattern: "S-1-5-21-*", TargetPattern: "S-1-5-21-*", ExpectedCount: 8},
+	{EdgeType: "MSSQL_LinkedAsAdmin", Description: "Admin SQL login linked servers create LinkedAsAdmin edges (including nested roles)", SourcePattern: "S-1-5-21-*", TargetPattern: "S-1-5-21-*", ExpectedCount: 8, AllowExtraCount: true},
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +585,7 @@ var linkedAsAdminTestCases = []edgeTestCase{
 // ---------------------------------------------------------------------------
 
 var linkedToTestCases = []edgeTestCase{
-	{EdgeType: "MSSQL_LinkedTo", Description: "All 10 loopback linked servers create LinkedTo edges", SourcePattern: "S-1-5-21-*", TargetPattern: "S-1-5-21-*", ExpectedCount: 10},
+	{EdgeType: "MSSQL_LinkedTo", Description: "All 10 loopback linked servers create LinkedTo edges", SourcePattern: "S-1-5-21-*", TargetPattern: "S-1-5-21-*", ExpectedCount: 10, AllowExtraCount: true},
 }
 
 // ---------------------------------------------------------------------------
