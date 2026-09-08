@@ -216,6 +216,17 @@ type edgeTestResult struct {
 // back the resulting nodes and edges.
 func runEdgeCreation(t *testing.T, serverInfo *types.ServerInfo, includeNontraversable bool) edgeTestResult {
 	t.Helper()
+	return runEdgeCreationWithConfig(t, serverInfo, &Config{
+		Domain:                     "domain.com",
+		DisableNontraversableEdges: !includeNontraversable,
+	})
+}
+
+// runEdgeCreationWithConfig runs edge creation with a caller-supplied Config,
+// allowing tests to toggle options such as EnableDataAccessEdges. TempDir is
+// overwritten with a fresh per-test temp directory.
+func runEdgeCreationWithConfig(t *testing.T, serverInfo *types.ServerInfo, config *Config) edgeTestResult {
+	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "mssqlhound-edge-test")
 	if err != nil {
@@ -223,11 +234,7 @@ func runEdgeCreation(t *testing.T, serverInfo *types.ServerInfo, includeNontrave
 	}
 	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
-	config := &Config{
-		TempDir:                    tmpDir,
-		Domain:                     "domain.com",
-		DisableNontraversableEdges: !includeNontraversable,
-	}
+	config.TempDir = tmpDir
 	c, _ := New(config)
 
 	outputPath := filepath.Join(tmpDir, "test-output.json")

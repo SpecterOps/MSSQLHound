@@ -238,6 +238,21 @@
       "name": "MSSQL_TakeOwnership",
       "description": "",
       "is_traversable": false
+    },
+    {
+      "name": "MSSQL_ReadDB",
+      "description": "",
+      "is_traversable": false
+    },
+    {
+      "name": "MSSQL_WriteDB",
+      "description": "",
+      "is_traversable": false
+    },
+    {
+      "name": "MSSQL_DeleteDB",
+      "description": "",
+      "is_traversable": false
     }
   ],
   "environments": [

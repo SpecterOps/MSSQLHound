@@ -111,7 +111,10 @@ func IsTraversableEdge(kind string) bool {
 		EdgeKinds.AlterDBRole,
 		EdgeKinds.AlterServerRole,
 		EdgeKinds.ImpersonateDBUser,
-		EdgeKinds.ImpersonateLogin:
+		EdgeKinds.ImpersonateLogin,
+		EdgeKinds.ReadDB,
+		EdgeKinds.WriteDB,
+		EdgeKinds.DeleteDB:
 		return false
 	default:
 		return true
@@ -252,6 +255,59 @@ var edgePropertyGenerators = map[string]func(*EdgeContext) EdgeProperties{
 				"- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-authorization-transact-sql?view=sql-server-ver17 \n" +
 				"- https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-application-role-transact-sql?view=sql-server-ver17 \n" +
 				"- https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/default-trace-enabled-server-configuration-option?view=sql-server-ver17",
+		}
+	},
+
+	EdgeKinds.ReadDB: func(ctx *EdgeContext) EdgeProperties {
+		abuse := "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " and read data from the " + ctx.TargetName + " database:\n" +
+			"USE " + ctx.TargetName + "; \n" +
+			"-- List readable tables \n" +
+			"SELECT s.name AS SchemaName, t.name AS TableName FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id; \n" +
+			"-- Read data \n" +
+			"SELECT * FROM [schema].[table]; "
+		return EdgeProperties{
+			General:      "The source " + ctx.SourceType + " has SELECT permission on the " + ctx.TargetName + " database (granted directly or through the db_datareader fixed role). This allows reading data from all tables and views in the database, which may expose sensitive information such as credentials, personal data, or business secrets. This is a non-traversable, informational edge.",
+			WindowsAbuse: abuse,
+			LinuxAbuse:   abuse,
+			Opsec: "SELECT statements are not logged by SQL Server's default trace. Data access auditing requires SQL Server Audit or Extended Events sessions to be explicitly configured. \n" +
+				"Reading data is generally low-risk from a detection standpoint unless dedicated database activity monitoring is in place.",
+			References: "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine?view=sql-server-ver17 \n" +
+				"- https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/database-level-roles?view=sql-server-ver17#fixed-database-roles",
+		}
+	},
+
+	EdgeKinds.WriteDB: func(ctx *EdgeContext) EdgeProperties {
+		abuse := "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " and modify data in the " + ctx.TargetName + " database:\n" +
+			"USE " + ctx.TargetName + "; \n" +
+			"-- Insert data \n" +
+			"INSERT INTO [schema].[table] (column1) VALUES ('value'); \n" +
+			"-- Update data \n" +
+			"UPDATE [schema].[table] SET column1 = 'value' WHERE <condition>; "
+		return EdgeProperties{
+			General:      "The source " + ctx.SourceType + " has INSERT and/or UPDATE permission on the " + ctx.TargetName + " database (granted directly or through the db_datawriter fixed role). This allows modifying data in tables, which could be abused to tamper with application data, escalate privileges within an application, or plant malicious content. This is a non-traversable, informational edge.",
+			WindowsAbuse: abuse,
+			LinuxAbuse:   abuse,
+			Opsec: "INSERT and UPDATE statements are not logged by SQL Server's default trace. Data modification auditing requires SQL Server Audit or Extended Events sessions to be explicitly configured. \n" +
+				"Triggers on the target tables may generate side effects or log entries.",
+			References: "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine?view=sql-server-ver17 \n" +
+				"- https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/database-level-roles?view=sql-server-ver17#fixed-database-roles",
+		}
+	},
+
+	EdgeKinds.DeleteDB: func(ctx *EdgeContext) EdgeProperties {
+		abuse := "Connect to the " + ctx.SQLServerName + " SQL server as " + ctx.SourceName + " and delete data from the " + ctx.TargetName + " database:\n" +
+			"USE " + ctx.TargetName + "; \n" +
+			"-- Delete data \n" +
+			"DELETE FROM [schema].[table] WHERE <condition>; \n" +
+			"WARNING: Deleting data may cause data loss and application outages. Do not run destructive statements against production systems without authorization."
+		return EdgeProperties{
+			General:      "The source " + ctx.SourceType + " has DELETE permission on the " + ctx.TargetName + " database (granted directly or through the db_datawriter fixed role). This allows deleting rows from tables, which could be abused to destroy data, cause application outages, or remove evidence of prior activity. This is a non-traversable, informational edge.",
+			WindowsAbuse: abuse,
+			LinuxAbuse:   abuse,
+			Opsec: "DELETE statements are not logged by SQL Server's default trace. Data modification auditing requires SQL Server Audit or Extended Events sessions to be explicitly configured. \n" +
+				"Deleting data is destructive and may be noticed through application errors or data integrity checks even without dedicated monitoring.",
+			References: "- https://learn.microsoft.com/en-us/sql/relational-databases/security/permissions-database-engine?view=sql-server-ver17 \n" +
+				"- https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/database-level-roles?view=sql-server-ver17#fixed-database-roles",
 		}
 	},
 

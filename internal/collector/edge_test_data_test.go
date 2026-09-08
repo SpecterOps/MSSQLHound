@@ -674,6 +674,28 @@ var takeOwnershipTestCases = []edgeTestCase{
 }
 
 // ---------------------------------------------------------------------------
+// MSSQL_ReadDB / MSSQL_WriteDB / MSSQL_DeleteDB (opt-in data-access edges)
+// ---------------------------------------------------------------------------
+
+var readDBTestCases = []edgeTestCase{
+	{EdgeType: "MSSQL_ReadDB", Description: "DatabaseUser with SELECT on database", SourcePattern: "DataAccessTest_User_HasSelect@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+	{EdgeType: "MSSQL_ReadDB", Description: "DatabaseRole with SELECT on database", SourcePattern: "DataAccessTest_DbRole_HasSelect@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+	{EdgeType: "MSSQL_ReadDB", Description: "db_datareader has implicit SELECT", SourcePattern: "db_datareader@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+	{EdgeType: "MSSQL_ReadDB", Description: "DatabaseUser with SELECT denied has no edge", SourcePattern: "DataAccessTest_User_DeniedSelect@*\\EdgeTest_DataAccess", TargetPattern: "*", Negative: true, Reason: "SELECT is denied"},
+}
+
+var writeDBTestCases = []edgeTestCase{
+	{EdgeType: "MSSQL_WriteDB", Description: "DatabaseUser with INSERT on database", SourcePattern: "DataAccessTest_User_HasInsert@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+	{EdgeType: "MSSQL_WriteDB", Description: "DatabaseUser with UPDATE on database", SourcePattern: "DataAccessTest_User_HasUpdate@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+	{EdgeType: "MSSQL_WriteDB", Description: "db_datawriter has implicit INSERT/UPDATE", SourcePattern: "db_datawriter@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+}
+
+var deleteDBTestCases = []edgeTestCase{
+	{EdgeType: "MSSQL_DeleteDB", Description: "DatabaseUser with DELETE on database", SourcePattern: "DataAccessTest_User_HasDelete@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+	{EdgeType: "MSSQL_DeleteDB", Description: "db_datawriter has implicit DELETE", SourcePattern: "db_datawriter@*\\EdgeTest_DataAccess", TargetPattern: "*\\EdgeTest_DataAccess"},
+}
+
+// ---------------------------------------------------------------------------
 // allTestCases aggregates all edge type test cases into a single slice.
 // This is used for coverage analysis and integration test validation.
 // ---------------------------------------------------------------------------
@@ -695,6 +717,9 @@ var allTestCases = func() []edgeTestCase {
 	all = append(all, controlTestCases...)
 	all = append(all, controlDBTestCases...)
 	all = append(all, controlServerTestCases...)
+	all = append(all, readDBTestCases...)
+	all = append(all, writeDBTestCases...)
+	all = append(all, deleteDBTestCases...)
 	all = append(all, executeAsTestCases...)
 	all = append(all, executeAsOwnerTestCases...)
 	all = append(all, executeOnHostTestCases...)

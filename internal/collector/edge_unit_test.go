@@ -1706,6 +1706,67 @@ func TestServiceAccountForEdges(t *testing.T) {
 }
 
 // =============================================================================
+// READDB / WRITEDB / DELETEDB (opt-in data-access edges)
+// =============================================================================
+
+func buildDataAccessTestData() *types.ServerInfo {
+	info := baseServerInfo()
+	db := addDatabase(info, "EdgeTest_DataAccess")
+
+	// Explicit DATABASE-scoped grants
+	addDatabaseUser(db, "DataAccessTest_User_HasSelect",
+		withDBPrincipalPermissions(perm("SELECT", "GRANT", "DATABASE")))
+	addDatabaseUser(db, "DataAccessTest_User_HasInsert",
+		withDBPrincipalPermissions(perm("INSERT", "GRANT", "DATABASE")))
+	addDatabaseUser(db, "DataAccessTest_User_HasUpdate",
+		withDBPrincipalPermissions(perm("UPDATE", "GRANT", "DATABASE")))
+	addDatabaseUser(db, "DataAccessTest_User_HasDelete",
+		withDBPrincipalPermissions(perm("DELETE", "GRANT", "DATABASE")))
+
+	// Custom (non-fixed) database role with SELECT
+	addDatabaseRole(db, "DataAccessTest_DbRole_HasSelect", false,
+		withDBPrincipalPermissions(perm("SELECT", "GRANT", "DATABASE")))
+
+	// DENY must not produce an edge
+	addDatabaseUser(db, "DataAccessTest_User_DeniedSelect",
+		withDBPrincipalPermissions(perm("SELECT", "DENY", "DATABASE")))
+
+	// Fixed roles: db_datareader -> ReadDB; db_datawriter -> WriteDB + DeleteDB
+	addDatabaseRole(db, "db_datareader", true)
+	addDatabaseRole(db, "db_datawriter", true)
+
+	return info
+}
+
+// TestDataAccessEdges verifies the opt-in Read/Write/Delete edges are created
+// when EnableDataAccessEdges is set.
+func TestDataAccessEdges(t *testing.T) {
+	info := buildDataAccessTestData()
+	result := runEdgeCreationWithConfig(t, info, &Config{
+		Domain:                "domain.com",
+		EnableDataAccessEdges: true,
+	})
+	runTestCases(t, result.Edges, readDBTestCases)
+	runTestCases(t, result.Edges, writeDBTestCases)
+	runTestCases(t, result.Edges, deleteDBTestCases)
+}
+
+// TestDataAccessEdgesDisabledByDefault verifies that without the opt-in flag no
+// data-access edges are emitted (default behavior is unchanged).
+func TestDataAccessEdgesDisabledByDefault(t *testing.T) {
+	info := buildDataAccessTestData()
+	// runEdgeCreation does not set EnableDataAccessEdges; includeNontraversable
+	// is true so absence is due to the flag, not non-traversable filtering.
+	result := runEdgeCreation(t, info, true)
+	for _, e := range result.Edges {
+		switch e.Kind {
+		case bloodhound.EdgeKinds.ReadDB, bloodhound.EdgeKinds.WriteDB, bloodhound.EdgeKinds.DeleteDB:
+			t.Errorf("data-access edge %s created without --enable-data-access-edges (%s -> %s)", e.Kind, e.Start.Value, e.End.Value)
+		}
+	}
+}
+
+// =============================================================================
 // COVERAGE TEST: Verify all edge types have test cases
 // =============================================================================
 
@@ -1752,6 +1813,9 @@ func TestAllEdgeTypesHaveCoverage(t *testing.T) {
 		bloodhound.EdgeKinds.Owns,
 		bloodhound.EdgeKinds.ServiceAccountFor,
 		bloodhound.EdgeKinds.TakeOwnership,
+		bloodhound.EdgeKinds.ReadDB,
+		bloodhound.EdgeKinds.WriteDB,
+		bloodhound.EdgeKinds.DeleteDB,
 	}
 
 	for _, kind := range allKinds {

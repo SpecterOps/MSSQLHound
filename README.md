@@ -110,6 +110,7 @@ Run MSSQLHound with a few common collection patterns:
      - [`MSSQL_Control`](#mssql_control)
      - [`MSSQL_ControlDB`](#mssql_controldb)
      - [`MSSQL_ControlServer`](#mssql_controlserver)
+     - [`MSSQL_DeleteDB`](#mssql_deletedb)
      - [`MSSQL_ExecuteAs`](#mssql_executeas)
      - [`MSSQL_ExecuteAsOwner`](#mssql_executeasowner)
      - [`MSSQL_ExecuteOnHost`](#mssql_executeonhost)
@@ -130,8 +131,10 @@ Run MSSQLHound with a few common collection patterns:
      - [`MSSQL_LinkedTo`](#mssql_linkedto)
      - [`MSSQL_MemberOf`](#mssql_memberof)
      - [`MSSQL_Owns`](#mssql_owns)
+     - [`MSSQL_ReadDB`](#mssql_readdb)
      - [`MSSQL_ServiceAccountFor`](#mssql_serviceaccountfor)
      - [`MSSQL_TakeOwnership`](#mssql_takeownership)
+     - [`MSSQL_WriteDB`](#mssql_writedb)
 
 # Overview
 Collects BloodHound OpenGraph compatible data from one or more MSSQL servers into individual temporary files, then zips them in the current directory
@@ -585,6 +588,12 @@ export BLOODHOUND_TOKEN_KEY=<token-key>
 
 # Skip AD node creation (still emits AD-touching edges in ad_edges.json)
 ./mssqlhound -t sql.contoso.com --skip-ad-nodes
+
+# Add non-traversable data-access edges (read/write/delete) to databases
+# Draws MSSQL_ReadDB (SELECT), MSSQL_WriteDB (INSERT/UPDATE), and MSSQL_DeleteDB
+# (DELETE) edges from principals with explicit DATABASE-scoped grants or the
+# db_datareader / db_datawriter fixed roles. Off by default.
+./mssqlhound -t sql.contoso.com --enable-data-access-edges
 ```
 
 ### Linked Server Options
@@ -681,6 +690,7 @@ mssqlhound completion powershell | Out-String | Invoke-Expression
 | `--skip-ad-nodes` | false | Skip creating `User`, `Group`, `Computer` nodes; AD-touching edges are still emitted to `ad_edges.json` |
 | `--disable-nontraversable-edges` | false | Disable non-traversable edges |
 | `--disable-possible-edges` | false | Disable possible edges (makes them non-traversable in schema and edge data) |
+| `--enable-data-access-edges` | false | Create non-traversable `MSSQL_ReadDB`/`MSSQL_WriteDB`/`MSSQL_DeleteDB` edges for principals that can read, write, or delete data in a database |
 | `-w, --workers` | 0 | Number of concurrent workers (0 = sequential processing) |
 
 ### Output / Storage
@@ -1292,6 +1302,8 @@ All edges based on permissions may contain the `With Grant` property, which mean
 | **`MSSQL_ControlDB`**                           | • No unique edge properties |
 <a id="mssql_controlserver"></a>
 | **`MSSQL_ControlServer`**                       | • No unique edge properties |
+<a id="mssql_deletedb"></a>
+| **`MSSQL_DeleteDB`**                            | • No unique edge properties |
 <a id="mssql_executeas"></a>
 | **`MSSQL_ExecuteAs`**                           | • No unique edge properties |
 <a id="mssql_executeonhost"></a>
@@ -1320,10 +1332,14 @@ All edges based on permissions may contain the `With Grant` property, which mean
 | **`MSSQL_MemberOf`**                            | • No unique edge properties |
 <a id="mssql_owns"></a>
 | **`MSSQL_Owns`**                                | • No unique edge properties |
+<a id="mssql_readdb"></a>
+| **`MSSQL_ReadDB`**                              | • No unique edge properties |
 <a id="mssql_serviceaccountfor"></a>
 | **`MSSQL_ServiceAccountFor`**                   | • No unique edge properties |
 <a id="mssql_takeownership"></a>
 | **`MSSQL_TakeOwnership`**                       | • No unique edge properties |
+<a id="mssql_writedb"></a>
+| **`MSSQL_WriteDB`**                             | • No unique edge properties |
 
 # Credits
 

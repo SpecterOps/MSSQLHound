@@ -367,6 +367,9 @@ var EdgeKinds = struct {
 	ControlDB            string
 	ControlDBRole        string
 	ControlDBUser        string
+	ReadDB               string
+	WriteDB              string
+	DeleteDB             string
 	ControlLogin         string
 	ControlServerRole    string
 	Impersonate          string
@@ -419,6 +422,9 @@ var EdgeKinds = struct {
 	ControlDB:            "MSSQL_ControlDB",
 	ControlDBRole:        "MSSQL_ControlDBRole",
 	ControlDBUser:        "MSSQL_ControlDBUser",
+	ReadDB:               "MSSQL_ReadDB",
+	WriteDB:              "MSSQL_WriteDB",
+	DeleteDB:             "MSSQL_DeleteDB",
 	ControlLogin:         "MSSQL_ControlLogin",
 	ControlServerRole:    "MSSQL_ControlServerRole",
 	Impersonate:          "MSSQL_Impersonate",

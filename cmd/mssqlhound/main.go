@@ -54,6 +54,7 @@ var (
 	skipADNodeCreation         bool
 	disableNontraversableEdges bool
 	disablePossibleEdges       bool
+	enableDataAccessEdges      bool
 	skipIPDedupe               bool
 	scanAllComputerPorts       string
 
@@ -138,6 +139,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	rootCmd.Flags().BoolVar(&skipADNodeCreation, "skip-ad-nodes", false, "Skip creating User, Group, Computer nodes")
 	rootCmd.Flags().BoolVar(&disableNontraversableEdges, "disable-nontraversable-edges", false, "Disable non-traversable edges")
 	rootCmd.Flags().BoolVar(&disablePossibleEdges, "disable-possible-edges", false, "Disable possible edges (makes them non-traversable in schema and edge data)")
+	rootCmd.Flags().BoolVar(&enableDataAccessEdges, "enable-data-access-edges", false, "Create non-traversable ReadDB/WriteDB/DeleteDB edges for principals that can read, write, or delete data in a database")
 	rootCmd.Flags().BoolVar(&skipIPDedupe, "skip-ip-dedupe", false, "Skip DNS-based target deduplication (keeps all targets even if they resolve to the same IP)")
 	rootCmd.Flags().StringVar(&scanAllComputerPorts, "scan-all-computer-ports", "1433", "Comma-separated TCP ports to scan for --scan-all-computers targets")
 	rootCmd.Flags().IntVar(&linkedServerTimeout, "linked-timeout", 300, "Linked server enumeration timeout (seconds)")
@@ -164,7 +166,7 @@ Collects BloodHound OpenGraph compatible data from one or more MSSQL servers int
 	}
 	for _, name := range []string{"scan-all-computers", "skip-private-address",
 		"domain-enum-only", "skip-linked-servers", "collect-from-linked",
-		"skip-ad-nodes", "disable-nontraversable-edges", "disable-possible-edges", "skip-ip-dedupe", "scan-all-computer-ports"} {
+		"skip-ad-nodes", "disable-nontraversable-edges", "disable-possible-edges", "enable-data-access-edges", "skip-ip-dedupe", "scan-all-computer-ports"} {
 		rootCmd.Flags().SetAnnotation(name, "group", []string{"Collection"}) //nolint:errcheck
 	}
 	for _, name := range []string{"linked-timeout", "workers", "file-size-limit",
@@ -439,6 +441,7 @@ func run(cmd *cobra.Command, args []string) error {
 		SkipADNodeCreation:         skipADNodeCreation,
 		DisableNontraversableEdges: disableNontraversableEdges,
 		DisablePossibleEdges:       disablePossibleEdges,
+		EnableDataAccessEdges:      enableDataAccessEdges,
 		SkipIPDedupe:               skipIPDedupe,
 		LinkedServerTimeout:        linkedServerTimeout,
 		PortCheckTimeout:           time.Duration(portCheckTimeout) * time.Second,

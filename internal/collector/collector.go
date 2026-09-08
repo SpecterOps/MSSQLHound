@@ -65,6 +65,7 @@ type Config struct {
 	SkipADNodeCreation         bool
 	DisableNontraversableEdges bool
 	DisablePossibleEdges       bool
+	EnableDataAccessEdges      bool // Emit non-traversable ReadDB/WriteDB/DeleteDB edges to databases
 	SkipIPDedupe               bool // Skip DNS-based IP deduplication of targets
 
 	// Timeouts and limits
@@ -5482,6 +5483,23 @@ func (c *Collector) createFixedRoleEdges(writer edgeSink, serverInfo *types.Serv
 				// db_accessadmin does NOT have any special permissions that create edges
 				// Its role is to manage database access (adding users), which is handled
 				// through its membership in the database, not through explicit permissions
+
+			case "db_datareader":
+				// db_datareader has implicit SELECT on all tables/views in the database.
+				// Emit a non-traversable ReadDB edge (opt-in via --enable-data-access-edges).
+				if err := c.writeDataAccessEdge(writer, bloodhound.EdgeKinds.ReadDB, &principal, &db, serverInfo, "SELECT", true); err != nil {
+					return err
+				}
+
+			case "db_datawriter":
+				// db_datawriter has implicit INSERT/UPDATE/DELETE on all tables in the
+				// database. Emit non-traversable WriteDB and DeleteDB edges (opt-in).
+				if err := c.writeDataAccessEdge(writer, bloodhound.EdgeKinds.WriteDB, &principal, &db, serverInfo, "INSERT, UPDATE", true); err != nil {
+					return err
+				}
+				if err := c.writeDataAccessEdge(writer, bloodhound.EdgeKinds.DeleteDB, &principal, &db, serverInfo, "DELETE", true); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -6214,6 +6232,32 @@ func (c *Collector) createDatabasePermissionEdges(writer edgeSink, db *types.Dat
 					}
 				}
 				break
+
+			// Data-access permissions (opt-in, non-traversable). writeDataAccessEdge
+			// is a no-op unless --enable-data-access-edges is set. INSERT and UPDATE
+			// both map to the WriteDB edge; the writer's edge-dedup collapses the
+			// duplicate when a principal holds both.
+			case "SELECT":
+				if perm.ClassDesc == "DATABASE" {
+					if err := c.writeDataAccessEdge(writer, bloodhound.EdgeKinds.ReadDB, &principal, db, serverInfo, perm.Permission, false); err != nil {
+						return err
+					}
+				}
+				break
+			case "INSERT", "UPDATE":
+				if perm.ClassDesc == "DATABASE" {
+					if err := c.writeDataAccessEdge(writer, bloodhound.EdgeKinds.WriteDB, &principal, db, serverInfo, perm.Permission, false); err != nil {
+						return err
+					}
+				}
+				break
+			case "DELETE":
+				if perm.ClassDesc == "DATABASE" {
+					if err := c.writeDataAccessEdge(writer, bloodhound.EdgeKinds.DeleteDB, &principal, db, serverInfo, perm.Permission, false); err != nil {
+						return err
+					}
+				}
+				break
 			case "ALTER":
 				if perm.ClassDesc == "DATABASE" {
 					// ALTER on the database itself - use MSSQL_Alter to match PowerShell
@@ -6640,6 +6684,37 @@ func (c *Collector) createDatabasePermissionEdges(writer edgeSink, db *types.Dat
 	}
 
 	return nil
+}
+
+// writeDataAccessEdge emits a non-traversable data-access edge (ReadDB/WriteDB/
+// DeleteDB) from a database principal to its database. These edges are opt-in and
+// only created when the --enable-data-access-edges flag is set; when the flag is
+// off this is a no-op so existing output is unchanged.
+func (c *Collector) writeDataAccessEdge(writer edgeSink, kind string, principal *types.DatabasePrincipal, db *types.Database, serverInfo *types.ServerInfo, permission string, isFixedRole bool) error {
+	if !c.config.EnableDataAccessEdges {
+		return nil
+	}
+	edge := c.createEdge(
+		principal.ObjectIdentifier,
+		db.ObjectIdentifier,
+		kind,
+		&bloodhound.EdgeContext{
+			SourceName:            principal.Name,
+			SourceType:            c.getDatabasePrincipalType(principal.TypeDescription),
+			TargetName:            db.Name,
+			TargetType:            bloodhound.NodeKinds.Database,
+			TargetTypeDescription: "DATABASE",
+			SQLServerName:         serverInfo.SQLServerName,
+			SQLServerID:           serverInfo.ObjectIdentifier,
+			DatabaseName:          db.Name,
+			Permission:            permission,
+			IsFixedRole:           isFixedRole,
+		},
+	)
+	if edge == nil {
+		return nil
+	}
+	return writer.WriteEdge(edge)
 }
 
 // createEdge creates a BloodHound edge with properties.
