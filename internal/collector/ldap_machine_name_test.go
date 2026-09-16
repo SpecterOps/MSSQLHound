@@ -121,3 +121,54 @@ func TestIsLinkedServerSourceCurrentServer(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveDomainSuffix covers the domain derivation shared by SID resolution and
+// linked-server ObjectIdentifier resolution. serverInfo.Hostname/FQDN "contains a dot" for
+// an IP literal just as much as for a real FQDN, and this was previously extracted blindly
+// in four separate places in the collector, producing a garbage domain (e.g. "112.0.83" from
+// "10.112.0.83") whenever a server was targeted by IP with no --domain override in effect for
+// that particular derivation, and no configured domain took priority.
+func TestResolveDomainSuffix(t *testing.T) {
+	tests := []struct {
+		name         string
+		configDomain string
+		fqdn         string
+		hostname     string
+		want         string
+	}{
+		{
+			name:         "explicit config domain always wins",
+			configDomain: "mayyhem.com",
+			fqdn:         "10.112.0.83",
+			hostname:     "10.112.0.83",
+			want:         "mayyhem.com",
+		},
+		{
+			name:     "derives from FQDN when no config domain",
+			fqdn:     "ps1-db.mayyhem.com",
+			hostname: "ps1-db.mayyhem.com",
+			want:     "mayyhem.com",
+		},
+		{
+			name:     "IP FQDN falls back to hostname",
+			fqdn:     "10.112.0.83",
+			hostname: "monitor.mayyhem.com",
+			want:     "mayyhem.com",
+		},
+		{
+			name:     "IP literal FQDN and hostname yield no domain",
+			fqdn:     "10.112.0.83",
+			hostname: "10.112.0.83",
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveDomainSuffix(tt.configDomain, tt.fqdn, tt.hostname)
+			if got != tt.want {
+				t.Fatalf("resolveDomainSuffix(%q, %q, %q) = %q, want %q", tt.configDomain, tt.fqdn, tt.hostname, got, tt.want)
+			}
+		})
+	}
+}
