@@ -2075,23 +2075,54 @@ func (c *Collector) parseServerInstance(serverInstance string) (hostname, port, 
 	return
 }
 
+// resolveDomainSuffix returns the AD domain to use for SID/LDAP resolution: the explicitly
+// configured domain if set, otherwise derived from fqdn or hostname (in that order). Guards
+// against IP literals, which contain dots too but aren't a domain suffix - the underlying bug
+// behind duplicate/misattributed nodes when a server is targeted by IP instead of hostname.
+func resolveDomainSuffix(configDomain, fqdn, hostname string) string {
+	if configDomain != "" {
+		return configDomain
+	}
+	for _, candidate := range []string{fqdn, hostname} {
+		if candidate == "" || net.ParseIP(candidate) != nil {
+			continue
+		}
+		if idx := strings.Index(candidate, "."); idx > 0 {
+			return candidate[idx+1:]
+		}
+	}
+	return ""
+}
+
+// deriveLDAPMachineName derives the short/NetBIOS machine name to use for LDAP-based
+// computer SID resolution. hostname is preferred, but when it's an IP literal (e.g.
+// the target was specified by IP address) it can't be split into a short name, so
+// fqdn is used instead. ok is false when no usable (non-IP) name is available at all.
+func deriveLDAPMachineName(hostname, fqdn string) (name string, ok bool) {
+	machineName := hostname
+	if net.ParseIP(machineName) != nil {
+		machineName = fqdn
+	}
+	if machineName == "" || net.ParseIP(machineName) != nil {
+		return "", false
+	}
+	if strings.Contains(machineName, ".") {
+		machineName = strings.Split(machineName, ".")[0]
+	}
+	return machineName, true
+}
+
 // resolveComputerSIDViaLDAP attempts to resolve the computer SID via multiple methods.
 // If sharedClient is non-nil, it is used for LDAP lookups instead of creating a new connection.
 func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger, sharedClient *ad.Client) {
-	// Try to determine the domain from the FQDN if not provided
-	domain := c.config.Domain
-	if domain == "" && strings.Contains(serverInfo.FQDN, ".") {
-		// Extract domain from FQDN (e.g., server.domain.com -> domain.com)
-		parts := strings.SplitN(serverInfo.FQDN, ".", 2)
-		if len(parts) > 1 {
-			domain = parts[1]
-		}
-	}
+	// Determine the domain to use for LDAP resolution.
+	domain := resolveDomainSuffix(c.config.Domain, serverInfo.FQDN, serverInfo.Hostname)
 
 	// Use the machine name (without the FQDN)
-	machineName := serverInfo.Hostname
-	if strings.Contains(machineName, ".") {
-		machineName = strings.Split(machineName, ".")[0]
+	machineName, ok := deriveLDAPMachineName(serverInfo.Hostname, serverInfo.FQDN)
+	if !ok {
+		log.Log(context.Background(), logging.LevelVerbose, "Cannot resolve computer SID: only an IP address is available, no hostname", "hostname", serverInfo.Hostname)
+		return
 	}
 
 	// Method 1 & 2: Try Windows APIs (only available on Windows)
@@ -3746,9 +3777,9 @@ func (c *Collector) createEdges(writer edgeSink, serverInfo *types.ServerInfo) e
 		}
 
 		// Resolve the source server ObjectIdentifier
-		// PowerShell compares linked.SourceServer to current hostname and resolves chains
+		// PowerShell compares linked.SourceServer to current hostname and resolves chains.
 		sourceID := serverInfo.ObjectIdentifier
-		if linked.SourceServer != "" && !strings.EqualFold(linked.SourceServer, serverInfo.Hostname) {
+		if linked.SourceServer != "" && !isLinkedServerSourceCurrentServer(linked.SourceServer, serverInfo) {
 			// Source is a different server (chained linked server) - resolve its ID
 			resolvedSourceID := c.resolveLinkedServerSourceID(linked.SourceServer, serverInfo)
 			if resolvedSourceID != "" {
@@ -4836,14 +4867,8 @@ func (c *Collector) processLinkedServers(serverInfo *types.ServerInfo, server *S
 			}
 			hostname, port, instanceName := c.parseDataSource(targetHost)
 
-			// Extract domain from source server
-			sourceDomain := ""
-			if strings.Contains(serverInfo.Hostname, ".") {
-				parts := strings.SplitN(serverInfo.Hostname, ".", 2)
-				if len(parts) > 1 {
-					sourceDomain = parts[1]
-				}
-			}
+			// Determine the domain to use for LDAP resolution.
+			sourceDomain := resolveDomainSuffix(c.config.Domain, serverInfo.FQDN, serverInfo.Hostname)
 
 			// Resolve ObjectIdentifier (needed for edge generation)
 			resolvedID := c.resolveDataSourceToSID(hostname, port, instanceName, sourceDomain)
@@ -4893,14 +4918,8 @@ func (c *Collector) processLinkedServers(serverInfo *types.ServerInfo, server *S
 			}
 		}
 
-		// Extract domain from source server for linked server lookups
-		sourceDomain := ""
-		if strings.Contains(serverInfo.Hostname, ".") {
-			parts := strings.SplitN(serverInfo.Hostname, ".", 2)
-			if len(parts) > 1 {
-				sourceDomain = parts[1]
-			}
-		}
+		// Determine the domain to use for LDAP resolution.
+		sourceDomain := resolveDomainSuffix(c.config.Domain, serverInfo.FQDN, serverInfo.Hostname)
 
 		// Resolve the linked server's ResolvedObjectIdentifier (SID:port format)
 		resolvedID := c.resolveDataSourceToSID(hostname, port, instanceName, sourceDomain)
@@ -4967,6 +4986,21 @@ func (c *Collector) parseDataSource(dataSource string) (hostname, port, instance
 	return
 }
 
+// isLinkedServerSourceCurrentServer reports whether a linked server's reported SourceServer
+// refers to the current server itself. serverInfo.Hostname may be an IP literal (the server was
+// targeted by IP), which never string-matches SQL Server's own self-reported hostname, so this
+// also checks the short name derived from FQDN and SERVERPROPERTY('ServerName') (the latter works
+// even with no forward/reverse DNS at all) before concluding this is a different (chained) server.
+func isLinkedServerSourceCurrentServer(sourceServer string, serverInfo *types.ServerInfo) bool {
+	if strings.EqualFold(sourceServer, serverInfo.Hostname) {
+		return true
+	}
+	if shortName, ok := deriveLDAPMachineName(serverInfo.Hostname, serverInfo.FQDN); ok && strings.EqualFold(sourceServer, shortName) {
+		return true
+	}
+	return strings.EqualFold(sourceServer, serverInfo.ServerName)
+}
+
 // resolveLinkedServerSourceID resolves the source server ObjectIdentifier for a chained linked server.
 // When a linked server's SourceServer differs from the current server's hostname, this resolves
 // the source to a SID:port format. Falls back to "LinkedServer:hostname" if resolution fails.
@@ -4974,14 +5008,8 @@ func (c *Collector) parseDataSource(dataSource string) (hostname, port, instance
 func (c *Collector) resolveLinkedServerSourceID(sourceServer string, serverInfo *types.ServerInfo) string {
 	hostname, port, instanceName := c.parseDataSource(sourceServer)
 
-	// Extract domain from current server for resolution
-	sourceDomain := ""
-	if strings.Contains(serverInfo.Hostname, ".") {
-		parts := strings.SplitN(serverInfo.Hostname, ".", 2)
-		if len(parts) > 1 {
-			sourceDomain = parts[1]
-		}
-	}
+	// Determine the domain to use for LDAP resolution.
+	sourceDomain := resolveDomainSuffix(c.config.Domain, serverInfo.FQDN, serverInfo.Hostname)
 
 	resolved := c.resolveDataSourceToSID(hostname, port, instanceName, sourceDomain)
 
