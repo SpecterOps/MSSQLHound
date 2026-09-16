@@ -2075,12 +2075,32 @@ func (c *Collector) parseServerInstance(serverInstance string) (hostname, port, 
 	return
 }
 
+// deriveLDAPMachineName derives the short/NetBIOS machine name to use for LDAP-based
+// computer SID resolution. hostname is preferred, but when it's an IP literal (e.g.
+// the target was specified by IP address) it can't be split into a short name, so
+// fqdn is used instead. ok is false when no usable (non-IP) name is available at all.
+func deriveLDAPMachineName(hostname, fqdn string) (name string, ok bool) {
+	machineName := hostname
+	if net.ParseIP(machineName) != nil {
+		machineName = fqdn
+	}
+	if machineName == "" || net.ParseIP(machineName) != nil {
+		return "", false
+	}
+	if strings.Contains(machineName, ".") {
+		machineName = strings.Split(machineName, ".")[0]
+	}
+	return machineName, true
+}
+
 // resolveComputerSIDViaLDAP attempts to resolve the computer SID via multiple methods.
 // If sharedClient is non-nil, it is used for LDAP lookups instead of creating a new connection.
 func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log *slog.Logger, sharedClient *ad.Client) {
 	// Try to determine the domain from the FQDN if not provided
+	// An IPv4/IPv6 literal also "contains a dot" (or colon), so guard against
+	// treating an IP address as a dotted hostname here.
 	domain := c.config.Domain
-	if domain == "" && strings.Contains(serverInfo.FQDN, ".") {
+	if domain == "" && strings.Contains(serverInfo.FQDN, ".") && net.ParseIP(serverInfo.FQDN) == nil {
 		// Extract domain from FQDN (e.g., server.domain.com -> domain.com)
 		parts := strings.SplitN(serverInfo.FQDN, ".", 2)
 		if len(parts) > 1 {
@@ -2089,9 +2109,10 @@ func (c *Collector) resolveComputerSIDViaLDAP(serverInfo *types.ServerInfo, log 
 	}
 
 	// Use the machine name (without the FQDN)
-	machineName := serverInfo.Hostname
-	if strings.Contains(machineName, ".") {
-		machineName = strings.Split(machineName, ".")[0]
+	machineName, ok := deriveLDAPMachineName(serverInfo.Hostname, serverInfo.FQDN)
+	if !ok {
+		log.Log(context.Background(), logging.LevelVerbose, "Cannot resolve computer SID: only an IP address is available, no hostname", "hostname", serverInfo.Hostname)
+		return
 	}
 
 	// Method 1 & 2: Try Windows APIs (only available on Windows)
