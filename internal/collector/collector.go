@@ -3767,9 +3767,9 @@ func (c *Collector) createEdges(writer edgeSink, serverInfo *types.ServerInfo) e
 		}
 
 		// Resolve the source server ObjectIdentifier
-		// PowerShell compares linked.SourceServer to current hostname and resolves chains
+		// PowerShell compares linked.SourceServer to current hostname and resolves chains.
 		sourceID := serverInfo.ObjectIdentifier
-		if linked.SourceServer != "" && !strings.EqualFold(linked.SourceServer, serverInfo.Hostname) {
+		if linked.SourceServer != "" && !isLinkedServerSourceCurrentServer(linked.SourceServer, serverInfo) {
 			// Source is a different server (chained linked server) - resolve its ID
 			resolvedSourceID := c.resolveLinkedServerSourceID(linked.SourceServer, serverInfo)
 			if resolvedSourceID != "" {
@@ -4986,6 +4986,21 @@ func (c *Collector) parseDataSource(dataSource string) (hostname, port, instance
 	}
 
 	return
+}
+
+// isLinkedServerSourceCurrentServer reports whether a linked server's reported SourceServer
+// refers to the current server itself. serverInfo.Hostname may be an IP literal (the server was
+// targeted by IP), which never string-matches SQL Server's own self-reported hostname, so this
+// also checks the short name derived from FQDN and SERVERPROPERTY('ServerName') (the latter works
+// even with no forward/reverse DNS at all) before concluding this is a different (chained) server.
+func isLinkedServerSourceCurrentServer(sourceServer string, serverInfo *types.ServerInfo) bool {
+	if strings.EqualFold(sourceServer, serverInfo.Hostname) {
+		return true
+	}
+	if shortName, ok := deriveLDAPMachineName(serverInfo.Hostname, serverInfo.FQDN); ok && strings.EqualFold(sourceServer, shortName) {
+		return true
+	}
+	return strings.EqualFold(sourceServer, serverInfo.ServerName)
 }
 
 // resolveLinkedServerSourceID resolves the source server ObjectIdentifier for a chained linked server.
